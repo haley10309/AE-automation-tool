@@ -1,6 +1,51 @@
 import { useState, useEffect, useRef } from 'react'
 import { api } from './api.js'
 
+// ── 엑셀(CSV) 추출 ────────────────────────────────────────────
+function exportToCSV(result) {
+  if (!result || !result.rows.length) return
+
+  const now = new Date()
+  const dateStr = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`
+
+  // 헤더 행 1: Region
+  const regionRow = ['#', ...result.sites.map(s => s.region)]
+  // 헤더 행 2: Site Code
+  const codeRow   = ['',  ...result.sites.map(s => s.code)]
+  // 헤더 행 3: 국가명
+  const nameRow   = ['',  ...result.sites.map(s => s.name)]
+
+  // 데이터 행
+  const dataRows = result.rows.map(row => {
+    const cells = [String(row.index)]
+    result.sites.forEach(s => {
+      const cell = row.cells[s.code]
+      const badges = cell.badges.length > 0 ? ` [미출시: ${cell.badges.join(', ')}]` : ''
+      cells.push((cell.text || '') + badges)
+    })
+    return cells
+  })
+
+  const allRows = [regionRow, codeRow, nameRow, ...dataRows]
+
+  // CSV 직렬화 (쉼표·줄바꿈 포함 셀은 따옴표로 감싸기)
+  const escape = v => {
+    const s = String(v ?? '')
+    return s.includes(',') || s.includes('"') || s.includes('\n')
+      ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const csv = allRows.map(r => r.map(escape).join(',')).join('\r\n')
+
+  // UTF-8 BOM: 엑셀이 한글을 올바르게 인식
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  a.href     = url
+  a.download = `카피덱_국가별검수_${dateStr}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 // ── 전체 Site Code 목록 (실제 데이터 기반, 78개) ──────────────
 export const ALL_SITES = [
   // NALA
@@ -152,46 +197,7 @@ export default function CountryCheck() {
   const removeSite = code => setActive(prev => prev.filter(a => a.code !== code))
   const updateInput = (code, val) => setActive(prev => prev.map(a => a.code===code ? {...a, input:val} : a))
 
-  const exportCSV = () => {
-    if (!result) return
-
-    const escape = v => {
-      const s = String(v ?? '')
-      return s.includes(',') || s.includes('"') || s.includes('\n')
-        ? '"' + s.replace(/"/g, '""') + '"'
-        : s
-    }
-
-    // 헤더 행: #, 국가명(코드), ...
-    const headerRow = ['#', ...result.sites.map(s => `${s.name}(${s.code})`)]
-
-    // 데이터 행: 텍스트 + 미출시 뱃지 합산
-    const dataRows = result.rows.map(row => {
-      const cells = result.sites.map(s => {
-        const cell = row.cells[s.code]
-        const badges = cell.badges.length > 0
-          ? ' [미출시: ' + cell.badges.join(' / ') + ']'
-          : ''
-        return escape((cell.text || '') + badges)
-      })
-      return [row.index, ...cells].map(escape).join(',')
-    })
-
-    const csv = [
-      headerRow.map(escape).join(','),
-      ...dataRows
-    ].join('\r\n')
-
-    // UTF-8 BOM 추가 (Excel 한글 깨짐 방지)
-    const bom = '\uFEFF'
-    const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' })
-    const url  = URL.createObjectURL(blob)
-    const a    = document.createElement('a')
-    a.href     = url
-    a.download = `카피덱_검수결과_${new Date().toISOString().slice(0,10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
+  const exportCSV = () => exportToCSV(result)
 
   const runCheck = () => {
     const parsed = active.map(a => ({ ...a, rows: parseCol(a.input) }))
@@ -327,8 +333,8 @@ export default function CountryCheck() {
             </span>
             <div style={{ display:'flex', alignItems:'center', gap:10 }}>
               <span className="cc-scroll-hint">← 가로 스크롤 →</span>
-              <button className="btn-copy" onClick={exportCSV}>
-                ⬇ CSV 내보내기 (Excel)
+              <button className="btn-export" onClick={exportCSV}>
+                ⬇ 엑셀 추출 (.csv)
               </button>
             </div>
           </div>

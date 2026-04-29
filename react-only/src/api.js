@@ -17,4 +17,6 @@ export const api = window.electronAPI || {
   dbGetRows:      ({ requestId, diffOnly }) =>
     call('GET', `/api/rows?requestId=${requestId}&diffOnly=${diffOnly}`),
   getProducts:    ()        => call('GET',  '/api/products'),
+  updateRow:      (id, body) => call('PUT',    `/api/rows/${id}`, body),
+  deleteRow:      (id)       => call('DELETE', `/api/rows/${id}`),
 }

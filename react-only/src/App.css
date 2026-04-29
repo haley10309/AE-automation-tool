@@ -245,3 +245,59 @@ body{font-family:'Noto Sans KR',sans-serif;background:var(--bg);color:var(--text
   background:#fef3c7; border:1px solid #fcd34d;
   border-radius:6px; padding:2px 7px; white-space:nowrap;
 }
+
+/* ── 글자 단위 Diff 하이라이트 (VS Code 스타일) ── */
+.diff-text { font-size: 12.5px; line-height: 1.6; word-break: break-all; }
+mark.diff-del {
+  background: #ffd7d5;
+  color: #8b0000;
+  text-decoration: line-through;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+mark.diff-ins {
+  background: #ccffd8;
+  color: #005f23;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.td-as .diff-del { background: #ffd7d5; color: #8b0000; }
+.td-to .diff-ins { background: #ccffd8; color: #005f23; }
+
+/* ── 이력 테이블 편집 ── */
+.history-table .th-actions { width: 80px; text-align: center; }
+.history-table .td-actions { text-align: center; vertical-align: middle; }
+.action-btns { display: flex; gap: 4px; justify-content: center; }
+
+.act-btn {
+  border: none; border-radius: var(--r-sm); cursor: pointer;
+  font-family: 'Noto Sans KR', sans-serif; font-size: 11px; font-weight: 500;
+  padding: 4px 8px; transition: opacity .15s;
+}
+.act-btn:hover { opacity: .8; }
+.act-edit   { background: #f0f9ff; color: #0369a1; border: 1px solid #bae6fd; }
+.act-delete { background: #fff1f2; color: #be123c; border: 1px solid #fecdd3; font-size: 13px; padding: 3px 7px; }
+.act-save   { background: #1a1814; color: #fff; }
+.act-cancel { background: transparent; color: var(--text2); border: 1px solid var(--border-s); }
+
+.row-editing td { background: #fffbeb !important; }
+
+.td-edit { padding: 6px 8px !important; }
+.edit-textarea {
+  width: 100%; min-height: 60px; font-size: 12px; font-family: 'Noto Sans KR', sans-serif;
+  border: 1px solid var(--border); border-radius: var(--r-sm); padding: 6px 8px;
+  resize: vertical; outline: none; line-height: 1.5;
+}
+.as-textarea { border-color: #bfdbfe; background: #eff6ff; color: #1e40af; }
+.as-textarea:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,.15); }
+.to-textarea { border-color: #bbf7d0; background: #f0fdf4; color: #166534; }
+.to-textarea:focus { border-color: #22c55e; box-shadow: 0 0 0 2px rgba(34,197,94,.15); }
+
+/* btn-export */
+.btn-export {
+  background: #166534; color: #fff; border: none;
+  border-radius: var(--r-sm); padding: 6px 13px; font-size: 12px;
+  font-family: 'Noto Sans KR', sans-serif; font-weight: 500;
+  cursor: pointer; transition: opacity .15s;
+}
+.btn-export:hover { opacity: .85; }

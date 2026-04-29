@@ -167,4 +167,36 @@ app.get('/api/rows', async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }) }
 })
 
+// ── PUT /api/rows/:id ─────────────────────────────────────────
+// body: { as_was, to_be }
+app.put('/api/rows/:id', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결이 없습니다.' })
+  try {
+    const { as_was, to_be } = req.body
+    // status 재계산
+    const a = (as_was || '').trim()
+    const b = (to_be  || '').trim()
+    let status = '동일'
+    if (a !== b) {
+      if (!a && b) status = '추가'
+      else if (a && !b) status = '삭제'
+      else status = '변경'
+    }
+    await pool.execute(
+      `UPDATE copy_rows SET as_was=?, to_be=?, status=? WHERE id=?`,
+      [as_was, to_be, status, req.params.id]
+    )
+    res.json({ ok: true, status })
+  } catch (err) { res.json({ ok: false, message: err.message }) }
+})
+
+// ── DELETE /api/rows/:id ──────────────────────────────────────
+app.delete('/api/rows/:id', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결이 없습니다.' })
+  try {
+    await pool.execute(`DELETE FROM copy_rows WHERE id=?`, [req.params.id])
+    res.json({ ok: true })
+  } catch (err) { res.json({ ok: false, message: err.message }) }
+})
+
 app.listen(PORT, () => console.log('✅ 서버 실행 중: http://localhost:' + PORT))

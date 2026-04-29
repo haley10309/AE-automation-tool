@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useMemo, memo, useRef } from 'react'
 import './App.css'
 import { api } from './api.js'
 import CountryCheck from './CountryCheck.jsx'
@@ -55,6 +55,7 @@ export default function App() {
   const [reqRows, setReqRows]       = useState([])
   const [diffOnlyView, setDiffOnlyView] = useState(true)
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [rowActionMsg, setRowActionMsg] = useState('')
 
   // ── DB 연결 ────────────────────────────────────────────────
   const handleConnect = async () => {
@@ -136,9 +137,37 @@ export default function App() {
 
   const loadRows = async (req) => {
     setSelectedReq(req)
+    setRowActionMsg('')
     const res = await api.dbGetRows({ requestId: req.id, diffOnly: false })
     if (res.ok) setReqRows(res.data)
   }
+
+  // useCallback으로 고정 → HistoryTable이 불필요하게 재렌더되지 않음
+  const handleUpdateRow = useCallback(async (rowId, draft) => {
+    const res = await api.updateRow(rowId, draft)
+    if (res.ok) {
+      setReqRows(prev => prev.map(r =>
+        r.id === rowId ? { ...r, as_was: draft.as_was, to_be: draft.to_be, status: res.status } : r
+      ))
+      setRowActionMsg('✅ 수정 완료')
+      setTimeout(() => setRowActionMsg(''), 2000)
+    } else {
+      setRowActionMsg('❌ 수정 실패: ' + res.message)
+    }
+    return res.ok
+  }, [])
+
+  const handleDeleteRow = useCallback(async (rowId) => {
+    if (!window.confirm('이 행을 삭제하시겠습니까?')) return
+    const res = await api.deleteRow(rowId)
+    if (res.ok) {
+      setReqRows(prev => prev.filter(r => r.id !== rowId))
+      setRowActionMsg('🗑 삭제 완료')
+      setTimeout(() => setRowActionMsg(''), 2000)
+    } else {
+      setRowActionMsg('❌ 삭제 실패: ' + res.message)
+    }
+  }, [])
 
   useEffect(() => { if (tab === TABS.HISTORY) loadHistory() }, [tab, dbStatus])
 
@@ -279,9 +308,19 @@ export default function App() {
                           변경행만 보기
                         </label>
                       </div>
-                      <DiffTable
-                        rows={(diffOnlyView ? reqRows.filter(r=>r.status!=='동일') : reqRows).map(r=>({ row:r.row_index, asWas:r.as_was, toBe:r.to_be, status:r.status }))}
+
+                      {rowActionMsg && (
+                        <div className={rowActionMsg.startsWith('✅')||rowActionMsg.startsWith('🗑') ? 'success-banner' : 'error-banner'}>
+                          {rowActionMsg}
+                        </div>
+                      )}
+
+                      {/* 편집 가능한 이력 테이블 */}
+                      <HistoryTable
+                        rows={diffOnlyView ? reqRows.filter(r=>r.status!=='동일') : reqRows}
                         statusColor={statusColor}
+                        onUpdate={handleUpdateRow}
+                        onDelete={handleDeleteRow}
                       />
                     </>
                   )}
@@ -404,8 +443,187 @@ copy_rows (행별 카피)
   )
 }
 
-// ── 공용 테이블 컴포넌트 ─────────────────────────────────────
-function DiffTable({ rows, statusColor }) {
+// ── 글자 단위 diff ────────────────────────────────────────────
+// 최대 200자 초과 시 단어 단위로 자동 전환 (성능 보호)
+const CHAR_DIFF_LIMIT = 200
+
+function computeCharDiff(a, b) {
+  const m = a.length, n = b.length
+  const dp = Array.from({ length: m+1 }, () => new Array(n+1).fill(0))
+  for (let i = m-1; i >= 0; i--)
+    for (let j = n-1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i+1][j+1]+1 : Math.max(dp[i+1][j], dp[i][j+1])
+
+  const aParts = [], bParts = []
+  let i = 0, j = 0
+  while (i < m || j < n) {
+    if (i < m && j < n && a[i] === b[j]) {
+      aParts.push({ type:'equal', ch: a[i] }); bParts.push({ type:'equal', ch: b[j] })
+      i++; j++
+    } else if (j < n && (i >= m || dp[i][j+1] >= dp[i+1][j])) {
+      bParts.push({ type:'insert', ch: b[j] }); j++
+    } else {
+      aParts.push({ type:'delete', ch: a[i] }); i++
+    }
+  }
+  return { aParts, bParts }
+}
+
+// 단어 단위 diff (긴 문자열 폴백)
+function computeWordDiff(a, b) {
+  const aw = a.split(/(\s+)/), bw = b.split(/(\s+)/)
+  const m = aw.length, n = bw.length
+  const dp = Array.from({ length: m+1 }, () => new Array(n+1).fill(0))
+  for (let i = m-1; i >= 0; i--)
+    for (let j = n-1; j >= 0; j--)
+      dp[i][j] = aw[i] === bw[j] ? dp[i+1][j+1]+1 : Math.max(dp[i+1][j], dp[i][j+1])
+
+  const aParts = [], bParts = []
+  let i = 0, j = 0
+  while (i < m || j < n) {
+    if (i < m && j < n && aw[i] === bw[j]) {
+      aParts.push({ type:'equal', ch: aw[i] }); bParts.push({ type:'equal', ch: bw[j] })
+      i++; j++
+    } else if (j < n && (i >= m || dp[i][j+1] >= dp[i+1][j])) {
+      bParts.push({ type:'insert', ch: bw[j] }); j++
+    } else {
+      aParts.push({ type:'delete', ch: aw[i] }); i++
+    }
+  }
+  return { aParts, bParts }
+}
+
+// ── 하이라이트 렌더러 (memo로 불필요한 재렌더 차단) ──────────
+const DiffHighlight = memo(function DiffHighlight({ asWas, toBe, side }) {
+  const a = asWas || '', b = toBe || ''
+  if (!a && !b) return <em className="empty-val">빈 값</em>
+  if (a === b)  return <span>{a}</span>
+
+  // 길이 기반 자동 모드 전환
+  const useLong = a.length > CHAR_DIFF_LIMIT || b.length > CHAR_DIFF_LIMIT
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const { aParts, bParts } = useMemo(
+    () => useLong ? computeWordDiff(a, b) : computeCharDiff(a, b),
+    [a, b, useLong]
+  )
+  const parts = side === 'as' ? aParts : bParts
+
+  return (
+    <span className="diff-text">
+      {parts.map((p, idx) => {
+        if (p.type === 'equal')  return <span key={idx}>{p.ch}</span>
+        if (p.type === 'delete') return <mark key={idx} className="diff-del">{p.ch}</mark>
+        if (p.type === 'insert') return <mark key={idx} className="diff-ins">{p.ch}</mark>
+        return null
+      })}
+    </span>
+  )
+})
+
+// ── 이력 조회 테이블 ──────────────────────────────────────────
+// editingRowId: 컴포넌트 내부 state (App 재렌더 없음)
+// textarea: useRef 비제어 입력 (타이핑 중 렌더링 0번)
+const HistoryTable = memo(function HistoryTable({ rows, statusColor, onUpdate, onDelete }) {
+  const [editingRowId, setEditingRowId] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const asRef  = useRef(null)
+  const toRef  = useRef(null)
+
+  if (!rows || rows.length === 0)
+    return <div className="empty-hint center">표시할 항목이 없습니다.</div>
+
+  const startEdit = (row) => {
+    setEditingRowId(row.id)
+    // ref값은 다음 렌더 후 textarea가 마운트된 뒤 설정
+    setTimeout(() => {
+      if (asRef.current) asRef.current.value = row.as_was || ''
+      if (toRef.current) toRef.current.value  = row.to_be  || ''
+    }, 0)
+  }
+
+  const cancelEdit = () => setEditingRowId(null)
+
+  const saveEdit = async (rowId) => {
+    setSaving(true)
+    const ok = await onUpdate(rowId, {
+      as_was: asRef.current?.value ?? '',
+      to_be:  toRef.current?.value  ?? '',
+    })
+    setSaving(false)
+    if (ok) setEditingRowId(null)
+  }
+
+  return (
+    <div className="table-wrap">
+      <table className="result-table history-table">
+        <thead>
+          <tr>
+            <th className="th-row">#</th>
+            <th className="th-as">AS-WAS</th>
+            <th className="th-to">TO-BE</th>
+            <th className="th-status">상태</th>
+            <th className="th-actions">편집</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const isEditing = editingRowId === r.id
+            return (
+              <tr key={r.id} className={isEditing ? 'row-editing' : ''}>
+                <td className="td-row">{r.row_index}</td>
+
+                {isEditing ? (
+                  <>
+                    <td className="td-as td-edit">
+                      <textarea ref={asRef} className="edit-textarea as-textarea" defaultValue={r.as_was || ''} />
+                    </td>
+                    <td className="td-to td-edit">
+                      <textarea ref={toRef} className="edit-textarea to-textarea" defaultValue={r.to_be || ''} />
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td className="td-as">
+                      <DiffHighlight asWas={r.as_was} toBe={r.to_be} side="as" />
+                    </td>
+                    <td className="td-to">
+                      <DiffHighlight asWas={r.as_was} toBe={r.to_be} side="to" />
+                    </td>
+                  </>
+                )}
+
+                <td className="td-status">
+                  <span className="status-badge"
+                    style={{ background: statusColor[r.status]?.bg, color: statusColor[r.status]?.fg }}>
+                    {r.status}
+                  </span>
+                </td>
+                <td className="td-actions">
+                  {isEditing ? (
+                    <div className="action-btns">
+                      <button className="act-btn act-save" onClick={() => saveEdit(r.id)} disabled={saving}>
+                        {saving ? '…' : '저장'}
+                      </button>
+                      <button className="act-btn act-cancel" onClick={cancelEdit} disabled={saving}>취소</button>
+                    </div>
+                  ) : (
+                    <div className="action-btns">
+                      <button className="act-btn act-edit" onClick={() => startEdit(r)} title="수정">✏</button>
+                      <button className="act-btn act-delete" onClick={() => onDelete(r.id)} title="삭제">🗑</button>
+                    </div>
+                  )}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+})
+
+// ── 추출 탭 전용 테이블 (읽기 전용, memo) ─────────────────────
+const DiffTable = memo(function DiffTable({ rows, statusColor }) {
   if (!rows || rows.length === 0) return <div className="empty-hint center">표시할 항목이 없습니다.</div>
   return (
     <div className="table-wrap">
@@ -422,8 +640,12 @@ function DiffTable({ rows, statusColor }) {
           {rows.map((d) => (
             <tr key={d.row}>
               <td className="td-row">{d.row}</td>
-              <td className="td-as">{d.asWas || <em className="empty-val">빈 값</em>}</td>
-              <td className="td-to">{d.toBe || <em className="empty-val">빈 값</em>}</td>
+              <td className="td-as">
+                <DiffHighlight asWas={d.asWas} toBe={d.toBe} side="as" />
+              </td>
+              <td className="td-to">
+                <DiffHighlight asWas={d.asWas} toBe={d.toBe} side="to" />
+              </td>
               <td className="td-status">
                 <span className="status-badge" style={{ background: statusColor[d.status]?.bg, color: statusColor[d.status]?.fg }}>
                   {d.status}
@@ -435,4 +657,4 @@ function DiffTable({ rows, statusColor }) {
       </table>
     </div>
   )
-}
+})
