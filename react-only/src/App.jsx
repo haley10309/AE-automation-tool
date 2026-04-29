@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useMemo, memo, useRef } from 'react'
 import './App.css'
 import { api } from './api.js'
 import CountryCheck from './CountryCheck.jsx'
+import CopyStatusTracker from './CopyStatusTracker.jsx'
 
 // ── Electron IPC 브릿지 (웹 환경에서는 null) ──────────────────
 
@@ -24,7 +25,7 @@ function getStatus(a, b) {
 function today() { return new Date().toISOString().slice(0,10) }
 
 // ── 탭 상수 ──────────────────────────────────────────────────
-const TABS = { EXTRACT: 'extract', COUNTRY: 'country', HISTORY: 'history', SETTINGS: 'settings' }
+const TABS = { EXTRACT: 'extract', COUNTRY: 'country', STATUS: 'status', HISTORY: 'history', SETTINGS: 'settings' }
 
 export default function App() {
   const [tab, setTab] = useState(TABS.EXTRACT)
@@ -202,7 +203,7 @@ export default function App() {
 
       {/* ── TABS ── */}
       <nav className="tab-nav">
-        {[{ key:TABS.EXTRACT, label:'업데이트 영역 추출' }, { key:TABS.COUNTRY, label:'국가별 카피 제품 출시 반영 검수' }, { key:TABS.HISTORY, label:'업데이트 영역 조회' }, { key:TABS.SETTINGS, label:'DB 설정' }].map(t => (
+        {[{ key:TABS.EXTRACT, label:'업데이트 영역 추출' }, { key:TABS.COUNTRY, label:'국가별 카피 제품 출시 반영 검수' }, { key:TABS.STATUS, label:'국가별 카피 작업 현황' }, { key:TABS.HISTORY, label:'업데이트 영역 조회' }, { key:TABS.SETTINGS, label:'DB 설정' }].map(t => (
           <button key={t.key} className={`tab-btn ${tab===t.key?'active':''}`} onClick={()=>setTab(t.key)}>{t.label}</button>
         ))}
       </nav>
@@ -267,6 +268,8 @@ export default function App() {
         )}
 
         {tab === TABS.COUNTRY && <CountryCheck />}
+
+        {tab === TABS.STATUS && <CopyStatusTracker />}
 
         {/* ══════════════ TAB: 업데이트 영역 조회 ══════════════ */}
         {tab === TABS.HISTORY && (
