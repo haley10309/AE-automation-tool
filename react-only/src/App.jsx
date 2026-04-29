@@ -202,14 +202,14 @@ export default function App() {
 
       {/* ── TABS ── */}
       <nav className="tab-nav">
-        {[{ key:TABS.EXTRACT, label:'추출' }, { key:TABS.COUNTRY, label:'국가별 카피 검수' }, { key:TABS.HISTORY, label:'이력 조회' }, { key:TABS.SETTINGS, label:'DB 설정' }].map(t => (
+        {[{ key:TABS.EXTRACT, label:'업데이트 영역 추출' }, { key:TABS.COUNTRY, label:'국가별 카피 제품 출시 반영 검수' }, { key:TABS.HISTORY, label:'업데이트 영역 조회' }, { key:TABS.SETTINGS, label:'DB 설정' }].map(t => (
           <button key={t.key} className={`tab-btn ${tab===t.key?'active':''}`} onClick={()=>setTab(t.key)}>{t.label}</button>
         ))}
       </nav>
 
       <main className="main-content">
 
-        {/* ══════════════ TAB: 추출 ══════════════ */}
+        {/* ══════════════ TAB: 업데이트 영역 추출 ══════════════ */}
         {tab === TABS.EXTRACT && (
           <>
             <div className="input-grid">
@@ -268,7 +268,7 @@ export default function App() {
 
         {tab === TABS.COUNTRY && <CountryCheck />}
 
-        {/* ══════════════ TAB: 이력 조회 ══════════════ */}
+        {/* ══════════════ TAB: 업데이트 영역 조회 ══════════════ */}
         {tab === TABS.HISTORY && (
           <div className="history-layout">
             {dbStatus !== 'connected' ? (
