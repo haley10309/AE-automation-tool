@@ -2,26 +2,26 @@ import { useState, useCallback, useEffect, useRef, memo } from 'react'
 import { api } from '../api.js'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
 
-// ── 확장된 상태 정의 ─────────────────────────────────────────
+// ── 상태 정의 (0=미설정, 1~15=단계) ─────────────────────────
 const COPY_STATUSES = [
-  { value: '', label: '— 미설정 —', color: '#9ca3af', bg: '#f3f4f6' },
-  { value: 'inquiry_needed', label: '문의 필요', color: '#ef4444', bg: '#fef2f2' },
-  { value: 'tp_req', label: 'tp 번역 요청', color: '#8b5cf6', bg: '#f5f3ff' },
-  { value: 'tp_done', label: 'tp 번역 완료', color: '#7c3aed', bg: '#ede9fe' },
-  { value: 'local_survey', label: 'local survey 시작', color: '#3b82f6', bg: '#eff6ff' },
-  { value: 'cmu_req_needed', label: 'cmu 컨펌 요청필요', color: '#0ea5e9', bg: '#f0f9ff' },
-  { value: 'cmu_req_done', label: 'cmu 컨펌 요청 완료', color: '#0284c7', bg: '#e0f2fe' },
-  { value: 'cmu_reply_done', label: 'cmu 답변 완료', color: '#0369a1', bg: '#d0eaff' },
-  { value: 'local_confirmed', label: 'local confirmed', color: '#2563eb', bg: '#dbeafe' },
-  { value: 'deck_merge', label: 'deck merge', color: '#f59e0b', bg: '#fffbeb' },
-  { value: 'prod_req_needed', label: 'production 요청 필요', color: '#10b981', bg: '#ecfdf5' },
-  { value: 'prod_ing', label: 'production 중', color: '#059669', bg: '#d1fae5' },
-  { value: 'prod_done', label: 'production 완료', color: '#166534', bg: '#dcfce7' },
-  { value: 'qa_needed', label: 'QA 필요', color: '#0891b2', bg: '#ecfeff' },
-  { value: 'qa_ing', label: 'QA 중', color: '#0e7490', bg: '#cffafe' },
-  { value: 'qa_done', label: 'QA 완료', color: '#155e75', bg: '#e0f7fa' },
+  { value: '',                  label: '— 미설정 —',          color: '#9ca3af', bg: '#f9fafb',  step: 0  },
+  { value: 'inquiry',           label: '문의 필요',            color: '#6b7280', bg: '#f3f4f6',  step: 1  },
+  { value: 'tp_req',            label: 'TP 번역 요청',         color: '#8b5cf6', bg: '#ede9fe',  step: 2  },
+  { value: 'tp_done',           label: 'TP 번역 완료',         color: '#7c3aed', bg: '#ddd6fe',  step: 3  },
+  { value: 'local_survey',      label: 'Local Survey 시작',    color: '#2563eb', bg: '#dbeafe',  step: 4  },
+  { value: 'cmu_req_needed',    label: 'CMU 컨펌 요청 필요',   color: '#0369a1', bg: '#e0f2fe',  step: 5  },
+  { value: 'cmu_req_done',      label: 'CMU 컨펌 요청 완료',   color: '#0284c7', bg: '#bae6fd',  step: 6  },
+  { value: 'cmu_answered',      label: 'CMU 답변 완료',        color: '#0e7490', bg: '#a5f3fc',  step: 7  },
+  { value: 'local_confirmed',   label: 'Local Confirmed',      color: '#0f766e', bg: '#ccfbf1',  step: 8  },
+  { value: 'deck_merge',        label: 'Deck Merge',           color: '#b45309', bg: '#fef3c7',  step: 9  },
+  { value: 'prod_needed',       label: 'Production 요청 필요', color: '#c2410c', bg: '#ffedd5',  step: 10 },
+  { value: 'prod_wip',          label: 'Production 중',        color: '#ea580c', bg: '#fed7aa',  step: 11 },
+  { value: 'prod_done',         label: 'Production 완료',      color: '#166534', bg: '#dcfce7',  step: 12 },
+  { value: 'qa_needed',         label: 'QA 필요',              color: '#7c2d12', bg: '#fef2f2',  step: 13 },
+  { value: 'qa_wip',            label: 'QA 중',                color: '#b91c1c', bg: '#fee2e2',  step: 14 },
+  { value: 'qa_done',           label: 'QA 완료',              color: '#15803d', bg: '#bbf7d0',  step: 15 },
 ]
-
+const TOTAL_STEPS = 15
 function getStatusStyle(value) {
   return COPY_STATUSES.find(s => s.value === value) || COPY_STATUSES[0]
 }
@@ -457,13 +457,22 @@ function PageDetail({ page, onBack, onUpdate }) {
     onUpdate({ ...page, countries: page.countries.filter(c => c.code !== code) }, true)
   }
 
-  // 통계 계산 (확장된 상태 기준)
+  // ── 통계 계산 ──────────────────────────────────────────────
   const totalCountries = page.countries.length
-  const completedCountries = page.countries.filter(c => c.status === 'prod_done' || c.status === 'qa_done').length
   const statusCounts = {}
   COPY_STATUSES.forEach(s => {
     if (s.value) statusCounts[s.value] = page.countries.filter(c => c.status === s.value).length
   })
+  // 진행도: 각 국가 step 합산 → (합계 / 전체국가 × TOTAL_STEPS) × 100
+  const totalStepSum = page.countries.reduce((sum, c) => {
+    return sum + (COPY_STATUSES.find(s => s.value === c.status)?.step || 0)
+  }, 0)
+  const progressPct = totalCountries > 0
+    ? Math.round((totalStepSum / (totalCountries * TOTAL_STEPS)) * 100)
+    : 0
+  const avgStep = totalCountries > 0 ? totalStepSum / totalCountries : 0
+  const avgStepRounded = Math.round(avgStep)
+  const avgStatus = COPY_STATUSES.find(s => s.step === avgStepRounded) || COPY_STATUSES[0]
 
   return (
     <div className="cst-page-detail">
@@ -485,12 +494,27 @@ function PageDetail({ page, onBack, onUpdate }) {
 
         <div className="cst-progress-wrap">
           <div className="cst-progress-label">
-            <span>Production/QA 완료</span>
-            <span>{completedCountries} / {totalCountries} 국가</span>
+            <span>
+              전체 진행도
+              <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 6 }}>
+                ({avgStatus.label} 수준 · avg {avgStep.toFixed(1)} / {TOTAL_STEPS} 단계)
+              </span>
+            </span>
+            <span style={{ fontWeight: 700, color: avgStatus.color }}>{progressPct}%</span>
+          </div>
+          {/* 단계별 컬러 스트립 */}
+          <div style={{ display: 'flex', gap: 2, marginBottom: 4 }}>
+            {COPY_STATUSES.filter(s => s.value).map(s => (
+              <div key={s.value} title={s.label} style={{
+                flex: 1, height: 6, borderRadius: 3,
+                background: s.step <= avgStepRounded && avgStepRounded > 0 ? s.color : '#e5e7eb',
+                transition: 'background 0.3s',
+              }} />
+            ))}
           </div>
           <div className="cst-progress-bar">
             <div className="cst-progress-fill"
-              style={{ width: totalCountries > 0 ? `${(completedCountries / totalCountries) * 100}%` : '0%' }} />
+              style={{ width: `${progressPct}%`, background: avgStatus.color, transition: 'width 0.4s' }} />
           </div>
         </div>
       </div>
@@ -662,15 +686,21 @@ export default function StatusTab() {
       <div className="cst-page-grid">
         {pages.map(page => {
           const total = page.countries.length
-          const prodDone = page.countries.filter(c => c.status === 'prod_done' || c.status === 'qa_done').length
-          const pct = total > 0 ? Math.round((prodDone / total) * 100) : 0
+          const stepSum = page.countries.reduce((sum, c) => {
+            return sum + (COPY_STATUSES.find(s => s.value === c.status)?.step || 0)
+          }, 0)
+          const pct = total > 0 ? Math.round((stepSum / (total * TOTAL_STEPS)) * 100) : 0
+          const avgS = total > 0 ? stepSum / total : 0
+          const cardStatus = COPY_STATUSES.find(s => s.step === Math.round(avgS)) || COPY_STATUSES[0]
           return (
             <div key={page.id} className="cst-page-card" onClick={() => setSelectedPageId(page.id)}>
               <h3 className="cst-page-card-name">{page.name}</h3>
-              <div className="cst-page-card-meta">{page.countries.length}개국 참여 중</div>
+              <div className="cst-page-card-meta">{total}개국 · {cardStatus.label}</div>
               <div className="cst-mini-progress">
-                <div className="cst-mini-progress-bar"><div className="cst-progress-fill" style={{ width: `${pct}%` }} /></div>
-                <span className="cst-mini-pct">{pct}% 완료</span>
+                <div className="cst-mini-progress-bar">
+                  <div className="cst-progress-fill" style={{ width: `${pct}%`, background: cardStatus.color }} />
+                </div>
+                <span className="cst-mini-pct" style={{ color: cardStatus.color }}>{pct}%</span>
               </div>
             </div>
           )
