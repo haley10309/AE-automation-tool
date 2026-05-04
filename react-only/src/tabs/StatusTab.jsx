@@ -1,21 +1,123 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, memo } from 'react'
 import { api } from '../api.js'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
 
-// ── 상태 정의 ─────────────────────────────────────────────────
+// ── 상태 정의 (0=미설정, 1~15=단계) ─────────────────────────
 const COPY_STATUSES = [
-  { value: '',               label: '— 미설정 —',       color: '#9ca3af', bg: '#f3f4f6' },
-  { value: 'tp_translation', label: 'TP 번역',           color: '#7c3aed', bg: '#ede9fe' },
-  { value: 'local_confirmed',label: 'Local Confirmed',   color: '#1d4ed8', bg: '#dbeafe' },
-  { value: 'deck_merge',     label: 'Deck Merge',        color: '#b45309', bg: '#fef3c7' },
-  { value: 'production',     label: 'Production',        color: '#166534', bg: '#dcfce7' },
+  { value: '',                  label: '— 미설정 —',          color: '#9ca3af', bg: '#f9fafb',  step: 0  },
+  { value: 'inquiry',           label: '문의 필요',            color: '#6b7280', bg: '#f3f4f6',  step: 1  },
+  { value: 'tp_req',            label: 'TP 번역 요청',         color: '#8b5cf6', bg: '#ede9fe',  step: 2  },
+  { value: 'tp_done',           label: 'TP 번역 완료',         color: '#7c3aed', bg: '#ddd6fe',  step: 3  },
+  { value: 'local_survey',      label: 'Local Survey 시작',    color: '#2563eb', bg: '#dbeafe',  step: 4  },
+  { value: 'cmu_req_needed',    label: 'CMU 컨펌 요청 필요',   color: '#0369a1', bg: '#e0f2fe',  step: 5  },
+  { value: 'cmu_req_done',      label: 'CMU 컨펌 요청 완료',   color: '#0284c7', bg: '#bae6fd',  step: 6  },
+  { value: 'cmu_answered',      label: 'CMU 답변 완료',        color: '#0e7490', bg: '#a5f3fc',  step: 7  },
+  { value: 'local_confirmed',   label: 'Local Confirmed',      color: '#0f766e', bg: '#ccfbf1',  step: 8  },
+  { value: 'deck_merge',        label: 'Deck Merge',           color: '#b45309', bg: '#fef3c7',  step: 9  },
+  { value: 'prod_needed',       label: 'Production 요청 필요', color: '#c2410c', bg: '#ffedd5',  step: 10 },
+  { value: 'prod_wip',          label: 'Production 중',        color: '#ea580c', bg: '#fed7aa',  step: 11 },
+  { value: 'prod_done',         label: 'Production 완료',      color: '#166534', bg: '#dcfce7',  step: 12 },
+  { value: 'qa_needed',         label: 'QA 필요',              color: '#7c2d12', bg: '#fef2f2',  step: 13 },
+  { value: 'qa_wip',            label: 'QA 중',                color: '#b91c1c', bg: '#fee2e2',  step: 14 },
+  { value: 'qa_done',           label: 'QA 완료',              color: '#15803d', bg: '#bbf7d0',  step: 15 },
 ]
-
+const TOTAL_STEPS = 15
 function getStatusStyle(value) {
   return COPY_STATUSES.find(s => s.value === value) || COPY_STATUSES[0]
 }
+// ── [최적화] 메인 메모 입력 컴포넌트 (반응성 향상) ────────────────
+const NoteInput = memo(({ initialNote, onSave }) => {
+  const [val, setVal] = useState(initialNote || '')
+  useEffect(() => { setVal(initialNote || '') }, [initialNote])
 
-// ── 로컬스토리지 유틸 ─────────────────────────────────────────
+  return (
+    <input 
+      className="cst-note-input" 
+      placeholder="메모 입력..."
+      value={val} 
+      onChange={e => setVal(e.target.value)}
+      onBlur={() => onSave(val)} // 포커스 나갈 때만 전체 상태 업데이트
+      onKeyDown={e => e.key === 'Enter' && onSave(val)}
+    />
+  )
+})
+const HistoryItem = ({ file, index, onUpdateNote, download }) => {
+  const [isEditing, setIsEditing] = useState(false)
+  const [tempNote, setTempNote] = useState(file.noteAtUpload || '')
+
+  const handleSave = () => {
+    onUpdateNote(index, tempNote)
+    setIsEditing(false)
+  }
+
+  const statusStyle = getStatusStyle(file.statusAtUpload || '')
+
+  return (
+    <div className="cst-file-history-item">
+      <div className="cst-history-left">
+        <div className="cst-file-meta-row" style={{ marginBottom: 4 }}>
+          <button className="cst-file-name-btn" style={{ fontSize: 11 }}
+            onClick={() => download(file)} disabled={!file.dataUrl}>
+            📎 {file.name}
+          </button>
+          <span className="cst-file-date">{formatDateTime(file.uploadedAt)}</span>
+        </div>
+
+        
+        
+        {/* 상태 + 메모 한 줄 */}
+        <div 
+          className="cst-history-note-row" 
+          style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+        >
+          {/* 상태 */}
+          <span style={{
+            display: 'inline-block',
+            fontSize: 10,
+            padding: '1px 6px',
+            borderRadius: 4,
+            border: `1px solid ${statusStyle.color}`,
+            color: statusStyle.color,
+            background: statusStyle.bg,
+            whiteSpace: 'nowrap'
+          }}>
+            {statusStyle.label}
+          </span>
+
+          {/* 메모 영역 */}
+          {isEditing ? (
+            <>
+              <input 
+                className="form-input" 
+                style={{ fontSize: 11, padding: '2px 5px', flex: 1 }}
+                value={tempNote}
+                onChange={e => setTempNote(e.target.value)}
+                autoFocus
+              />
+              <button className="btn-sm" onClick={handleSave} style={{ padding: '2px 5px' }}>저장</button>
+              <button className="btn-ghost" onClick={() => setIsEditing(false)} style={{ padding: '2px 5px' }}>취소</button>
+            </>
+          ) : (
+            <>
+              <span className="cst-file-note" style={{ fontSize: 11 }}>
+                📝 {file.noteAtUpload || '(메모 없음)'}
+              </span>
+              <button 
+                className="btn-icon-edit" 
+                onClick={() => setIsEditing(true)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12 }}
+                title="메모 수정"
+              >
+                ✏️
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+// ── 로컬스토리지 및 유틸 ──────────────────────────────────────
 const STORAGE_KEY = 'ae_copy_status_tracker_v1'
 
 function loadFromStorage() {
@@ -40,7 +142,6 @@ function formatDateTime(isoStr) {
   return `${yy}-${mm}-${dd} ${hh}:${mi}`
 }
 
-// 기본 국가 세트
 const DEFAULT_COUNTRIES = ['KR', 'US', 'JP', 'DE', 'FR', 'UK', 'AU', 'CA', 'CN', 'IN']
 
 // ── 상태 셀 ───────────────────────────────────────────────────
@@ -58,8 +159,8 @@ function CountryStatusCell({ siteCode, entry, onStatusChange }) {
   )
 }
 
-// ── 파일 셀 ───────────────────────────────────────────────────
-function FileCell({ siteCode, entry, onFileUpload }) {
+// ── 파일 셀 (히스토리에 상태 기록 포함) ──────────────────────────
+function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
   const fileRef = useRef(null)
   const [showHistory, setShowHistory] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -75,10 +176,13 @@ function FileCell({ siteCode, entry, onFileUpload }) {
         reader.onerror = reject
         reader.readAsDataURL(file)
       })
+      
       await onFileUpload(siteCode, {
-        name: file.name, size: file.size, type: file.type,
+        name: file.name,
+        size: file.size,
         uploadedAt: new Date().toISOString(),
-        status: entry?.status || '',
+        statusAtUpload: entry?.status || '',
+        noteAtUpload: entry?.note || '', // 현재 메모 캡처
         dataUrl,
       })
     } finally {
@@ -94,85 +198,88 @@ function FileCell({ siteCode, entry, onFileUpload }) {
     document.body.appendChild(a); a.click(); document.body.removeChild(a)
   }
 
-  const formatBytes = (b) => {
-    if (!b) return ''
-    if (b < 1024) return b + 'B'
-    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + 'KB'
-    return (b / (1024 * 1024)).toFixed(1) + 'MB'
-  }
-
   return (
     <div className="cst-file-area">
       {entry?.file ? (
         <div className="cst-file-info">
           <div className="cst-file-main">
-            <button className="cst-file-name-btn"
-              title={entry.file.dataUrl ? `다운로드: ${entry.file.name}` : entry.file.name}
-              onClick={() => download(entry.file)} disabled={!entry.file.dataUrl}>
+            <button className="cst-file-name-btn" onClick={() => download(entry.file)}>
               📎 {entry.file.name}
             </button>
-            <div className="cst-file-meta-row">
-              {entry.file.status && (
-                <span className="cst-file-status-badge" style={{
-                  background: getStatusStyle(entry.file.status).bg,
-                  color: getStatusStyle(entry.file.status).color,
-                  borderColor: getStatusStyle(entry.file.status).color,
-                }}>
-                  {getStatusStyle(entry.file.status).label}
-                </span>
-              )}
-              <span className="cst-file-date">{formatDateTime(entry.file.uploadedAt)}</span>
-              {entry.file.size && <span className="cst-file-size">{formatBytes(entry.file.size)}</span>}
-            </div>
+            <span className="cst-file-date">{formatDateTime(entry.file.uploadedAt)}</span>
           </div>
           <div className="cst-file-actions">
             <button className="cst-file-replace" onClick={() => fileRef.current?.click()} disabled={uploading}>
               {uploading ? '⏳' : '↑ 교체'}
             </button>
-            {entry.fileHistory?.length > 1 && (
+            {entry.fileHistory?.length > 0 && (
               <button className="cst-file-history-btn" onClick={() => setShowHistory(v => !v)}>
                 히스토리 ({entry.fileHistory.length})
               </button>
             )}
           </div>
-          {showHistory && entry.fileHistory?.length > 0 && (
+          
+          {showHistory && (
             <div className="cst-file-history">
-              {[...entry.fileHistory].reverse().map((f, i) => (
-                <div key={i} className="cst-file-history-item">
-                  <div className="cst-history-left">
-                    <button className="cst-file-name-btn" style={{ fontSize: 11 }}
-                      onClick={() => download(f)} disabled={!f.dataUrl}
-                      title={f.dataUrl ? `다운로드: ${f.name}` : '파일 없음'}>
-                      📎 {f.name}
-                    </button>
-                    <div className="cst-file-meta-row">
-                      {f.status && (
-                        <span className="cst-file-status-badge" style={{
-                          background: getStatusStyle(f.status).bg,
-                          color: getStatusStyle(f.status).color,
-                          borderColor: getStatusStyle(f.status).color,
-                        }}>
-                          {getStatusStyle(f.status).label}
-                        </span>
-                      )}
-                      <span className="cst-file-date">{formatDateTime(f.uploadedAt)}</span>
-                      {f.size && <span className="cst-file-size">{formatBytes(f.size)}</span>}
-                    </div>
-                  </div>
-                </div>
-              ))}
+              {/* 히스토리는 역순으로 보여주되 인덱스 계산을 위해 원본 배열 활용 */}
+              {[...entry.fileHistory].reverse().map((f, revIdx) => {
+                const originalIdx = entry.fileHistory.length - 1 - revIdx;
+                return (
+                  <HistoryItem 
+                    key={originalIdx}
+                    file={f}
+                    index={originalIdx}
+                    download={download}
+                    onUpdateNote={(idx, newNote) => onUpdateHistoryNote(siteCode, idx, newNote)}
+                  />
+                )
+              })}
             </div>
           )}
         </div>
       ) : (
-        <button className="cst-upload-btn" onClick={() => fileRef.current?.click()} disabled={uploading}>
-          {uploading ? '⏳ 업로드 중...' : '+ 파일 첨부'}
-        </button>
+        <button className="cst-upload-btn" onClick={() => fileRef.current?.click()}>+ 파일 첨부</button>
       )}
       <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleChange} />
     </div>
   )
 }
+// ── [최적화] 테이블 행 (React.memo) ───────────────────────────
+const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, removeCountry }) => {
+  return (
+    <tr className="cst-row">
+      <td className="cst-td">
+        <div className="cst-country-cell">
+          <span className="cst-flag">{site.flag}</span>
+          <div className="cst-country-info">
+            <span className="cst-country-name">{site.name}</span>
+            <span className="cst-country-code" style={{ color: REGION_COLORS[site.region] }}>{site.code}</span>
+          </div>
+        </div>
+      </td>
+      <td className="cst-td">
+        <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChange} />
+      </td>
+      <td className="cst-td">
+        <FileCell 
+          siteCode={site.code} 
+          entry={entry} 
+          onFileUpload={handleFileUpload} 
+          onUpdateHistoryNote={handleHistoryNoteUpdate}
+        />
+      </td>
+      <td className="cst-td">
+        <NoteInput 
+          initialNote={entry?.note} 
+          onSave={(note) => handleStatusChange(site.code, entry?.status, note)} 
+        />
+      </td>
+      <td className="cst-td">
+        <button className="act-btn act-delete" onClick={() => removeCountry(site.code)}>✕</button>
+      </td>
+    </tr>
+  )
+})
 
 // ── 페이지 상세 뷰 ────────────────────────────────────────────
 function PageDetail({ page, onBack, onUpdate }) {
@@ -181,13 +288,80 @@ function PageDetail({ page, onBack, onUpdate }) {
   const [search, setSearch] = useState('')
   const dropRef = useRef(null)
 
+  // ── 페이지 진입 시 DB에서 상태+파일 히스토리 로드 ──────────
   useEffect(() => {
-    const h = e => { if (dropRef.current && !dropRef.current.contains(e.target)) setShowAddCountry(false) }
-    document.addEventListener('mousedown', h)
-    return () => document.removeEventListener('mousedown', h)
-  }, [])
+    async function loadFromDB() {
+      try {
+        // 1. tracker_pages upsert (기존 localStorage 페이지도 DB에 등록 보장)
+        await api.createTrackerPage({ id: String(page.id), title: page.name })
 
-  const activeSiteCodes = page.countries.map(c => c.code)
+        // 2. 상태/메모 + 파일 히스토리 한번에 조회
+        const res = await api.getTrackerDetail(String(page.id))
+        if (!res.ok) return
+
+        // 3. DB 데이터 → countries 구조로 병합
+        const baseCountries = page.countries?.length
+          ? page.countries
+          : ALL_SITES
+              .filter(s => DEFAULT_COUNTRIES.includes(s.code))
+              .map(s => ({ code: s.code, status: '', note: '', file: null, fileHistory: [] }))
+
+        const statusMap = {}
+        for (const s of (res.statuses || [])) statusMap[s.site_code] = s
+
+        // 파일을 site_code별로 그룹핑
+        const fileMap = {}
+        for (const f of (res.files || [])) {
+          if (!fileMap[f.site_code]) fileMap[f.site_code] = []
+          fileMap[f.site_code].push({
+            dbId: f.id,
+            name: f.name,
+            size: f.size,
+            uploadedAt: f.uploaded_at,
+            statusAtUpload: f.status,
+            noteAtUpload: f.note_at_upload,
+            dataUrl: f.data_url,
+          })
+        }
+
+        // 기존 countries에 DB 값 덮어씌우기
+        const mergedCountries = baseCountries.map(c => {
+          const st = statusMap[c.code]
+          const history = fileMap[c.code] || []
+          return {
+            ...c,
+            status: st ? st.status : c.status,
+            note:   st ? st.note   : c.note,
+            fileHistory: history,
+            file: history.length ? history[history.length - 1] : c.file,
+          }
+        })
+
+        // DB에만 있는 국가 (나중에 추가된 국가) 도 병합
+        for (const code of Object.keys(statusMap)) {
+          if (!mergedCountries.find(c => c.code === code)) {
+            const st = statusMap[code]
+            const history = fileMap[code] || []
+            mergedCountries.push({
+              code,
+              status: st.status,
+              note: st.note,
+              fileHistory: history,
+              file: history.length ? history[history.length - 1] : null,
+            })
+          }
+        }
+
+        onUpdate({ ...page, countries: mergedCountries }, true) // true = DB에서 로드 완료, localStorage 저장 허용
+      } catch (e) {
+        console.error('[DB] 페이지 상세 로드 실패:', e?.message || e)
+      }
+    }
+    loadFromDB()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page.id])
+
+  const activeSiteCodes = (page.countries || []).map(c => c.code)
   const activeSites = ALL_SITES.filter(s => activeSiteCodes.includes(s.code))
   const filtered = activeSites.filter(s => regionFilter === 'ALL' || s.region === regionFilter)
 
@@ -196,36 +370,77 @@ function PageDetail({ page, onBack, onUpdate }) {
     .filter(s => !search || s.name.includes(search) || s.code.toLowerCase().includes(search.toLowerCase()))
     .filter(s => regionFilter === 'ALL' || s.region === regionFilter)
 
-  const handleStatusChange = useCallback((siteCode, newStatus, note) => {
+  const handleStatusChange = useCallback(async (siteCode, newStatus, note) => {
     const updated = { ...page }
     const existing = updated.countries.find(c => c.code === siteCode)
     if (existing) {
       if (newStatus !== undefined) existing.status = newStatus
       if (note !== undefined) existing.note = note
-    } else {
-      updated.countries = [...updated.countries, { code: siteCode, status: newStatus || '', note: note || '', file: null }]
     }
-    onUpdate(updated)
+    onUpdate(updated, true)
+    // DB 저장 (비동기, 실패해도 UI는 유지)
+    try {
+      await api.updateTrackerStatus({
+        pageId: page.id,
+        siteCode,
+        status: newStatus ?? existing?.status ?? '',
+        note: note ?? existing?.note ?? '',
+      })
+    } catch (e) { console.warn('status DB 저장 실패', e) }
   }, [page, onUpdate])
 
+  
+
   const handleFileUpload = useCallback(async (siteCode, fileInfo) => {
+    // DB에 파일 저장 후 insertId를 받아 fileHistory에 기록
+    let dbId = null
     try {
       const res = await api.saveFile({
-        pageId: String(page.id), siteCode,
-        name: fileInfo.name, size: fileInfo.size, type: fileInfo.type,
-        uploadedAt: fileInfo.uploadedAt, status: fileInfo.status, dataUrl: fileInfo.dataUrl,
+        pageId: page.id,
+        siteCode,
+        name: fileInfo.name,
+        size: fileInfo.size,
+        status: fileInfo.statusAtUpload || '',
+        noteAtUpload: fileInfo.noteAtUpload || '',
+        uploadedAt: fileInfo.uploadedAt,
+        dataUrl: fileInfo.dataUrl,
       })
-      if (!res.ok) { alert('파일 저장 실패: ' + res.message); return }
-    } catch (err) {
-      alert('파일 저장 중 오류: ' + err.message); return
+      if (res.ok) dbId = res.id
+    } catch (e) { console.warn('파일 DB 저장 실패', e) }
+
+    const fileInfoWithId = { ...fileInfo, dbId }
+    const updatedCountries = page.countries.map(c => {
+      if (c.code === siteCode) {
+        return {
+          ...c,
+          file: fileInfoWithId,
+          fileHistory: [...(c.fileHistory || []), fileInfoWithId],
+          note: '' // 업로드 완료 시 현재 메모 비우기
+        }
+      }
+      return c
+    })
+    onUpdate({ ...page, countries: updatedCountries }, true)
+  }, [page, onUpdate])
+  // [신규] 히스토리 메모 수정 핸들러
+  const handleHistoryNoteUpdate = useCallback(async (siteCode, historyIdx, newNote) => {
+    const updatedCountries = page.countries.map(c => {
+      if (c.code === siteCode) {
+        const newHistory = [...c.fileHistory];
+        newHistory[historyIdx] = { ...newHistory[historyIdx], noteAtUpload: newNote };
+        return { ...c, fileHistory: newHistory };
+      }
+      return c;
+    })
+    onUpdate({ ...page, countries: updatedCountries }, true)
+
+    // DB 메모 업데이트 (dbId가 있을 때만)
+    const targetFile = page.countries.find(c => c.code === siteCode)?.fileHistory?.[historyIdx]
+    if (targetFile?.dbId) {
+      try {
+        await api.updateHistoryNote(targetFile.dbId, { noteAtUpload: newNote })
+      } catch (e) { console.warn('히스토리 메모 DB 저장 실패', e) }
     }
-    const updated = { ...page }
-    const existing = updated.countries.find(c => c.code === siteCode)
-    if (existing) {
-      existing.file = fileInfo
-      existing.fileHistory = [...(existing.fileHistory || []), fileInfo]
-    }
-    onUpdate(updated)
   }, [page, onUpdate])
 
   const addCountry = (site) => {
@@ -239,15 +454,25 @@ function PageDetail({ page, onBack, onUpdate }) {
 
   const removeCountry = (code) => {
     if (!window.confirm(`${code} 국가를 이 페이지에서 제거하시겠습니까?`)) return
-    onUpdate({ ...page, countries: page.countries.filter(c => c.code !== code) })
+    onUpdate({ ...page, countries: page.countries.filter(c => c.code !== code) }, true)
   }
 
+  // ── 통계 계산 ──────────────────────────────────────────────
   const totalCountries = page.countries.length
-  const completedCountries = page.countries.filter(c => c.status === 'production').length
   const statusCounts = {}
   COPY_STATUSES.forEach(s => {
     if (s.value) statusCounts[s.value] = page.countries.filter(c => c.status === s.value).length
   })
+  // 진행도: 각 국가 step 합산 → (합계 / 전체국가 × TOTAL_STEPS) × 100
+  const totalStepSum = page.countries.reduce((sum, c) => {
+    return sum + (COPY_STATUSES.find(s => s.value === c.status)?.step || 0)
+  }, 0)
+  const progressPct = totalCountries > 0
+    ? Math.round((totalStepSum / (totalCountries * TOTAL_STEPS)) * 100)
+    : 0
+  const avgStep = totalCountries > 0 ? totalStepSum / totalCountries : 0
+  const avgStepRounded = Math.round(avgStep)
+  const avgStatus = COPY_STATUSES.find(s => s.step === avgStepRounded) || COPY_STATUSES[0]
 
   return (
     <div className="cst-page-detail">
@@ -259,27 +484,37 @@ function PageDetail({ page, onBack, onUpdate }) {
         </div>
 
         <div className="cst-status-summary">
-          {COPY_STATUSES.filter(s => s.value).map(s =>
-            statusCounts[s.value] > 0 ? (
-              <span key={s.value} className="cst-summary-badge"
-                style={{ background: s.bg, color: s.color, borderColor: s.color }}>
-                {s.label}: {statusCounts[s.value]}
-              </span>
-            ) : null
-          )}
-          <span className="cst-summary-badge" style={{ background: '#f3f4f6', color: '#6b7280' }}>
-            미설정: {page.countries.filter(c => !c.status).length}
-          </span>
+          {COPY_STATUSES.filter(s => s.value && statusCounts[s.value] > 0).map(s => (
+            <span key={s.value} className="cst-summary-badge"
+              style={{ background: s.bg, color: s.color, borderColor: s.color }}>
+              {s.label}: {statusCounts[s.value]}
+            </span>
+          ))}
         </div>
 
         <div className="cst-progress-wrap">
           <div className="cst-progress-label">
-            <span>Production 완료</span>
-            <span>{completedCountries} / {totalCountries} 국가</span>
+            <span>
+              전체 진행도
+              <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 6 }}>
+                ({avgStatus.label} 수준 · avg {avgStep.toFixed(1)} / {TOTAL_STEPS} 단계)
+              </span>
+            </span>
+            <span style={{ fontWeight: 700, color: avgStatus.color }}>{progressPct}%</span>
+          </div>
+          {/* 단계별 컬러 스트립 */}
+          <div style={{ display: 'flex', gap: 2, marginBottom: 4 }}>
+            {COPY_STATUSES.filter(s => s.value).map(s => (
+              <div key={s.value} title={s.label} style={{
+                flex: 1, height: 6, borderRadius: 3,
+                background: s.step <= avgStepRounded && avgStepRounded > 0 ? s.color : '#e5e7eb',
+                transition: 'background 0.3s',
+              }} />
+            ))}
           </div>
           <div className="cst-progress-bar">
             <div className="cst-progress-fill"
-              style={{ width: totalCountries > 0 ? `${(completedCountries / totalCountries) * 100}%` : '0%' }} />
+              style={{ width: `${progressPct}%`, background: avgStatus.color, transition: 'width 0.4s' }} />
           </div>
         </div>
       </div>
@@ -298,16 +533,12 @@ function PageDetail({ page, onBack, onUpdate }) {
           {showAddCountry && (
             <div className="cst-country-dropdown">
               <input autoFocus className="form-input" style={{ width: '100%', fontSize: 12, marginBottom: 6 }}
-                placeholder="국가명 또는 코드 검색" value={search}
-                onChange={e => setSearch(e.target.value)} />
+                placeholder="국가 검색" value={search} onChange={e => setSearch(e.target.value)} />
               <div className="cc-dropdown-list" style={{ maxHeight: 200, overflowY: 'auto' }}>
-                {available.length === 0 && <div className="cc-no-result">추가 가능한 국가 없음</div>}
                 {available.map(s => (
                   <div key={s.code} className="cc-dropdown-item" onClick={() => addCountry(s)}>
                     <span className="cc-flag">{s.flag}</span>
-                    <span className="cc-dropdown-name">{s.name}</span>
-                    <span className="cc-card-code"
-                      style={{ background: REGION_BG[s.region], color: REGION_COLORS[s.region] }}>{s.code}</span>
+                    <span>{s.name} ({s.code})</span>
                   </div>
                 ))}
               </div>
@@ -321,103 +552,145 @@ function PageDetail({ page, onBack, onUpdate }) {
           <thead>
             <tr>
               <th className="cst-th" style={{ width: 160 }}>국가</th>
-              <th className="cst-th" style={{ width: 180 }}>카피 작업 상태</th>
-              <th className="cst-th">첨부 파일</th>
-              <th className="cst-th" style={{ width: 200 }}>메모</th>
-              <th className="cst-th" style={{ width: 50 }}></th>
+              <th className="cst-th" style={{ width: 220 }}>카피 작업 상태</th>
+              <th className="cst-th">첨부 파일 (업로드 당시 상태 기록)</th>
+              <th className="cst-th" style={{ width: 180 }}>메모</th>
+              <th className="cst-th" style={{ width: 40 }}></th>
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 && (
-              <tr><td colSpan={5} style={{ textAlign: 'center', padding: 24, color: '#9ca3af' }}>해당 지역에 국가가 없습니다.</td></tr>
-            )}
-            {filtered.map(site => {
-              const entry = page.countries.find(c => c.code === site.code)
-              return (
-                <tr key={site.code} className="cst-row">
-                  <td className="cst-td">
-                    <div className="cst-country-cell">
-                      <span className="cst-flag">{site.flag}</span>
-                      <div className="cst-country-info">
-                        <span className="cst-country-name">{site.name}</span>
-                        <span className="cst-country-code"
-                          style={{ background: REGION_BG[site.region], color: REGION_COLORS[site.region] }}>
-                          {site.code}
-                        </span>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="cst-td">
-                    <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChange} />
-                  </td>
-                  <td className="cst-td">
-                    <FileCell siteCode={site.code} entry={entry} onFileUpload={handleFileUpload} />
-                  </td>
-                  <td className="cst-td">
-                    <input className="cst-note-input" placeholder="메모"
-                      value={entry?.note || ''}
-                      onChange={e => handleStatusChange(site.code, entry?.status, e.target.value)} />
-                  </td>
-                  <td className="cst-td" style={{ textAlign: 'center' }}>
-                    <button className="act-btn act-delete" style={{ padding: '2px 6px', fontSize: 12 }}
-                      onClick={() => removeCountry(site.code)} title="국가 제거">✕</button>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
+          {filtered.map(site => {
+            const entry = page.countries.find(c => c.code === site.code)
+            return (
+              <StatusRow
+                key={site.code}
+                site={site}
+                entry={entry}
+                handleStatusChange={handleStatusChange}
+                handleFileUpload={handleFileUpload}
+                handleHistoryNoteUpdate={handleHistoryNoteUpdate}
+                removeCountry={removeCountry}
+              />
+            )
+          })}
+        </tbody>
         </table>
       </div>
     </div>
   )
 }
 
-// ════════════════════════════════════════════════════════════════
-// ── StatusTab (메인 export) ───────────────────────────────────
-// ════════════════════════════════════════════════════════════════
 export default function StatusTab() {
-  const [data, setData] = useState(() => loadFromStorage())
+  const [pages, setPages] = useState([])
+  const [loading, setLoading] = useState(true)
   const [selectedPageId, setSelectedPageId] = useState(null)
   const [showNewPage, setShowNewPage] = useState(false)
   const [newPageName, setNewPageName] = useState('')
   const [newPageMsg, setNewPageMsg] = useState('')
   const [searchPages, setSearchPages] = useState('')
 
-  useEffect(() => { saveToStorage(data) }, [data])
+  // ── 초기 로드: DB 우선, 실패 시 localStorage fallback ──────
+  // ── 초기 로드: 목록 화면에서도 전체 상태(Status)를 한 번에 파악 ──────
+  useEffect(() => {
+    async function loadPages() {
+      try {
+        const res = await api.getTrackerPages()
+        if (res.ok && res.data?.length) {
+          
+          // 1. DB에서 넘어온 전체 상태(statuses)를 페이지 ID별로 그룹핑
+          const statusByPage = {}
+          if (res.statuses) {
+            res.statuses.forEach(s => {
+              if (!statusByPage[s.page_id]) statusByPage[s.page_id] = {}
+              statusByPage[s.page_id][s.site_code] = s.status
+            })
+          }
 
-  const pages = data.pages || []
-  const selectedPage = pages.find(p => p.id === selectedPageId)
+          const dbPages = res.data.map(p => {
+            const pageId = String(p.id)
+            const pageStatuses = statusByPage[pageId] || {}
+            
+            // 2. 기본 국가 목록을 세팅하고, DB의 상태값을 꽂아 넣음
+            const baseCountries = ALL_SITES
+              .filter(s => DEFAULT_COUNTRIES.includes(s.code))
+              .map(s => ({ 
+                code: s.code, 
+                status: pageStatuses[s.code] || '', 
+                note: '', file: null, fileHistory: [] 
+              }))
+            
+            // 3. DB에만 존재하는 추가 국가(나중에 수동으로 추가한 국가)도 병합
+            for (const code of Object.keys(pageStatuses)) {
+              if (!baseCountries.find(c => c.code === code)) {
+                baseCountries.push({
+                  code,
+                  status: pageStatuses[code] || '',
+                  note: '', file: null, fileHistory: []
+                })
+              }
+            }
 
-  const createPage = () => {
-    if (!newPageName.trim()) { setNewPageMsg('❌ 페이지 이름을 입력해주세요.'); return }
-    if (pages.find(p => p.name === newPageName.trim())) { setNewPageMsg('❌ 같은 이름의 페이지가 이미 있습니다.'); return }
+            return {
+              id: pageId,
+              name: p.title,
+              createdAt: p.created_at,
+              countries: baseCountries,
+              _loadedFromDB: true,
+            }
+          })
+          
+          setPages(dbPages)
+          saveToStorage({ pages: dbPages }) // DB 데이터를 로컬스토리지에 동기화
+        } else {
+          // DB 연결 실패 또는 데이터가 없을 시 localStorage fallback
+          const local = loadFromStorage()
+          setPages(local.pages || [])
+        }
+      } catch {
+        const local = loadFromStorage()
+        setPages(local.pages || [])
+      } finally {
+        setLoading(false)
+      }
+    }
+    loadPages()
+  }, [])
 
+  const selectedPage = pages.find(p => p.id == selectedPageId)
+
+  const createPage = async () => {
+    if (!newPageName.trim()) { setNewPageMsg('❌ 이름을 입력하세요.'); return }
     const newPage = {
-      id: Date.now(),
+      id: String(Date.now()),
       name: newPageName.trim(),
       createdAt: new Date().toISOString(),
       countries: ALL_SITES
         .filter(s => DEFAULT_COUNTRIES.includes(s.code))
         .map(s => ({ code: s.code, status: '', note: '', file: null, fileHistory: [] })),
     }
-    setData(prev => ({ ...prev, pages: [...prev.pages, newPage] }))
-    setNewPageName(''); setNewPageMsg(''); setShowNewPage(false)
-    setSelectedPageId(newPage.id)
+    try {
+      await api.createTrackerPage({ id: newPage.id, title: newPage.name })
+    } catch (e) { console.error('[DB] 페이지 생성 실패:', e?.message || e) }
+
+    setPages(prev => [...prev, newPage])
+    saveToStorage({ pages: [...pages, newPage] })
+    setNewPageName(''); setShowNewPage(false); setSelectedPageId(newPage.id)
   }
 
-  const updatePage = useCallback((updated) => {
-    setData(prev => ({ ...prev, pages: prev.pages.map(p => p.id === updated.id ? updated : p) }))
+  const updatePage = useCallback((updated, persistToStorage = false) => {
+    setPages(prev => {
+      const next = prev.map(p => p.id == updated.id ? updated : p)
+      if (persistToStorage) {
+        // DB에서 countries가 채워진 뒤에만 localStorage 업데이트
+        saveToStorage({ pages: next })
+      }
+      return next
+    })
   }, [])
 
-  const deletePage = (id, name) => {
-    if (!window.confirm(`"${name}" 페이지를 삭제하시겠습니까?\n모든 국가별 상태 데이터가 삭제됩니다.`)) return
-    setData(prev => ({ ...prev, pages: prev.pages.filter(p => p.id !== id) }))
-    if (selectedPageId === id) setSelectedPageId(null)
+  if (loading) {
+    return <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>불러오는 중...</div>
   }
-
-  const filteredPages = pages.filter(p =>
-    !searchPages || p.name.toLowerCase().includes(searchPages.toLowerCase())
-  )
 
   if (selectedPage) {
     return <PageDetail page={selectedPage} onBack={() => setSelectedPageId(null)} onUpdate={updatePage} />
@@ -426,81 +699,76 @@ export default function StatusTab() {
   return (
     <div className="cst-container">
       <div className="cst-list-header">
-        <div>
-          <h2 className="cst-list-title">페이지별 국가 카피 작업 현황</h2>
-          <p className="cst-list-subtitle">
-            페이지마다 국가별 카피 작업 상태(TP 번역 / Local Confirmed / Deck Merge / Production)와
-            파일 업로드 이력을 관리합니다.
-          </p>
-        </div>
-        <button className="btn-primary" onClick={() => { setShowNewPage(true); setNewPageMsg('') }}>
-          + 새 페이지 추가
-        </button>
+        <h2 className="cst-list-title">페이지별 국가 카피 작업 현황</h2>
+        <button className="btn-primary" onClick={() => setShowNewPage(true)}>+ 새 페이지 추가</button>
       </div>
 
       {showNewPage && (
-        <div className="cst-new-page-form">
-          <div className="form-row" style={{ gridTemplateColumns: '1fr auto auto' }}>
-            <input className="form-input" placeholder="페이지 이름 (예: Home, PDP, Promo Landing)"
-              value={newPageName}
-              onChange={e => setNewPageName(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && createPage()} />
-            <button className="btn-primary" onClick={createPage}>추가</button>
-            <button className="btn-ghost" onClick={() => { setShowNewPage(false); setNewPageName(''); setNewPageMsg('') }}>취소</button>
-          </div>
-          {newPageMsg && <div className="error-banner" style={{ marginTop: 8 }}>{newPageMsg}</div>}
-          <div style={{ marginTop: 6, fontSize: 12, color: '#6b7280' }}>
-            💡 기본으로 자주 쓰는 국가({DEFAULT_COUNTRIES.join(', ')})가 추가됩니다. 이후 국가 추가/제거 가능.
-          </div>
-        </div>
-      )}
-
-      {pages.length > 5 && (
-        <div style={{ marginBottom: 12 }}>
-          <input className="form-input" style={{ maxWidth: 300 }}
-            placeholder="페이지 검색..."
-            value={searchPages} onChange={e => setSearchPages(e.target.value)} />
-        </div>
-      )}
-
-      {filteredPages.length === 0 && (
-        <div className="empty-state">
-          <div className="empty-icon">📄</div>
-          <p>{pages.length === 0 ? '아직 추가된 페이지가 없습니다.' : '검색 결과가 없습니다.'}</p>
-          {pages.length === 0 && <small>"+ 새 페이지 추가" 버튼으로 첫 번째 페이지를 만들어보세요.</small>}
+        <div className="cst-new-page-form" style={{ marginBottom: 20 }}>
+          <input className="form-input" placeholder="페이지 이름" value={newPageName} onChange={e => setNewPageName(e.target.value)} />
+          <button className="btn-primary" onClick={createPage}>추가</button>
+          <button className="btn-ghost" onClick={() => setShowNewPage(false)}>취소</button>
         </div>
       )}
 
       <div className="cst-page-grid">
-        {filteredPages.map(page => {
+        {pages.map(page => {
           const total = page.countries.length
-          const byStatus = {}
+          const stepSum = page.countries.reduce((sum, c) => {
+            return sum + (COPY_STATUSES.find(s => s.value === c.status)?.step || 0)
+          }, 0)
+          const pct = total > 0 ? Math.round((stepSum / (total * TOTAL_STEPS)) * 100) : 0
+          const avgS = total > 0 ? stepSum / total : 0
+          const cardStatus = COPY_STATUSES.find(s => s.step === Math.round(avgS)) || COPY_STATUSES[0]
+          // 상태별 국가 수
+          const statusCounts = {}
           COPY_STATUSES.forEach(s => {
-            if (s.value) byStatus[s.value] = page.countries.filter(c => c.status === s.value).length
+            if (s.value) statusCounts[s.value] = page.countries.filter(c => c.status === s.value).length
           })
-          const production = byStatus['production'] || 0
-          const pct = total > 0 ? Math.round((production / total) * 100) : 0
+          const unset = page.countries.filter(c => !c.status).length
 
           return (
             <div key={page.id} className="cst-page-card" onClick={() => setSelectedPageId(page.id)}>
               <div className="cst-page-card-header">
                 <h3 className="cst-page-card-name">{page.name}</h3>
-                <button className="act-btn act-delete" style={{ padding: '2px 6px' }}
-                  onClick={e => { e.stopPropagation(); deletePage(page.id, page.name) }}>🗑</button>
+                <span className="cst-page-card-total">{total}개국</span>
               </div>
-              <div className="cst-page-card-meta">{page.createdAt?.slice(0, 10)} · {total}개국</div>
-              <div className="cst-page-card-badges">
-                {COPY_STATUSES.filter(s => s.value && byStatus[s.value] > 0).map(s => (
-                  <span key={s.value} className="cst-mini-badge" style={{ background: s.bg, color: s.color }}>
-                    {s.label} {byStatus[s.value]}
-                  </span>
+
+              {/* 단계별 컬러 스트립 */}
+              <div style={{ display: 'flex', gap: 2, margin: '8px 0 4px' }}>
+                {COPY_STATUSES.filter(s => s.value).map(s => (
+                  <div key={s.value} title={`${s.label}: ${statusCounts[s.value] || 0}개국`} style={{
+                    flex: 1, height: 6, borderRadius: 3,
+                    background: s.step <= Math.round(avgS) && Math.round(avgS) > 0 ? s.color : '#e5e7eb',
+                    transition: 'background 0.3s',
+                  }} />
                 ))}
               </div>
+
+              {/* 프로그레스 바 */}
               <div className="cst-mini-progress">
                 <div className="cst-mini-progress-bar">
-                  <div className="cst-progress-fill" style={{ width: `${pct}%` }} />
+                  <div className="cst-progress-fill" style={{ width: `${pct}%`, background: cardStatus.color }} />
                 </div>
-                <span className="cst-mini-pct">{pct}%</span>
+                <span className="cst-mini-pct" style={{ color: cardStatus.color }}>
+                  {pct}% · {cardStatus.label}
+                </span>
+              </div>
+
+              {/* 상태별 뱃지 목록 */}
+              <div className="cst-page-card-badges">
+                {COPY_STATUSES.filter(s => s.value && statusCounts[s.value] > 0).map(s => (
+                  <span key={s.value} className="cst-mini-badge"
+                    style={{ background: s.bg, color: s.color, border: `1px solid ${s.color}` }}>
+                    {s.label} <strong>{statusCounts[s.value]}</strong>
+                  </span>
+                ))}
+                {unset > 0 && (
+                  <span className="cst-mini-badge"
+                    style={{ background: '#f3f4f6', color: '#6b7280', border: '1px solid #d1d5db' }}>
+                    미설정 <strong>{unset}</strong>
+                  </span>
+                )}
               </div>
             </div>
           )
