@@ -77,6 +77,24 @@ app.post('/api/init', async (req, res) => {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)`)
 
+    // 1. 트래커 프로젝트 (페이지) 테이블
+    await pool.execute(`CREATE TABLE IF NOT EXISTS tracker_pages (
+      id VARCHAR(100) PRIMARY KEY,
+      title VARCHAR(255) NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    // 2. 국가별 현재 상태 및 메모 저장 테이블
+    await pool.execute(`CREATE TABLE IF NOT EXISTS tracker_site_status (
+      page_id VARCHAR(100) NOT NULL,
+      site_code VARCHAR(50) NOT NULL,
+      status VARCHAR(100),
+      note TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (page_id, site_code),
+      FOREIGN KEY (page_id) REFERENCES tracker_pages(id) ON DELETE CASCADE
+    )`);
+
     // 최초 1회 시드 데이터 삽입
     const [[{ cnt }]] = await pool.execute(`SELECT COUNT(*) AS cnt FROM samsung_products`)
     if (cnt === 0) {
@@ -117,11 +135,17 @@ app.post('/api/init', async (req, res) => {
       size        INT,
       type        VARCHAR(100),
       status      VARCHAR(100) COMMENT '업로드 당시 카피 작업 상태',
+      note_at_upload TEXT     COMMENT '업로드 당시 메모',
       uploaded_at DATETIME     NOT NULL,
       data_url    LONGTEXT     NOT NULL COMMENT 'base64 인코딩된 파일 데이터',
       created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_page_site (page_id, site_code)
     ) COMMENT='CopyStatusTracker 국가별 첨부파일'`)
+
+    // 기존 DB에 note_at_upload 컬럼이 없을 경우 추가
+    try {
+      await pool.execute(`ALTER TABLE page_files ADD COLUMN note_at_upload TEXT COMMENT '업로드 당시 메모' AFTER status`)
+    } catch (_) { /* 이미 존재하면 무시 */ }
 
     res.json({ ok:true })
   } catch (err) { res.json({ ok:false, message:err.message }) }
@@ -360,24 +384,50 @@ app.put('/api/cc/copies/cell', async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 
 // POST /api/files  — 파일 저장 (base64 dataUrl 포함)
+// 파일 저장 (업로드 시점의 메모와 상태를 함께 저장)
 app.post('/api/files', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+  if (!pool) return res.json({ ok: false });
   try {
-    const { pageId, siteCode, name, size, type, status, uploadedAt, dataUrl } = req.body
-    if (!pageId || !siteCode || !name || !dataUrl)
-      return res.json({ ok:false, message:'필수 필드 누락 (pageId, siteCode, name, dataUrl)' })
-    // ISO 8601 → MySQL DATETIME 형식 변환 ('2026-04-30T09:56:00.934Z' → '2026-04-30 09:56:00')
-    const mysqlDatetime = uploadedAt
-      ? new Date(uploadedAt).toISOString().slice(0, 19).replace('T', ' ')
-      : new Date().toISOString().slice(0, 19).replace('T', ' ')
+    const { pageId, siteCode, name, size, status, noteAtUpload, uploadedAt, dataUrl } = req.body;
+    
+    const mysqlDatetime = new Date(uploadedAt).toISOString().slice(0, 19).replace('T', ' ');
+
+    const [result] = await pool.execute(
+      `INSERT INTO page_files (page_id, site_code, name, size, status, note_at_upload, uploaded_at, data_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [pageId, siteCode, name, size, status, noteAtUpload, mysqlDatetime, dataUrl]
+    );
+    res.json({ ok: true, id: result.insertId });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// 히스토리 메모만 개별 수정
+app.put('/api/files/:id/note', async (req, res) => {
+  if (!pool) return res.json({ ok: false });
+  try {
+    const { noteAtUpload } = req.body;
     await pool.execute(
-      `INSERT INTO page_files (page_id, site_code, name, size, type, status, uploaded_at, data_url)
-       VALUES (?,?,?,?,?,?,?,?)`,
-      [String(pageId), siteCode, name, size||null, type||null, status||null, mysqlDatetime, dataUrl]
-    )
-    res.json({ ok:true })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+      `UPDATE page_files SET note_at_upload = ? WHERE id = ?`,
+      [noteAtUpload, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+//상태 및 메모 실시간 저장 (Update)
+app.post('/api/tracker/status', async (req, res) => {
+  if (!pool) return res.json({ ok: false });
+  try {
+    const { pageId, siteCode, status, note } = req.body;
+    await pool.execute(
+      `INSERT INTO tracker_site_status (page_id, site_code, status, note)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE status = VALUES(status), note = VALUES(note)`,
+      [pageId, siteCode, status || '', note || '']
+    );
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
 // GET /api/files?pageId=xxx[&siteCode=yyy]  — 파일 목록 조회
 app.get('/api/files', async (req, res) => {
@@ -394,7 +444,47 @@ app.get('/api/files', async (req, res) => {
     res.json({ ok:true, data: rows })
   } catch (err) { res.json({ ok:false, message:err.message }) }
 })
+// 트래커 페이지 생성
+app.post(`/api/tracker/pages`, async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: `DB 연결이 없습니다.` });
+  try {
+    const { id, title } = req.body;
+    if (!id || !title) return res.json({ ok: false, message: `id와 title이 필요합니다.` });
+    await pool.execute(
+      `INSERT INTO tracker_pages (id, title) VALUES (?, ?) ON DUPLICATE KEY UPDATE title = VALUES(title)`,
+      [String(id), title]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
+// 트래커 페이지 목록 가져오기
+app.get('/api/tracker/pages', async (req, res) => {
+  if (!pool) return res.json({ ok: false });
+  try {
+    const [rows] = await pool.execute(`SELECT * FROM tracker_pages ORDER BY created_at DESC`);
+    res.json({ ok: true, data: rows });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// 특정 페이지의 모든 국가 상태 + 파일 히스토리 한 번에 가져오기
+app.get('/api/tracker/pages/:id', async (req, res) => {
+  if (!pool) return res.json({ ok: false });
+  try {
+    const pageId = req.params.id;
+    // 1. 현재 상태/메모 조회
+    const [statuses] = await pool.execute(
+      `SELECT site_code, status, note FROM tracker_site_status WHERE page_id = ?`, [pageId]
+    );
+    // 2. 파일 히스토리 조회
+    const [files] = await pool.execute(
+      `SELECT id, site_code, name, size, status, note_at_upload, uploaded_at, data_url 
+       FROM page_files WHERE page_id = ? ORDER BY uploaded_at ASC`, [pageId]
+    );
+
+    res.json({ ok: true, statuses, files });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 // DELETE /api/files/:id  — 파일 삭제
 app.delete('/api/files/:id', async (req, res) => {
   if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })

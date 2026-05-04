@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, memo } from 'react'
 import { api } from '../api.js'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
 
@@ -25,7 +25,98 @@ const COPY_STATUSES = [
 function getStatusStyle(value) {
   return COPY_STATUSES.find(s => s.value === value) || COPY_STATUSES[0]
 }
+// ── [최적화] 메인 메모 입력 컴포넌트 (반응성 향상) ────────────────
+const NoteInput = memo(({ initialNote, onSave }) => {
+  const [val, setVal] = useState(initialNote || '')
+  useEffect(() => { setVal(initialNote || '') }, [initialNote])
 
+  return (
+    <input 
+      className="cst-note-input" 
+      placeholder="메모 입력..."
+      value={val} 
+      onChange={e => setVal(e.target.value)}
+      onBlur={() => onSave(val)} // 포커스 나갈 때만 전체 상태 업데이트
+      onKeyDown={e => e.key === 'Enter' && onSave(val)}
+    />
+  )
+})
+const HistoryItem = ({ file, index, onUpdateNote, download }) => {
+  const [isEditing, setIsEditing] = useState(false)
+  const [tempNote, setTempNote] = useState(file.noteAtUpload || '')
+
+  const handleSave = () => {
+    onUpdateNote(index, tempNote)
+    setIsEditing(false)
+  }
+
+  const statusStyle = getStatusStyle(file.statusAtUpload || '')
+
+  return (
+    <div className="cst-file-history-item">
+      <div className="cst-history-left">
+        <div className="cst-file-meta-row" style={{ marginBottom: 4 }}>
+          <button className="cst-file-name-btn" style={{ fontSize: 11 }}
+            onClick={() => download(file)} disabled={!file.dataUrl}>
+            📎 {file.name}
+          </button>
+          <span className="cst-file-date">{formatDateTime(file.uploadedAt)}</span>
+        </div>
+
+        
+        
+        {/* 상태 + 메모 한 줄 */}
+        <div 
+          className="cst-history-note-row" 
+          style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+        >
+          {/* 상태 */}
+          <span style={{
+            display: 'inline-block',
+            fontSize: 10,
+            padding: '1px 6px',
+            borderRadius: 4,
+            border: `1px solid ${statusStyle.color}`,
+            color: statusStyle.color,
+            background: statusStyle.bg,
+            whiteSpace: 'nowrap'
+          }}>
+            {statusStyle.label}
+          </span>
+
+          {/* 메모 영역 */}
+          {isEditing ? (
+            <>
+              <input 
+                className="form-input" 
+                style={{ fontSize: 11, padding: '2px 5px', flex: 1 }}
+                value={tempNote}
+                onChange={e => setTempNote(e.target.value)}
+                autoFocus
+              />
+              <button className="btn-sm" onClick={handleSave} style={{ padding: '2px 5px' }}>저장</button>
+              <button className="btn-ghost" onClick={() => setIsEditing(false)} style={{ padding: '2px 5px' }}>취소</button>
+            </>
+          ) : (
+            <>
+              <span className="cst-file-note" style={{ fontSize: 11 }}>
+                📝 {file.noteAtUpload || '(메모 없음)'}
+              </span>
+              <button 
+                className="btn-icon-edit" 
+                onClick={() => setIsEditing(true)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12 }}
+                title="메모 수정"
+              >
+                ✏️
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 // ── 로컬스토리지 및 유틸 ──────────────────────────────────────
 const STORAGE_KEY = 'ae_copy_status_tracker_v1'
 
@@ -69,7 +160,7 @@ function CountryStatusCell({ siteCode, entry, onStatusChange }) {
 }
 
 // ── 파일 셀 (히스토리에 상태 기록 포함) ──────────────────────────
-function FileCell({ siteCode, entry, onFileUpload }) {
+function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
   const fileRef = useRef(null)
   const [showHistory, setShowHistory] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -86,14 +177,12 @@ function FileCell({ siteCode, entry, onFileUpload }) {
         reader.readAsDataURL(file)
       })
       
-      // 파일 업로드 시점의 '현재 국가 상태'를 함께 저장
       await onFileUpload(siteCode, {
         name: file.name,
         size: file.size,
-        type: file.type,
         uploadedAt: new Date().toISOString(),
         statusAtUpload: entry?.status || '',
-        noteAtUpload: entry?.note || '',   // ⭐ 추가
+        noteAtUpload: entry?.note || '', // 현재 메모 캡처
         dataUrl,
       })
     } finally {
@@ -109,94 +198,88 @@ function FileCell({ siteCode, entry, onFileUpload }) {
     document.body.appendChild(a); a.click(); document.body.removeChild(a)
   }
 
-  const formatBytes = (b) => {
-    if (!b) return ''
-    if (b < 1024) return b + 'B'
-    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + 'KB'
-    return (b / (1024 * 1024)).toFixed(1) + 'MB'
-  }
-
   return (
     <div className="cst-file-area">
       {entry?.file ? (
         <div className="cst-file-info">
           <div className="cst-file-main">
-            <button className="cst-file-name-btn"
-              title={entry.file.dataUrl ? `다운로드: ${entry.file.name}` : entry.file.name}
-              onClick={() => download(entry.file)} disabled={!entry.file.dataUrl}>
+            <button className="cst-file-name-btn" onClick={() => download(entry.file)}>
               📎 {entry.file.name}
             </button>
-            <div className="cst-file-meta-row">
-              {/* 업로드 당시의 상태 배지 표시 */}
-              {entry.file.statusAtUpload && (
-                <span className="cst-file-status-badge" style={{
-                  background: getStatusStyle(entry.file.statusAtUpload).bg,
-                  color: getStatusStyle(entry.file.statusAtUpload).color,
-                  borderColor: getStatusStyle(entry.file.statusAtUpload).color,
-                }}>
-                  {getStatusStyle(entry.file.statusAtUpload).label}
-                </span>
-              )}
-              <span className="cst-file-date">{formatDateTime(entry.file.uploadedAt)}</span>
-              {entry.file.size && <span className="cst-file-size">{formatBytes(entry.file.size)}</span>}
-            </div>
+            <span className="cst-file-date">{formatDateTime(entry.file.uploadedAt)}</span>
           </div>
           <div className="cst-file-actions">
             <button className="cst-file-replace" onClick={() => fileRef.current?.click()} disabled={uploading}>
               {uploading ? '⏳' : '↑ 교체'}
             </button>
-            {entry.fileHistory?.length > 1 && (
+            {entry.fileHistory?.length > 0 && (
               <button className="cst-file-history-btn" onClick={() => setShowHistory(v => !v)}>
                 히스토리 ({entry.fileHistory.length})
               </button>
             )}
           </div>
           
-          {showHistory && entry.fileHistory?.length > 0 && (
+          {showHistory && (
             <div className="cst-file-history">
-              {[...entry.fileHistory].reverse().map((f, i) => (
-                <div key={i} className="cst-file-history-item">
-                  <div className="cst-history-left">
-                    <button className="cst-file-name-btn" style={{ fontSize: 11 }}
-                      onClick={() => download(f)} disabled={!f.dataUrl}>
-                      📎 {f.name}
-                    </button>
-                    <div className="cst-file-meta-row">
-                      {f.statusAtUpload && (
-                        <span className="cst-file-status-badge"
-                          style={{
-                            background: getStatusStyle(f.statusAtUpload).bg,
-                            color: getStatusStyle(f.statusAtUpload).color,
-                            borderColor: getStatusStyle(f.statusAtUpload).color,
-                          }}>
-                          {getStatusStyle(f.statusAtUpload).label}
-                        </span>
-                      )}
-
-                      <span className="cst-file-date">{formatDateTime(f.uploadedAt)}</span>
-
-                      {f.noteAtUpload && (
-                        <span className="cst-file-note">
-                          📝 {f.noteAtUpload}
-                        </span>
-                      )}
-                      
-                    </div>
-                  </div>
-                </div>
-              ))}
+              {/* 히스토리는 역순으로 보여주되 인덱스 계산을 위해 원본 배열 활용 */}
+              {[...entry.fileHistory].reverse().map((f, revIdx) => {
+                const originalIdx = entry.fileHistory.length - 1 - revIdx;
+                return (
+                  <HistoryItem 
+                    key={originalIdx}
+                    file={f}
+                    index={originalIdx}
+                    download={download}
+                    onUpdateNote={(idx, newNote) => onUpdateHistoryNote(siteCode, idx, newNote)}
+                  />
+                )
+              })}
             </div>
           )}
         </div>
       ) : (
-        <button className="cst-upload-btn" onClick={() => fileRef.current?.click()} disabled={uploading}>
-          {uploading ? '⏳ 업로드 중...' : '+ 파일 첨부'}
-        </button>
+        <button className="cst-upload-btn" onClick={() => fileRef.current?.click()}>+ 파일 첨부</button>
       )}
       <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleChange} />
     </div>
   )
 }
+// ── [최적화] 테이블 행 (React.memo) ───────────────────────────
+const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, removeCountry }) => {
+  return (
+    <tr className="cst-row">
+      <td className="cst-td">
+        <div className="cst-country-cell">
+          <span className="cst-flag">{site.flag}</span>
+          <div className="cst-country-info">
+            <span className="cst-country-name">{site.name}</span>
+            <span className="cst-country-code" style={{ color: REGION_COLORS[site.region] }}>{site.code}</span>
+          </div>
+        </div>
+      </td>
+      <td className="cst-td">
+        <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChange} />
+      </td>
+      <td className="cst-td">
+        <FileCell 
+          siteCode={site.code} 
+          entry={entry} 
+          onFileUpload={handleFileUpload} 
+          onUpdateHistoryNote={handleHistoryNoteUpdate}
+        />
+      </td>
+      <td className="cst-td">
+        <NoteInput 
+          initialNote={entry?.note} 
+          onSave={(note) => handleStatusChange(site.code, entry?.status, note)} 
+        />
+      </td>
+      <td className="cst-td">
+        <button className="act-btn act-delete" onClick={() => removeCountry(site.code)}>✕</button>
+      </td>
+    </tr>
+  )
+})
 
 // ── 페이지 상세 뷰 ────────────────────────────────────────────
 function PageDetail({ page, onBack, onUpdate }) {
@@ -205,7 +288,80 @@ function PageDetail({ page, onBack, onUpdate }) {
   const [search, setSearch] = useState('')
   const dropRef = useRef(null)
 
-  const activeSiteCodes = page.countries.map(c => c.code)
+  // ── 페이지 진입 시 DB에서 상태+파일 히스토리 로드 ──────────
+  useEffect(() => {
+    async function loadFromDB() {
+      try {
+        // 1. tracker_pages upsert (기존 localStorage 페이지도 DB에 등록 보장)
+        await api.createTrackerPage({ id: String(page.id), title: page.name })
+
+        // 2. 상태/메모 + 파일 히스토리 한번에 조회
+        const res = await api.getTrackerDetail(String(page.id))
+        if (!res.ok) return
+
+        // 3. DB 데이터 → countries 구조로 병합
+        const baseCountries = page.countries?.length
+          ? page.countries
+          : ALL_SITES
+              .filter(s => DEFAULT_COUNTRIES.includes(s.code))
+              .map(s => ({ code: s.code, status: '', note: '', file: null, fileHistory: [] }))
+
+        const statusMap = {}
+        for (const s of (res.statuses || [])) statusMap[s.site_code] = s
+
+        // 파일을 site_code별로 그룹핑
+        const fileMap = {}
+        for (const f of (res.files || [])) {
+          if (!fileMap[f.site_code]) fileMap[f.site_code] = []
+          fileMap[f.site_code].push({
+            dbId: f.id,
+            name: f.name,
+            size: f.size,
+            uploadedAt: f.uploaded_at,
+            statusAtUpload: f.status,
+            noteAtUpload: f.note_at_upload,
+            dataUrl: f.data_url,
+          })
+        }
+
+        // 기존 countries에 DB 값 덮어씌우기
+        const mergedCountries = baseCountries.map(c => {
+          const st = statusMap[c.code]
+          const history = fileMap[c.code] || []
+          return {
+            ...c,
+            status: st ? st.status : c.status,
+            note:   st ? st.note   : c.note,
+            fileHistory: history,
+            file: history.length ? history[history.length - 1] : c.file,
+          }
+        })
+
+        // DB에만 있는 국가 (나중에 추가된 국가) 도 병합
+        for (const code of Object.keys(statusMap)) {
+          if (!mergedCountries.find(c => c.code === code)) {
+            const st = statusMap[code]
+            const history = fileMap[code] || []
+            mergedCountries.push({
+              code,
+              status: st.status,
+              note: st.note,
+              fileHistory: history,
+              file: history.length ? history[history.length - 1] : null,
+            })
+          }
+        }
+
+        onUpdate({ ...page, countries: mergedCountries }, true) // true = DB에서 로드 완료, localStorage 저장 허용
+      } catch (e) {
+        console.error('[DB] 페이지 상세 로드 실패:', e?.message || e)
+      }
+    }
+    loadFromDB()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page.id])
+
+  const activeSiteCodes = (page.countries || []).map(c => c.code)
   const activeSites = ALL_SITES.filter(s => activeSiteCodes.includes(s.code))
   const filtered = activeSites.filter(s => regionFilter === 'ALL' || s.region === regionFilter)
 
@@ -214,24 +370,77 @@ function PageDetail({ page, onBack, onUpdate }) {
     .filter(s => !search || s.name.includes(search) || s.code.toLowerCase().includes(search.toLowerCase()))
     .filter(s => regionFilter === 'ALL' || s.region === regionFilter)
 
-  const handleStatusChange = useCallback((siteCode, newStatus, note) => {
+  const handleStatusChange = useCallback(async (siteCode, newStatus, note) => {
     const updated = { ...page }
     const existing = updated.countries.find(c => c.code === siteCode)
     if (existing) {
       if (newStatus !== undefined) existing.status = newStatus
       if (note !== undefined) existing.note = note
     }
-    onUpdate(updated)
+    onUpdate(updated, true)
+    // DB 저장 (비동기, 실패해도 UI는 유지)
+    try {
+      await api.updateTrackerStatus({
+        pageId: page.id,
+        siteCode,
+        status: newStatus ?? existing?.status ?? '',
+        note: note ?? existing?.note ?? '',
+      })
+    } catch (e) { console.warn('status DB 저장 실패', e) }
   }, [page, onUpdate])
 
+  
+
   const handleFileUpload = useCallback(async (siteCode, fileInfo) => {
-    const updated = { ...page }
-    const existing = updated.countries.find(c => c.code === siteCode)
-    if (existing) {
-      existing.file = fileInfo
-      existing.fileHistory = [...(existing.fileHistory || []), fileInfo]
+    // DB에 파일 저장 후 insertId를 받아 fileHistory에 기록
+    let dbId = null
+    try {
+      const res = await api.saveFile({
+        pageId: page.id,
+        siteCode,
+        name: fileInfo.name,
+        size: fileInfo.size,
+        status: fileInfo.statusAtUpload || '',
+        noteAtUpload: fileInfo.noteAtUpload || '',
+        uploadedAt: fileInfo.uploadedAt,
+        dataUrl: fileInfo.dataUrl,
+      })
+      if (res.ok) dbId = res.id
+    } catch (e) { console.warn('파일 DB 저장 실패', e) }
+
+    const fileInfoWithId = { ...fileInfo, dbId }
+    const updatedCountries = page.countries.map(c => {
+      if (c.code === siteCode) {
+        return {
+          ...c,
+          file: fileInfoWithId,
+          fileHistory: [...(c.fileHistory || []), fileInfoWithId],
+          note: '' // 업로드 완료 시 현재 메모 비우기
+        }
+      }
+      return c
+    })
+    onUpdate({ ...page, countries: updatedCountries }, true)
+  }, [page, onUpdate])
+  // [신규] 히스토리 메모 수정 핸들러
+  const handleHistoryNoteUpdate = useCallback(async (siteCode, historyIdx, newNote) => {
+    const updatedCountries = page.countries.map(c => {
+      if (c.code === siteCode) {
+        const newHistory = [...c.fileHistory];
+        newHistory[historyIdx] = { ...newHistory[historyIdx], noteAtUpload: newNote };
+        return { ...c, fileHistory: newHistory };
+      }
+      return c;
+    })
+    onUpdate({ ...page, countries: updatedCountries }, true)
+
+    // DB 메모 업데이트 (dbId가 있을 때만)
+    const targetFile = page.countries.find(c => c.code === siteCode)?.fileHistory?.[historyIdx]
+    if (targetFile?.dbId) {
+      try {
+        await api.updateHistoryNote(targetFile.dbId, { noteAtUpload: newNote })
+      } catch (e) { console.warn('히스토리 메모 DB 저장 실패', e) }
     }
-    onUpdate(updated)
   }, [page, onUpdate])
 
   const addCountry = (site) => {
@@ -245,7 +454,7 @@ function PageDetail({ page, onBack, onUpdate }) {
 
   const removeCountry = (code) => {
     if (!window.confirm(`${code} 국가를 이 페이지에서 제거하시겠습니까?`)) return
-    onUpdate({ ...page, countries: page.countries.filter(c => c.code !== code) })
+    onUpdate({ ...page, countries: page.countries.filter(c => c.code !== code) }, true)
   }
 
   // 통계 계산 (확장된 상태 기준)
@@ -326,75 +535,110 @@ function PageDetail({ page, onBack, onUpdate }) {
             </tr>
           </thead>
           <tbody>
-            {filtered.map(site => {
-              const entry = page.countries.find(c => c.code === site.code)
-              return (
-                <tr key={site.code} className="cst-row">
-                  <td className="cst-td">
-                    <div className="cst-country-cell">
-                      <span className="cst-flag">{site.flag}</span>
-                      <div className="cst-country-info">
-                        <span className="cst-country-name">{site.name}</span>
-                        <span className="cst-country-code" style={{ color: REGION_COLORS[site.region] }}>{site.code}</span>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="cst-td">
-                    <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChange} />
-                  </td>
-                  <td className="cst-td">
-                    <FileCell siteCode={site.code} entry={entry} onFileUpload={handleFileUpload} />
-                  </td>
-                  <td className="cst-td">
-                    <input className="cst-note-input" placeholder="메모"
-                      value={entry?.note || ''}
-                      onChange={e => handleStatusChange(site.code, entry?.status, e.target.value)} />
-                  </td>
-                  <td className="cst-td">
-                    <button className="act-btn act-delete" onClick={() => removeCountry(site.code)}>✕</button>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
+          {filtered.map(site => {
+            const entry = page.countries.find(c => c.code === site.code)
+            return (
+              <StatusRow
+                key={site.code}
+                site={site}
+                entry={entry}
+                handleStatusChange={handleStatusChange}
+                handleFileUpload={handleFileUpload}
+                handleHistoryNoteUpdate={handleHistoryNoteUpdate}
+                removeCountry={removeCountry}
+              />
+            )
+          })}
+        </tbody>
         </table>
       </div>
     </div>
   )
 }
 
-// ... StatusTab 메인 함수는 기존과 동일하게 유지하되, 
-// createPage 시 초기 status를 빈 값으로 설정하는 부분 등을 확인하면 됩니다.
 export default function StatusTab() {
-  const [data, setData] = useState(() => loadFromStorage())
+  const [pages, setPages] = useState([])
+  const [loading, setLoading] = useState(true)
   const [selectedPageId, setSelectedPageId] = useState(null)
   const [showNewPage, setShowNewPage] = useState(false)
   const [newPageName, setNewPageName] = useState('')
   const [newPageMsg, setNewPageMsg] = useState('')
   const [searchPages, setSearchPages] = useState('')
 
-  useEffect(() => { saveToStorage(data) }, [data])
+  // ── 초기 로드: DB 우선, 실패 시 localStorage fallback ──────
+  useEffect(() => {
+    async function loadPages() {
+      try {
+        const res = await api.getTrackerPages()
+        if (res.ok && res.data?.length) {
+          // localStorage에 저장된 기존 데이터를 먼저 읽어서 countries 보존
+          const local = loadFromStorage()
+          const localMap = Object.fromEntries((local.pages || []).map(p => [String(p.id), p]))
 
-  const pages = data.pages || []
-  const selectedPage = pages.find(p => p.id === selectedPageId)
+          const dbPages = res.data.map(p => {
+            const localPage = localMap[String(p.id)]
+            return {
+              id: p.id,
+              name: p.title,
+              createdAt: p.created_at,
+              // 로컬에 저장된 countries가 있으면 유지, 없으면 빈 배열(PageDetail 진입 시 채워짐)
+              countries: localPage?.countries || [],
+              _loadedFromDB: true,
+            }
+          })
+          setPages(dbPages)
+          // countries가 있는 페이지만 localStorage에 반영 (빈 countries로 덮어쓰기 방지)
+          saveToStorage({ pages: dbPages })
+        } else {
+          // DB 연결 안됨 → localStorage fallback
+          const local = loadFromStorage()
+          setPages(local.pages || [])
+        }
+      } catch {
+        const local = loadFromStorage()
+        setPages(local.pages || [])
+      } finally {
+        setLoading(false)
+      }
+    }
+    loadPages()
+  }, [])
 
-  const createPage = () => {
+  const selectedPage = pages.find(p => p.id == selectedPageId)
+
+  const createPage = async () => {
     if (!newPageName.trim()) { setNewPageMsg('❌ 이름을 입력하세요.'); return }
     const newPage = {
-      id: Date.now(),
+      id: String(Date.now()),
       name: newPageName.trim(),
       createdAt: new Date().toISOString(),
       countries: ALL_SITES
         .filter(s => DEFAULT_COUNTRIES.includes(s.code))
         .map(s => ({ code: s.code, status: '', note: '', file: null, fileHistory: [] })),
     }
-    setData(prev => ({ ...prev, pages: [...prev.pages, newPage] }))
+    try {
+      await api.createTrackerPage({ id: newPage.id, title: newPage.name })
+    } catch (e) { console.error('[DB] 페이지 생성 실패:', e?.message || e) }
+
+    setPages(prev => [...prev, newPage])
+    saveToStorage({ pages: [...pages, newPage] })
     setNewPageName(''); setShowNewPage(false); setSelectedPageId(newPage.id)
   }
 
-  const updatePage = useCallback((updated) => {
-    setData(prev => ({ ...prev, pages: prev.pages.map(p => p.id === updated.id ? updated : p) }))
+  const updatePage = useCallback((updated, persistToStorage = false) => {
+    setPages(prev => {
+      const next = prev.map(p => p.id == updated.id ? updated : p)
+      if (persistToStorage) {
+        // DB에서 countries가 채워진 뒤에만 localStorage 업데이트
+        saveToStorage({ pages: next })
+      }
+      return next
+    })
   }, [])
+
+  if (loading) {
+    return <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>불러오는 중...</div>
+  }
 
   if (selectedPage) {
     return <PageDetail page={selectedPage} onBack={() => setSelectedPageId(null)} onUpdate={updatePage} />
