@@ -88,9 +88,12 @@ function FileCell({ siteCode, entry, onFileUpload }) {
       
       // 파일 업로드 시점의 '현재 국가 상태'를 함께 저장
       await onFileUpload(siteCode, {
-        name: file.name, size: file.size, type: file.type,
+        name: file.name,
+        size: file.size,
+        type: file.type,
         uploadedAt: new Date().toISOString(),
-        statusAtUpload: entry?.status || '', // 업로드 당시 상태 기록
+        statusAtUpload: entry?.status || '',
+        noteAtUpload: entry?.note || '',   // ⭐ 추가
         dataUrl,
       })
     } finally {
@@ -160,15 +163,24 @@ function FileCell({ siteCode, entry, onFileUpload }) {
                     </button>
                     <div className="cst-file-meta-row">
                       {f.statusAtUpload && (
-                        <span className="cst-file-status-badge" style={{
-                          background: getStatusStyle(f.statusAtUpload).bg,
-                          color: getStatusStyle(f.statusAtUpload).color,
-                          borderColor: getStatusStyle(f.statusAtUpload).color,
-                        }}>
+                        <span className="cst-file-status-badge"
+                          style={{
+                            background: getStatusStyle(f.statusAtUpload).bg,
+                            color: getStatusStyle(f.statusAtUpload).color,
+                            borderColor: getStatusStyle(f.statusAtUpload).color,
+                          }}>
                           {getStatusStyle(f.statusAtUpload).label}
                         </span>
                       )}
+
                       <span className="cst-file-date">{formatDateTime(f.uploadedAt)}</span>
+
+                      {f.noteAtUpload && (
+                        <span className="cst-file-note">
+                          📝 {f.noteAtUpload}
+                        </span>
+                      )}
+                      
                     </div>
                   </div>
                 </div>

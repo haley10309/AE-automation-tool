@@ -1942,3 +1942,13 @@ mark.diff-ins {
   flex: 1;
   min-width: 0;
 }
+
+.cst-file-note {
+  font-size: 11px;
+  color: #6b7280;
+  max-width: 200px;
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
