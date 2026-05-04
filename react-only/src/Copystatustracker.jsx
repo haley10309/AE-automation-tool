@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { api } from './api.js'
 
 // ── 상태 정의 ──────────────────────────────────────────────────
 const COPY_STATUSES = [
@@ -234,7 +235,28 @@ function PageDetail({ page, onBack, onUpdate }) {
     onUpdate(updated)
   }, [page, onUpdate])
 
-  const handleFileUpload = useCallback((siteCode, fileInfo) => {
+  const handleFileUpload = useCallback(async (siteCode, fileInfo) => {
+    // DB에 파일 저장 (Electron: electronAPI.saveFile / 웹: api.saveFile → /api/files)
+    try {
+      const res = await api.saveFile({
+        pageId: String(page.id),
+        siteCode,
+        name:       fileInfo.name,
+        size:       fileInfo.size,
+        type:       fileInfo.type,
+        uploadedAt: fileInfo.uploadedAt,
+        status:     fileInfo.status,
+        dataUrl:    fileInfo.dataUrl,
+      })
+      if (!res.ok) {
+        alert('파일 저장 실패: ' + res.message)
+        return
+      }
+    } catch (err) {
+      alert('파일 저장 중 오류: ' + err.message)
+      return
+    }
+    // localStorage + 상태 업데이트 (UI 즉시 반영)
     const updated = { ...page }
     const existing = updated.countries.find(c => c.code === siteCode)
     if (existing) {
@@ -424,16 +446,48 @@ function CountryStatusCell({ siteCode, entry, onStatusChange }) {
 function FileCell({ siteCode, entry, onFileUpload }) {
   const fileRef = useRef(null)
   const [showHistory, setShowHistory] = useState(false)
+  const [uploading, setUploading] = useState(false)
 
-  const handleChange = (e) => {
+  const handleChange = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
-    onFileUpload(siteCode, {
-      name: file.name,
-      size: file.size,
-      uploadedAt: new Date().toISOString(),
-    })
-    e.target.value = ''
+    setUploading(true)
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = ev => resolve(ev.target.result)
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+      })
+      await onFileUpload(siteCode, {
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        uploadedAt: new Date().toISOString(),
+        status: entry?.status || '',
+        dataUrl,
+      })
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
+  }
+
+  const download = (f) => {
+    if (!f.dataUrl) return
+    const a = document.createElement('a')
+    a.href = f.dataUrl
+    a.download = f.name
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  }
+
+  const formatBytes = (b) => {
+    if (!b) return ''
+    if (b < 1024) return b + 'B'
+    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + 'KB'
+    return (b / (1024 * 1024)).toFixed(1) + 'MB'
   }
 
   return (
@@ -441,13 +495,34 @@ function FileCell({ siteCode, entry, onFileUpload }) {
       {entry?.file ? (
         <div className="cst-file-info">
           <div className="cst-file-main">
-            <span className="cst-file-name" title={entry.file.name}>📎 {entry.file.name}</span>
-            <span className="cst-file-date">{formatDateTime(entry.file.uploadedAt)}</span>
+            <button
+              className="cst-file-name-btn"
+              title={entry.file.dataUrl ? `다운로드: ${entry.file.name}` : entry.file.name}
+              onClick={() => download(entry.file)}
+              disabled={!entry.file.dataUrl}
+            >
+              📎 {entry.file.name}
+            </button>
+            <div className="cst-file-meta-row">
+              {entry.file.status && (
+                <span className="cst-file-status-badge" style={{
+                  background: getStatusStyle(entry.file.status).bg,
+                  color: getStatusStyle(entry.file.status).color,
+                  borderColor: getStatusStyle(entry.file.status).color,
+                }}>
+                  {getStatusStyle(entry.file.status).label}
+                </span>
+              )}
+              <span className="cst-file-date">{formatDateTime(entry.file.uploadedAt)}</span>
+              {entry.file.size && <span className="cst-file-size">{formatBytes(entry.file.size)}</span>}
+            </div>
           </div>
           <div className="cst-file-actions">
-            <button className="cst-file-replace" onClick={() => fileRef.current?.click()} title="파일 교체">↑ 교체</button>
-            {(entry.fileHistory?.length > 1) && (
-              <button className="cst-file-history-btn" onClick={() => setShowHistory(v=>!v)}>
+            <button className="cst-file-replace" onClick={() => fileRef.current?.click()} disabled={uploading}>
+              {uploading ? '⏳' : '↑ 교체'}
+            </button>
+            {entry.fileHistory?.length > 1 && (
+              <button className="cst-file-history-btn" onClick={() => setShowHistory(v => !v)}>
                 히스토리 ({entry.fileHistory.length})
               </button>
             )}
@@ -456,19 +531,41 @@ function FileCell({ siteCode, entry, onFileUpload }) {
             <div className="cst-file-history">
               {[...entry.fileHistory].reverse().map((f, i) => (
                 <div key={i} className="cst-file-history-item">
-                  <span>📎 {f.name}</span>
-                  <span className="cst-file-date">{formatDateTime(f.uploadedAt)}</span>
+                  <div className="cst-history-left">
+                    <button
+                      className="cst-file-name-btn"
+                      style={{ fontSize: 11 }}
+                      onClick={() => download(f)}
+                      disabled={!f.dataUrl}
+                      title={f.dataUrl ? `다운로드: ${f.name}` : '파일 없음'}
+                    >
+                      📎 {f.name}
+                    </button>
+                    <div className="cst-file-meta-row">
+                      {f.status && (
+                        <span className="cst-file-status-badge" style={{
+                          background: getStatusStyle(f.status).bg,
+                          color: getStatusStyle(f.status).color,
+                          borderColor: getStatusStyle(f.status).color,
+                        }}>
+                          {getStatusStyle(f.status).label}
+                        </span>
+                      )}
+                      <span className="cst-file-date">{formatDateTime(f.uploadedAt)}</span>
+                      {f.size && <span className="cst-file-size">{formatBytes(f.size)}</span>}
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>
           )}
         </div>
       ) : (
-        <button className="cst-upload-btn" onClick={() => fileRef.current?.click()}>
-          + 파일 첨부
+        <button className="cst-upload-btn" onClick={() => fileRef.current?.click()} disabled={uploading}>
+          {uploading ? '⏳ 업로드 중...' : '+ 파일 첨부'}
         </button>
       )}
-      <input ref={fileRef} type="file" style={{display:'none'}} onChange={handleChange} />
+      <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleChange} />
     </div>
   )
 }
