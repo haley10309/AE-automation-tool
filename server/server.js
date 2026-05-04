@@ -1,15 +1,15 @@
-const express = require('express')
-const cors    = require('cors')
-const mysql   = require('mysql2/promise')
+const express = require('express');
+const cors = require('cors');
+const mysql = require('mysql2/promise');
 
-const app  = express()
-const PORT = 4000
-app.use(cors())
-app.use(express.json({ limit: '50mb' }))  // base64 파일 수신을 위해 limit 확장
+const app = express();
+const PORT = 4000;
+app.use(cors());
+app.use(express.json({ limit: '50mb' })); // base64 파일 수신을 위해 limit 확장
 
-let pool = null
+let pool = null;
 
-// ── 전체 Site Code 목록 (78개) ────────────────────────────────
+// ── 전역 설정 및 시드 데이터 ──────────────────────────────────────────
 const ALL_SITE_CODES = [
   'CA_FR','CA','MX','BR','LATIN','LATIN_EN','CO','AR','PY','UY','CL','PE',
   'SG','AU','NZ','ID','TH','VN','MY','PH','MM','JP',
@@ -20,9 +20,8 @@ const ALL_SITE_CODES = [
   'AE','AE_AR','IL','PS','SA','SA_EN','TR','IRAN',
   'LEVANT','LEVANT_AR','PK','EG','N_AFRICA',
   'AFRICA_EN','AFRICA_FR','AFRICA_PT','ZA','IQ_AR','IQ_KU','LB'
-]
+];
 
-// ── 초기 시드 데이터 ──────────────────────────────────────────
 const SEED_PRODUCTS = [
   { name:'Galaxy S26',       aliases:['Galaxy S26','S26'],                                         excluded:[] },
   { name:'Galaxy S26 Plus',  aliases:['Galaxy S26 Plus','Galaxy S26+','S26 Plus','S26+'],          excluded:[] },
@@ -39,417 +38,339 @@ const SEED_PRODUCTS = [
   { name:'Watch 8 Classic',  aliases:['Watch 8 Classic','Galaxy Watch 8 Classic'],                excluded:[] },
   { name:'Watch Ultra (2025)', aliases:['Watch Ultra','Galaxy Watch Ultra','Watch Ultra 2025'],
     excluded:['AR','PY','MM','BD','PS','LEVANT','LEVANT_AR','PK','EG','N_AFRICA','IQ_AR','IQ_KU','LB'] },
-]
+];
 
-// ── DB 연결 ───────────────────────────────────────────────────
-app.post('/api/connect', async (req, res) => {
+// ── 공통 미들웨어 ───────────────────────────────────────────────────────
+// DB 연결이 필요한 라우터에서 중복 확인을 제거하기 위한 미들웨어
+const checkDbConnection = (req, res, next) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결이 없습니다.' });
+  next();
+};
+
+// ═════════════════════════════════════════════════════════════════════
+// 1. DB 설정 및 초기화 관련 라우터
+// ═════════════════════════════════════════════════════════════════════
+const dbRouter = express.Router();
+
+dbRouter.post('/connect', async (req, res) => {
   try {
-    const { host, port, user, password, database } = req.body
-    pool = mysql.createPool({ host, port:Number(port), user, password, database, waitForConnections:true, connectionLimit:10 })
-    const conn = await pool.getConnection()
-    await conn.ping()
-    conn.release()
-    res.json({ ok:true })
-  } catch (err) { pool=null; res.json({ ok:false, message:err.message }) }
-})
+    const { host, port, user, password, database } = req.body;
+    pool = mysql.createPool({ host, port: Number(port), user, password, database, waitForConnections: true, connectionLimit: 10 });
+    const conn = await pool.getConnection();
+    await conn.ping();
+    conn.release();
+    res.json({ ok: true });
+  } catch (err) { 
+    pool = null; 
+    res.json({ ok: false, message: err.message }); 
+  }
+});
 
-// ── DB 초기화 (테이블 생성 + 제품 시드) ──────────────────────
-app.post('/api/init', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+dbRouter.post('/init', checkDbConnection, async (req, res) => {
   try {
     await pool.execute(`CREATE TABLE IF NOT EXISTS copy_requests (
       id INT AUTO_INCREMENT PRIMARY KEY, product_name VARCHAR(255) NOT NULL,
       requester VARCHAR(100), request_date DATE NOT NULL,
-      note TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`)
+      note TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
 
     await pool.execute(`CREATE TABLE IF NOT EXISTS copy_rows (
       id INT AUTO_INCREMENT PRIMARY KEY, request_id INT NOT NULL,
       row_index INT NOT NULL, as_was TEXT, to_be TEXT,
       status ENUM('변경','추가','삭제','동일') NOT NULL DEFAULT '동일',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (request_id) REFERENCES copy_requests(id) ON DELETE CASCADE)`)
+      FOREIGN KEY (request_id) REFERENCES copy_requests(id) ON DELETE CASCADE)`);
 
     await pool.execute(`CREATE TABLE IF NOT EXISTS samsung_products (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      name VARCHAR(255) NOT NULL,
-      aliases JSON NOT NULL DEFAULT ('[]'),
-      excluded_countries JSON NOT NULL DEFAULT ('[]'),
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)`)
+      id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL,
+      aliases JSON NOT NULL DEFAULT ('[]'), excluded_countries JSON NOT NULL DEFAULT ('[]'),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)`);
 
-    // 1. 트래커 프로젝트 (페이지) 테이블
     await pool.execute(`CREATE TABLE IF NOT EXISTS tracker_pages (
-      id VARCHAR(100) PRIMARY KEY,
-      title VARCHAR(255) NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
+      id VARCHAR(100) PRIMARY KEY, title VARCHAR(255) NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
 
-    // 2. 국가별 현재 상태 및 메모 저장 테이블
     await pool.execute(`CREATE TABLE IF NOT EXISTS tracker_site_status (
-      page_id VARCHAR(100) NOT NULL,
-      site_code VARCHAR(50) NOT NULL,
-      status VARCHAR(100),
-      note TEXT,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      PRIMARY KEY (page_id, site_code),
-      FOREIGN KEY (page_id) REFERENCES tracker_pages(id) ON DELETE CASCADE
-    )`);
+      page_id VARCHAR(100) NOT NULL, site_code VARCHAR(50) NOT NULL,
+      status VARCHAR(100), note TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (page_id, site_code), FOREIGN KEY (page_id) REFERENCES tracker_pages(id) ON DELETE CASCADE)`);
 
-    // 최초 1회 시드 데이터 삽입
-    const [[{ cnt }]] = await pool.execute(`SELECT COUNT(*) AS cnt FROM samsung_products`)
+    await pool.execute(`CREATE TABLE IF NOT EXISTS page_files (
+      id INT AUTO_INCREMENT PRIMARY KEY, page_id VARCHAR(100) NOT NULL,
+      site_code VARCHAR(50) NOT NULL, name VARCHAR(500) NOT NULL,
+      size INT, type VARCHAR(100), status VARCHAR(100) COMMENT '업로드 당시 상태',
+      note_at_upload TEXT COMMENT '업로드 당시 메모', uploaded_at DATETIME NOT NULL,
+      data_url LONGTEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_page_site (page_id, site_code))`);
+
+    const [[{ cnt }]] = await pool.execute(`SELECT COUNT(*) AS cnt FROM samsung_products`);
     if (cnt === 0) {
       for (const p of SEED_PRODUCTS) {
         await pool.execute(
           `INSERT INTO samsung_products (name, aliases, excluded_countries) VALUES (?,?,?)`,
           [p.name, JSON.stringify(p.aliases), JSON.stringify(p.excluded)]
-        )
+        );
       }
     }
 
     await pool.execute(`CREATE TABLE IF NOT EXISTS cc_projects (
-      id         INT AUTO_INCREMENT PRIMARY KEY,
-      name       VARCHAR(255) NOT NULL COMMENT '페이지/프로젝트명',
-      note       TEXT                  COMMENT '메모',
-      site_codes TEXT                  COMMENT '사용 국가 코드 JSON 배열',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) COMMENT='국가별 카피 프로젝트'`)
+      id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL COMMENT '페이지/프로젝트명',
+      note TEXT COMMENT '메모', site_codes TEXT COMMENT '사용 국가 코드 JSON 배열',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) COMMENT='국가별 카피 프로젝트'`);
 
     await pool.execute(`CREATE TABLE IF NOT EXISTS cc_project_copies (
-      id         INT AUTO_INCREMENT PRIMARY KEY,
-      project_id INT NOT NULL,
-      site_code  VARCHAR(50) NOT NULL,
-      row_index  INT NOT NULL,
-      copy_text  TEXT,
+      id INT AUTO_INCREMENT PRIMARY KEY, project_id INT NOT NULL,
+      site_code VARCHAR(50) NOT NULL, row_index INT NOT NULL, copy_text TEXT,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       UNIQUE KEY uq_cell (project_id, site_code, row_index),
       FOREIGN KEY (project_id) REFERENCES cc_projects(id) ON DELETE CASCADE
-    ) COMMENT='국가별 카피 셀 데이터'`)
+    ) COMMENT='국가별 카피 셀 데이터'`);
 
-    // ── CopyStatusTracker 첨부파일 테이블 ──────────────────────
-    await pool.execute(`CREATE TABLE IF NOT EXISTS page_files (
-      id          INT AUTO_INCREMENT PRIMARY KEY,
-      page_id     VARCHAR(100) NOT NULL COMMENT 'CopyStatusTracker 페이지 ID (timestamp 기반)',
-      site_code   VARCHAR(50)  NOT NULL,
-      name        VARCHAR(500) NOT NULL,
-      size        INT,
-      type        VARCHAR(100),
-      status      VARCHAR(100) COMMENT '업로드 당시 카피 작업 상태',
-      note_at_upload TEXT     COMMENT '업로드 당시 메모',
-      uploaded_at DATETIME     NOT NULL,
-      data_url    LONGTEXT     NOT NULL COMMENT 'base64 인코딩된 파일 데이터',
-      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_page_site (page_id, site_code)
-    ) COMMENT='CopyStatusTracker 국가별 첨부파일'`)
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-    // 기존 DB에 note_at_upload 컬럼이 없을 경우 추가
-    try {
-      await pool.execute(`ALTER TABLE page_files ADD COLUMN note_at_upload TEXT COMMENT '업로드 당시 메모' AFTER status`)
-    } catch (_) { /* 이미 존재하면 무시 */ }
+app.use('/api', dbRouter);
 
-    res.json({ ok:true })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+// ═════════════════════════════════════════════════════════════════════
+// 2. 공통 도메인: 제품(Products) 관련 라우터
+// ═════════════════════════════════════════════════════════════════════
+const productRouter = express.Router();
 
-// ── 제품 CRUD ─────────────────────────────────────────────────
-
-app.get('/api/products', async (req, res) => {
+productRouter.get('/', async (req, res) => {
   if (!pool) {
     const data = SEED_PRODUCTS.map((p, i) => ({
-      id: i+1, name: p.name, aliases: p.aliases,
+      id: i + 1, name: p.name, aliases: p.aliases,
       excluded_countries: p.excluded,
       countries: ALL_SITE_CODES.filter(c => !p.excluded.includes(c))
-    }))
-    return res.json({ ok:true, data })
+    }));
+    return res.json({ ok: true, data });
   }
   try {
-    const [rows] = await pool.execute(`SELECT * FROM samsung_products ORDER BY id`)
+    const [rows] = await pool.execute(`SELECT * FROM samsung_products ORDER BY id`);
     const data = rows.map(r => ({
       ...r,
       aliases: typeof r.aliases === 'string' ? JSON.parse(r.aliases) : r.aliases,
       excluded_countries: typeof r.excluded_countries === 'string' ? JSON.parse(r.excluded_countries) : r.excluded_countries,
-    }))
-    data.forEach(p => { p.countries = ALL_SITE_CODES.filter(c => !p.excluded_countries.includes(c)) })
-    res.json({ ok:true, data })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+    }));
+    data.forEach(p => { p.countries = ALL_SITE_CODES.filter(c => !p.excluded_countries.includes(c)); });
+    res.json({ ok: true, data });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-app.post('/api/products', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 필요합니다.' })
+productRouter.post('/', checkDbConnection, async (req, res) => {
   try {
-    const { name, aliases, excluded_countries } = req.body
-    if (!name?.trim()) return res.json({ ok:false, message:'제품명을 입력해주세요.' })
+    const { name, aliases, excluded_countries } = req.body;
+    if (!name?.trim()) return res.json({ ok: false, message: '제품명을 입력해주세요.' });
     const [r] = await pool.execute(
       `INSERT INTO samsung_products (name, aliases, excluded_countries) VALUES (?,?,?)`,
-      [name.trim(), JSON.stringify(aliases||[]), JSON.stringify(excluded_countries||[])]
-    )
-    res.json({ ok:true, id:r.insertId })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+      [name.trim(), JSON.stringify(aliases || []), JSON.stringify(excluded_countries || [])]
+    );
+    res.json({ ok: true, id: r.insertId });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-app.put('/api/products/:id', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 필요합니다.' })
+productRouter.put('/:id', checkDbConnection, async (req, res) => {
   try {
-    const { name, aliases, excluded_countries } = req.body
+    const { name, aliases, excluded_countries } = req.body;
     await pool.execute(
       `UPDATE samsung_products SET name=?, aliases=?, excluded_countries=? WHERE id=?`,
-      [name.trim(), JSON.stringify(aliases||[]), JSON.stringify(excluded_countries||[]), req.params.id]
-    )
-    res.json({ ok:true })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+      [name.trim(), JSON.stringify(aliases || []), JSON.stringify(excluded_countries || []), req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-app.delete('/api/products/:id', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 필요합니다.' })
+productRouter.delete('/:id', checkDbConnection, async (req, res) => {
   try {
-    await pool.execute(`DELETE FROM samsung_products WHERE id=?`, [req.params.id])
-    res.json({ ok:true })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+    await pool.execute(`DELETE FROM samsung_products WHERE id=?`, [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-// ── 카피 요청 CRUD ────────────────────────────────────────────
-app.post('/api/save', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
-  const conn = await pool.getConnection()
+app.use('/api/products', productRouter);
+
+// ═════════════════════════════════════════════════════════════════════
+// 3. ExtractTab 도메인: 카피 요청/추출 영역 (이전 카피와 앞으로의 카피 업데이트)
+// ═════════════════════════════════════════════════════════════════════
+const extractRouter = express.Router();
+extractRouter.use(checkDbConnection);
+
+extractRouter.post('/save', async (req, res) => {
+  const conn = await pool.getConnection();
   try {
-    await conn.beginTransaction()
-    const { meta, allRows } = req.body
+    await conn.beginTransaction();
+    const { meta, allRows } = req.body;
     const [r] = await conn.execute(
       `INSERT INTO copy_requests (product_name, requester, request_date, note) VALUES (?,?,?,?)`,
-      [meta.product_name, meta.requester||null, meta.request_date, meta.note||null]
-    )
-    const requestId = r.insertId
+      [meta.product_name, meta.requester || null, meta.request_date, meta.note || null]
+    );
+    const requestId = r.insertId;
     if (allRows?.length) {
-      const values = allRows.map(row => [requestId, row.row, row.asWas, row.toBe, row.status])
-      await conn.query(`INSERT INTO copy_rows (request_id, row_index, as_was, to_be, status) VALUES ?`, [values])
+      const values = allRows.map(row => [requestId, row.row, row.asWas, row.toBe, row.status]);
+      await conn.query(`INSERT INTO copy_rows (request_id, row_index, as_was, to_be, status) VALUES ?`, [values]);
     }
-    await conn.commit()
-    res.json({ ok:true, requestId })
-  } catch (err) { await conn.rollback(); res.json({ ok:false, message:err.message }) }
-  finally { conn.release() }
-})
+    await conn.commit();
+    res.json({ ok: true, requestId });
+  } catch (err) { 
+    await conn.rollback(); 
+    res.json({ ok: false, message: err.message }); 
+  } finally { conn.release(); }
+});
 
-app.get('/api/requests', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+extractRouter.get('/requests', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT r.id, r.product_name, r.requester, r.request_date, r.note, r.created_at,
              COUNT(c.id) AS total_rows, SUM(c.status != '동일') AS diff_rows
       FROM copy_requests r LEFT JOIN copy_rows c ON c.request_id = r.id
-      GROUP BY r.id ORDER BY r.created_at DESC`)
-    res.json({ ok:true, data:rows })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+      GROUP BY r.id ORDER BY r.created_at DESC`);
+    res.json({ ok: true, data: rows });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-app.get('/api/rows', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+extractRouter.get('/rows', async (req, res) => {
   try {
-    const { requestId, diffOnly } = req.query
-    let sql = `SELECT * FROM copy_rows WHERE request_id = ?`
-    if (diffOnly === 'true') sql += ` AND status != '동일'`
-    sql += ` ORDER BY row_index`
-    const [rows] = await pool.execute(sql, [requestId])
-    res.json({ ok:true, data:rows })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+    const { requestId, diffOnly } = req.query;
+    let sql = `SELECT * FROM copy_rows WHERE request_id = ?`;
+    if (diffOnly === 'true') sql += ` AND status != '동일'`;
+    sql += ` ORDER BY row_index`;
+    const [rows] = await pool.execute(sql, [requestId]);
+    res.json({ ok: true, data: rows });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-app.put('/api/rows/:id', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+extractRouter.put('/rows/:id', async (req, res) => {
   try {
-    const { as_was, to_be } = req.body
-    const a = (as_was||'').trim(), b = (to_be||'').trim()
-    let status = '동일'
-    if (a !== b) { if (!a&&b) status='추가'; else if (a&&!b) status='삭제'; else status='변경' }
-    await pool.execute(`UPDATE copy_rows SET as_was=?, to_be=?, status=? WHERE id=?`, [as_was, to_be, status, req.params.id])
-    res.json({ ok:true, status })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+    const { as_was, to_be } = req.body;
+    const a = (as_was || '').trim(), b = (to_be || '').trim();
+    let status = '동일';
+    if (a !== b) { 
+      if (!a && b) status = '추가'; 
+      else if (a && !b) status = '삭제'; 
+      else status = '변경'; 
+    }
+    await pool.execute(`UPDATE copy_rows SET as_was=?, to_be=?, status=? WHERE id=?`, [as_was, to_be, status, req.params.id]);
+    res.json({ ok: true, status });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-app.delete('/api/rows/:id', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+extractRouter.delete('/rows/:id', async (req, res) => {
   try {
-    await pool.execute(`DELETE FROM copy_rows WHERE id=?`, [req.params.id])
-    res.json({ ok:true })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+    await pool.execute(`DELETE FROM copy_rows WHERE id=?`, [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-// ══════════════════════════════════════════════════════════════
-// 국가별 카피 프로젝트 CRUD
-// ══════════════════════════════════════════════════════════════
+app.use('/api', extractRouter);
 
-app.get('/api/cc/projects', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+// ═════════════════════════════════════════════════════════════════════
+// 4. CountryTab 도메인: 국가마다 제품 출시 베리에이션 및 카피 반영 프로젝트
+// ═════════════════════════════════════════════════════════════════════
+const countryRouter = express.Router();
+countryRouter.use(checkDbConnection);
+
+countryRouter.get('/projects', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
-      SELECT p.*, COUNT(DISTINCT c.site_code) AS country_count,
-             MAX(c.row_index) AS max_row
-      FROM cc_projects p
-      LEFT JOIN cc_project_copies c ON c.project_id = p.id
-      GROUP BY p.id ORDER BY p.updated_at DESC`)
-    res.json({ ok:true, data: rows })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+      SELECT p.*, COUNT(DISTINCT c.site_code) AS country_count, MAX(c.row_index) AS max_row
+      FROM cc_projects p LEFT JOIN cc_project_copies c ON c.project_id = p.id
+      GROUP BY p.id ORDER BY p.updated_at DESC`);
+    res.json({ ok: true, data: rows });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-app.post('/api/cc/projects', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+countryRouter.post('/projects', async (req, res) => {
   try {
-    const { name, note, site_codes } = req.body
-    if (!name?.trim()) return res.json({ ok:false, message:'프로젝트명을 입력해주세요.' })
+    const { name, note, site_codes } = req.body;
+    if (!name?.trim()) return res.json({ ok: false, message: '프로젝트명을 입력해주세요.' });
     const [r] = await pool.execute(
       `INSERT INTO cc_projects (name, note, site_codes) VALUES (?,?,?)`,
-      [name.trim(), note||null, JSON.stringify(site_codes||[])]
-    )
-    res.json({ ok:true, id: r.insertId })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+      [name.trim(), note || null, JSON.stringify(site_codes || [])]
+    );
+    res.json({ ok: true, id: r.insertId });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-app.put('/api/cc/projects/:id', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+countryRouter.put('/projects/:id', async (req, res) => {
   try {
-    const { name, note, site_codes } = req.body
+    const { name, note, site_codes } = req.body;
     await pool.execute(
       `UPDATE cc_projects SET name=?, note=?, site_codes=? WHERE id=?`,
-      [name.trim(), note||null, JSON.stringify(site_codes||[]), req.params.id]
-    )
-    res.json({ ok:true })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+      [name.trim(), note || null, JSON.stringify(site_codes || []), req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-app.delete('/api/cc/projects/:id', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+countryRouter.delete('/projects/:id', async (req, res) => {
   try {
-    await pool.execute(`DELETE FROM cc_projects WHERE id=?`, [req.params.id])
-    res.json({ ok:true })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+    await pool.execute(`DELETE FROM cc_projects WHERE id=?`, [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-app.get('/api/cc/projects/:id/copies', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+countryRouter.get('/projects/:id/copies', async (req, res) => {
   try {
     const [copies] = await pool.execute(
-      `SELECT site_code, row_index, copy_text FROM cc_project_copies
-       WHERE project_id=? ORDER BY row_index, site_code`,
+      `SELECT site_code, row_index, copy_text FROM cc_project_copies WHERE project_id=? ORDER BY row_index, site_code`,
       [req.params.id]
-    )
-    const [[proj]] = await pool.execute(
-      `SELECT site_codes FROM cc_projects WHERE id=?`, [req.params.id]
-    )
-    res.json({ ok:true, copies, site_codes: JSON.parse(proj?.site_codes||'[]') })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
+    );
+    const [[proj]] = await pool.execute(`SELECT site_codes FROM cc_projects WHERE id=?`, [req.params.id]);
+    res.json({ ok: true, copies, site_codes: JSON.parse(proj?.site_codes || '[]') });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
 
-app.post('/api/cc/projects/:id/copies', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
-  const conn = await pool.getConnection()
+countryRouter.post('/projects/:id/copies', async (req, res) => {
+  const conn = await pool.getConnection();
   try {
-    await conn.beginTransaction()
-    const { site_codes, cells } = req.body
-    const pid = req.params.id
+    await conn.beginTransaction();
+    const { site_codes, cells } = req.body;
+    const pid = req.params.id;
     await conn.execute(
       `UPDATE cc_projects SET site_codes=?, updated_at=NOW() WHERE id=?`,
-      [JSON.stringify(site_codes||[]), pid]
-    )
-    await conn.execute(`DELETE FROM cc_project_copies WHERE project_id=?`, [pid])
+      [JSON.stringify(site_codes || []), pid]
+    );
+    await conn.execute(`DELETE FROM cc_project_copies WHERE project_id=?`, [pid]);
+    
     if (cells?.length) {
-      const vals = cells.filter(c => c.copy_text?.trim()).map(c => [pid, c.site_code, c.row_index, c.copy_text])
+      const vals = cells.filter(c => c.copy_text?.trim()).map(c => [pid, c.site_code, c.row_index, c.copy_text]);
       if (vals.length) {
-        await conn.query(
-          `INSERT INTO cc_project_copies (project_id, site_code, row_index, copy_text) VALUES ?`,
-          [vals]
-        )
+        await conn.query(`INSERT INTO cc_project_copies (project_id, site_code, row_index, copy_text) VALUES ?`, [vals]);
       }
     }
-    await conn.commit()
-    res.json({ ok:true })
-  } catch (err) { await conn.rollback(); res.json({ ok:false, message:err.message }) }
-  finally { conn.release() }
-})
+    await conn.commit();
+    res.json({ ok: true });
+  } catch (err) { 
+    await conn.rollback(); 
+    res.json({ ok: false, message: err.message }); 
+  } finally { conn.release(); }
+});
 
-app.put('/api/cc/copies/cell', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+countryRouter.put('/copies/cell', async (req, res) => {
   try {
-    const { project_id, site_code, row_index, copy_text } = req.body
+    const { project_id, site_code, row_index, copy_text } = req.body;
     await pool.execute(
       `INSERT INTO cc_project_copies (project_id, site_code, row_index, copy_text)
-       VALUES (?,?,?,?)
-       ON DUPLICATE KEY UPDATE copy_text=?, updated_at=NOW()`,
+       VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE copy_text=?, updated_at=NOW()`,
       [project_id, site_code, row_index, copy_text, copy_text]
-    )
-    res.json({ ok:true })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
-
-// ══════════════════════════════════════════════════════════════
-// CopyStatusTracker 첨부파일
-// ══════════════════════════════════════════════════════════════
-
-// POST /api/files  — 파일 저장 (base64 dataUrl 포함)
-// 파일 저장 (업로드 시점의 메모와 상태를 함께 저장)
-app.post('/api/files', async (req, res) => {
-  if (!pool) return res.json({ ok: false });
-  try {
-    const { pageId, siteCode, name, size, status, noteAtUpload, uploadedAt, dataUrl } = req.body;
-    
-    const mysqlDatetime = new Date(uploadedAt).toISOString().slice(0, 19).replace('T', ' ');
-
-    const [result] = await pool.execute(
-      `INSERT INTO page_files (page_id, site_code, name, size, status, note_at_upload, uploaded_at, data_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [pageId, siteCode, name, size, status, noteAtUpload, mysqlDatetime, dataUrl]
-    );
-    res.json({ ok: true, id: result.insertId });
-  } catch (err) { res.json({ ok: false, message: err.message }); }
-});
-
-// 히스토리 메모만 개별 수정
-app.put('/api/files/:id/note', async (req, res) => {
-  if (!pool) return res.json({ ok: false });
-  try {
-    const { noteAtUpload } = req.body;
-    await pool.execute(
-      `UPDATE page_files SET note_at_upload = ? WHERE id = ?`,
-      [noteAtUpload, req.params.id]
     );
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-//상태 및 메모 실시간 저장 (Update)
-app.post('/api/tracker/status', async (req, res) => {
-  if (!pool) return res.json({ ok: false });
-  try {
-    const { pageId, siteCode, status, note } = req.body;
-    await pool.execute(
-      `INSERT INTO tracker_site_status (page_id, site_code, status, note)
-       VALUES (?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE status = VALUES(status), note = VALUES(note)`,
-      [pageId, siteCode, status || '', note || '']
-    );
-    res.json({ ok: true });
-  } catch (err) { res.json({ ok: false, message: err.message }); }
-});
+app.use('/api/cc', countryRouter);
 
-// GET /api/files?pageId=xxx[&siteCode=yyy]  — 파일 목록 조회
-app.get('/api/files', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
-  try {
-    const { pageId, siteCode } = req.query
-    if (!pageId) return res.json({ ok:false, message:'pageId가 필요합니다.' })
-    let sql = `SELECT id, page_id, site_code, name, size, type, status, uploaded_at, data_url, created_at
-               FROM page_files WHERE page_id = ?`
-    const params = [String(pageId)]
-    if (siteCode) { sql += ` AND site_code = ?`; params.push(siteCode) }
-    sql += ` ORDER BY created_at ASC`
-    const [rows] = await pool.execute(sql, params)
-    res.json({ ok:true, data: rows })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
-// 트래커 페이지 생성
-app.post(`/api/tracker/pages`, async (req, res) => {
-  if (!pool) return res.json({ ok: false, message: `DB 연결이 없습니다.` });
+// ═════════════════════════════════════════════════════════════════════
+// 5. StatusTab 도메인: 국가마다 카피 작업 현황 정리 및 첨부파일 관리
+// ═════════════════════════════════════════════════════════════════════
+const statusRouter = express.Router();
+statusRouter.use(checkDbConnection);
+
+// 트래커 페이지 (생성/목록/조회)
+statusRouter.post('/tracker/pages', async (req, res) => {
   try {
     const { id, title } = req.body;
-    if (!id || !title) return res.json({ ok: false, message: `id와 title이 필요합니다.` });
+    if (!id || !title) return res.json({ ok: false, message: 'id와 title이 필요합니다.' });
     await pool.execute(
       `INSERT INTO tracker_pages (id, title) VALUES (?, ?) ON DUPLICATE KEY UPDATE title = VALUES(title)`,
       [String(id), title]
@@ -458,40 +379,83 @@ app.post(`/api/tracker/pages`, async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-// 트래커 페이지 목록 가져오기
-app.get('/api/tracker/pages', async (req, res) => {
-  if (!pool) return res.json({ ok: false });
+statusRouter.get('/tracker/pages', async (req, res) => {
   try {
     const [rows] = await pool.execute(`SELECT * FROM tracker_pages ORDER BY created_at DESC`);
     res.json({ ok: true, data: rows });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-// 특정 페이지의 모든 국가 상태 + 파일 히스토리 한 번에 가져오기
-app.get('/api/tracker/pages/:id', async (req, res) => {
-  if (!pool) return res.json({ ok: false });
+statusRouter.get('/tracker/pages/:id', async (req, res) => {
   try {
     const pageId = req.params.id;
-    // 1. 현재 상태/메모 조회
-    const [statuses] = await pool.execute(
-      `SELECT site_code, status, note FROM tracker_site_status WHERE page_id = ?`, [pageId]
-    );
-    // 2. 파일 히스토리 조회
+    const [statuses] = await pool.execute(`SELECT site_code, status, note FROM tracker_site_status WHERE page_id = ?`, [pageId]);
     const [files] = await pool.execute(
       `SELECT id, site_code, name, size, status, note_at_upload, uploaded_at, data_url 
        FROM page_files WHERE page_id = ? ORDER BY uploaded_at ASC`, [pageId]
     );
-
     res.json({ ok: true, statuses, files });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
-// DELETE /api/files/:id  — 파일 삭제
-app.delete('/api/files/:id', async (req, res) => {
-  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
-  try {
-    await pool.execute(`DELETE FROM page_files WHERE id=?`, [req.params.id])
-    res.json({ ok:true })
-  } catch (err) { res.json({ ok:false, message:err.message }) }
-})
 
-app.listen(PORT, () => console.log('✅ 서버 실행 중: http://localhost:' + PORT))
+// 트래커 상태 업데이트
+statusRouter.post('/tracker/status', async (req, res) => {
+  try {
+    const { pageId, siteCode, status, note } = req.body;
+    await pool.execute(
+      `INSERT INTO tracker_site_status (page_id, site_code, status, note) VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE status = VALUES(status), note = VALUES(note)`,
+      [pageId, siteCode, status || '', note || '']
+    );
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// 파일 관련 (저장/수정/조회/삭제)
+statusRouter.post('/files', async (req, res) => {
+  try {
+    const { pageId, siteCode, name, size, status, noteAtUpload, uploadedAt, dataUrl } = req.body;
+    const mysqlDatetime = new Date(uploadedAt).toISOString().slice(0, 19).replace('T', ' ');
+    const [result] = await pool.execute(
+      `INSERT INTO page_files (page_id, site_code, name, size, status, note_at_upload, uploaded_at, data_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [pageId, siteCode, name, size, status, noteAtUpload, mysqlDatetime, dataUrl]
+    );
+    res.json({ ok: true, id: result.insertId });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+statusRouter.put('/files/:id/note', async (req, res) => {
+  try {
+    const { noteAtUpload } = req.body;
+    await pool.execute(`UPDATE page_files SET note_at_upload = ? WHERE id = ?`, [noteAtUpload, req.params.id]);
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+statusRouter.get('/files', async (req, res) => {
+  try {
+    const { pageId, siteCode } = req.query;
+    if (!pageId) return res.json({ ok: false, message: 'pageId가 필요합니다.' });
+    let sql = `SELECT id, page_id, site_code, name, size, type, status, uploaded_at, data_url, created_at FROM page_files WHERE page_id = ?`;
+    const params = [String(pageId)];
+    if (siteCode) { 
+      sql += ` AND site_code = ?`; 
+      params.push(siteCode); 
+    }
+    sql += ` ORDER BY created_at ASC`;
+    const [rows] = await pool.execute(sql, params);
+    res.json({ ok: true, data: rows });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+statusRouter.delete('/files/:id', async (req, res) => {
+  try {
+    await pool.execute(`DELETE FROM page_files WHERE id=?`, [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+app.use('/api', statusRouter);
+
+// ── 서버 실행 ───────────────────────────────────────────────────────────
+app.listen(PORT, () => console.log('✅ 서버 실행 중: http://localhost:' + PORT));
