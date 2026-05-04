@@ -379,10 +379,15 @@ statusRouter.post('/tracker/pages', async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
+// 트래커 페이지 목록 가져오기 (전체 상태 포함)
 statusRouter.get('/tracker/pages', async (req, res) => {
+  if (!pool) return res.json({ ok: false });
   try {
-    const [rows] = await pool.execute(`SELECT * FROM tracker_pages ORDER BY created_at DESC`);
-    res.json({ ok: true, data: rows });
+    const [pages] = await pool.execute(`SELECT * FROM tracker_pages ORDER BY created_at DESC`);
+    // 전체 페이지의 상태 정보만 가볍게 가져옵니다.
+    const [statuses] = await pool.execute(`SELECT page_id, site_code, status FROM tracker_site_status`);
+    
+    res.json({ ok: true, data: pages, statuses });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 

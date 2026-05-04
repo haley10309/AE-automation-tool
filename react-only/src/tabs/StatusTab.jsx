@@ -590,31 +590,59 @@ export default function StatusTab() {
   const [searchPages, setSearchPages] = useState('')
 
   // ── 초기 로드: DB 우선, 실패 시 localStorage fallback ──────
+  // ── 초기 로드: 목록 화면에서도 전체 상태(Status)를 한 번에 파악 ──────
   useEffect(() => {
     async function loadPages() {
       try {
         const res = await api.getTrackerPages()
         if (res.ok && res.data?.length) {
-          // localStorage에 저장된 기존 데이터를 먼저 읽어서 countries 보존
-          const local = loadFromStorage()
-          const localMap = Object.fromEntries((local.pages || []).map(p => [String(p.id), p]))
+          
+          // 1. DB에서 넘어온 전체 상태(statuses)를 페이지 ID별로 그룹핑
+          const statusByPage = {}
+          if (res.statuses) {
+            res.statuses.forEach(s => {
+              if (!statusByPage[s.page_id]) statusByPage[s.page_id] = {}
+              statusByPage[s.page_id][s.site_code] = s.status
+            })
+          }
 
           const dbPages = res.data.map(p => {
-            const localPage = localMap[String(p.id)]
+            const pageId = String(p.id)
+            const pageStatuses = statusByPage[pageId] || {}
+            
+            // 2. 기본 국가 목록을 세팅하고, DB의 상태값을 꽂아 넣음
+            const baseCountries = ALL_SITES
+              .filter(s => DEFAULT_COUNTRIES.includes(s.code))
+              .map(s => ({ 
+                code: s.code, 
+                status: pageStatuses[s.code] || '', 
+                note: '', file: null, fileHistory: [] 
+              }))
+            
+            // 3. DB에만 존재하는 추가 국가(나중에 수동으로 추가한 국가)도 병합
+            for (const code of Object.keys(pageStatuses)) {
+              if (!baseCountries.find(c => c.code === code)) {
+                baseCountries.push({
+                  code,
+                  status: pageStatuses[code] || '',
+                  note: '', file: null, fileHistory: []
+                })
+              }
+            }
+
             return {
-              id: p.id,
+              id: pageId,
               name: p.title,
               createdAt: p.created_at,
-              // 로컬에 저장된 countries가 있으면 유지, 없으면 빈 배열(PageDetail 진입 시 채워짐)
-              countries: localPage?.countries || [],
+              countries: baseCountries,
               _loadedFromDB: true,
             }
           })
+          
           setPages(dbPages)
-          // countries가 있는 페이지만 localStorage에 반영 (빈 countries로 덮어쓰기 방지)
-          saveToStorage({ pages: dbPages })
+          saveToStorage({ pages: dbPages }) // DB 데이터를 로컬스토리지에 동기화
         } else {
-          // DB 연결 안됨 → localStorage fallback
+          // DB 연결 실패 또는 데이터가 없을 시 localStorage fallback
           const local = loadFromStorage()
           setPages(local.pages || [])
         }
@@ -692,15 +720,55 @@ export default function StatusTab() {
           const pct = total > 0 ? Math.round((stepSum / (total * TOTAL_STEPS)) * 100) : 0
           const avgS = total > 0 ? stepSum / total : 0
           const cardStatus = COPY_STATUSES.find(s => s.step === Math.round(avgS)) || COPY_STATUSES[0]
+          // 상태별 국가 수
+          const statusCounts = {}
+          COPY_STATUSES.forEach(s => {
+            if (s.value) statusCounts[s.value] = page.countries.filter(c => c.status === s.value).length
+          })
+          const unset = page.countries.filter(c => !c.status).length
+
           return (
             <div key={page.id} className="cst-page-card" onClick={() => setSelectedPageId(page.id)}>
-              <h3 className="cst-page-card-name">{page.name}</h3>
-              <div className="cst-page-card-meta">{total}개국 · {cardStatus.label}</div>
+              <div className="cst-page-card-header">
+                <h3 className="cst-page-card-name">{page.name}</h3>
+                <span className="cst-page-card-total">{total}개국</span>
+              </div>
+
+              {/* 단계별 컬러 스트립 */}
+              <div style={{ display: 'flex', gap: 2, margin: '8px 0 4px' }}>
+                {COPY_STATUSES.filter(s => s.value).map(s => (
+                  <div key={s.value} title={`${s.label}: ${statusCounts[s.value] || 0}개국`} style={{
+                    flex: 1, height: 6, borderRadius: 3,
+                    background: s.step <= Math.round(avgS) && Math.round(avgS) > 0 ? s.color : '#e5e7eb',
+                    transition: 'background 0.3s',
+                  }} />
+                ))}
+              </div>
+
+              {/* 프로그레스 바 */}
               <div className="cst-mini-progress">
                 <div className="cst-mini-progress-bar">
                   <div className="cst-progress-fill" style={{ width: `${pct}%`, background: cardStatus.color }} />
                 </div>
-                <span className="cst-mini-pct" style={{ color: cardStatus.color }}>{pct}%</span>
+                <span className="cst-mini-pct" style={{ color: cardStatus.color }}>
+                  {pct}% · {cardStatus.label}
+                </span>
+              </div>
+
+              {/* 상태별 뱃지 목록 */}
+              <div className="cst-page-card-badges">
+                {COPY_STATUSES.filter(s => s.value && statusCounts[s.value] > 0).map(s => (
+                  <span key={s.value} className="cst-mini-badge"
+                    style={{ background: s.bg, color: s.color, border: `1px solid ${s.color}` }}>
+                    {s.label} <strong>{statusCounts[s.value]}</strong>
+                  </span>
+                ))}
+                {unset > 0 && (
+                  <span className="cst-mini-badge"
+                    style={{ background: '#f3f4f6', color: '#6b7280', border: '1px solid #d1d5db' }}>
+                    미설정 <strong>{unset}</strong>
+                  </span>
+                )}
               </div>
             </div>
           )
