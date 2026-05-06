@@ -1,6 +1,9 @@
-import { useState, useCallback, useEffect } from 'react' // useEffect 추가
+import { useState, useEffect } from 'react'
 import './App.css'
-import { api } from './api.js' // 기반 API 사용
+import { api } from './api.js'
+import { AuthProvider, useAuth } from './auth.jsx'
+import { DBProvider, useDB } from './DBContext.jsx'
+import AuthPage from './pages/AuthPage.jsx'
 import ExtractTab from './tabs/ExtractTab.jsx'
 import CountryTab from './tabs/CountryTab.jsx'
 import StatusTab  from './tabs/StatusTab.jsx'
@@ -19,55 +22,18 @@ const DB_BADGE = {
   error:        { label: '연결 오류',  cls: 'badge-red'    },
 }
 
-export default function App() {
+// ── 실제 앱 (로그인 후) ───────────────────────────────────────
+function AppContent() {
+  const { user, logout } = useAuth()
+  const { dbStatus, dbMessage, connect } = useDB()
   const [tab, setTab] = useState(TABS.EXTRACT)
 
-  // 1. 초기 상태를 localStorage에서 읽어오기 (새로고침 대비)
   const [dbConfig, setDbConfig] = useState(() => {
-    const saved = localStorage.getItem('db_config');
+    const saved = localStorage.getItem('db_config')
     return saved ? JSON.parse(saved) : {
       host: 'localhost', port: '3306', user: 'root', password: '0000', database: 'copy_diff_db',
-    };
-  });
-
-  const [dbStatus,  setDbStatus]  = useState('disconnected')
-  const [dbMessage, setDbMessage] = useState('')
-
-  // 2. 연결 로직 정의
-  const handleConnect = useCallback(async (targetConfig = dbConfig) => {
-    setDbStatus('connecting');
-    try {
-      // api.dbConnect 호출
-      const res = await api.dbConnect({ ...targetConfig, port: Number(targetConfig.port) });
-      if (res.ok) {
-        // api.dbInit 호출
-        const init = await api.dbInit();
-        if (init.ok) {
-          setDbStatus('connected');
-          setDbMessage('연결 및 테이블 초기화 완료');
-          // 설정 저장
-          localStorage.setItem('db_config', JSON.stringify(targetConfig));
-        } else {
-          setDbStatus('error');
-          setDbMessage('테이블 생성 실패: ' + init.message);
-        }
-      } else {
-        setDbStatus('error');
-        setDbMessage(res.message);
-      }
-    } catch (e) {
-      setDbStatus('error');
-      setDbMessage(e.message);
     }
-  }, [dbConfig]);
-
-  // 3. [핵심] 새로고침 시 자동 실행되는 Effect
-  useEffect(() => {
-    // 앱이 처음 로드될 때 저장된 설정이 있다면 자동으로 연결 시도
-    if (dbConfig.host && dbConfig.password) {
-      handleConnect();
-    }
-  }, []); // 마운트 시 1회 실행
+  })
 
   return (
     <div className="app">
@@ -76,12 +42,20 @@ export default function App() {
         <div className="header-left">
           <div className="logo-mark">CD</div>
           <div>
-            <h1>AE automation Tool</h1>
+            <h1>AE Automation Tool</h1>
             <p>AS-WAS / TO-BE 비교 &amp; 히스토리 관리</p>
           </div>
         </div>
         <div className="header-right">
           <span className={`db-badge ${DB_BADGE[dbStatus].cls}`}>{DB_BADGE[dbStatus].label}</span>
+          {/* 사용자 정보 + 로그아웃 */}
+          <div className="user-info">
+            <span className="user-name">{user.name}</span>
+            <span className={`user-position ${user.position}`}>
+              {user.position === 'regular' ? '정규직' : '인턴'}
+            </span>
+            <button className="btn-logout" onClick={logout}>로그아웃</button>
+          </div>
         </div>
       </header>
 
@@ -102,17 +76,15 @@ export default function App() {
       </nav>
 
       <main className="main-content">
-        {/* 각 탭에 dbStatus 전달 (필요 시 데이터 fetch 트리거로 사용) */}
-        {tab === TABS.EXTRACT  && <ExtractTab dbStatus={dbStatus} />}
+        {tab === TABS.EXTRACT  && <ExtractTab />}
         {tab === TABS.COUNTRY  && <CountryTab />}
         {tab === TABS.STATUS   && <StatusTab />}
 
-        {/* ══════════ TAB: DB 설정 ══════════ */}
+        {/* ═══ DB 설정 탭 ═══ */}
         {tab === TABS.SETTINGS && (
           <div className="settings-layout">
             <div className="settings-card">
               <h2 className="settings-title">MySQL 연결 설정</h2>
-
               <div className="form-grid">
                 {[
                   ['host',     '호스트',        'localhost'],
@@ -125,15 +97,13 @@ export default function App() {
                     <label className="form-label">{label}</label>
                     <input className="form-input"
                       type={key === 'password' ? 'password' : 'text'}
-                      placeholder={ph}
-                      value={dbConfig[key]}
+                      placeholder={ph} value={dbConfig[key]}
                       onChange={e => setDbConfig(p => ({ ...p, [key]: e.target.value }))} />
                   </div>
                 ))}
               </div>
-
               <div className="settings-actions">
-                <button className="btn-primary" onClick={() => handleConnect()}
+                <button className="btn-primary" onClick={() => connect(dbConfig)}
                   disabled={dbStatus === 'connecting'}>
                   {dbStatus === 'connecting' ? '연결 중...' : '연결 테스트 & 초기화'}
                 </button>
@@ -143,7 +113,12 @@ export default function App() {
                   </span>
                 )}
               </div>
-              
+
+              {/* 사용자 관리 — 정규직만 표시 */}
+              {user.position === 'regular' && (
+                <UserManagement />
+              )}
+
               <div className="guide-box">
                 <h3>MySQL 설치 가이드</h3>
                 <ol>
@@ -158,13 +133,12 @@ export default function App() {
                     <strong>설치 중 설정</strong>
                     <ul>
                       <li>Setup Type: Developer Default 또는 Server only</li>
-                      <li>root 비밀번호 설정 (위 "비밀번호" 칸에 동일하게 입력)</li>
+                      <li>root 비밀번호 설정 후 위 "비밀번호" 칸에 동일하게 입력</li>
                       <li>포트: 기본값 3306 유지 권장</li>
                     </ul>
                   </li>
                   <li>
                     <strong>데이터베이스 생성</strong><br />
-                    MySQL Workbench 또는 CLI에서 실행:<br />
                     <code>CREATE DATABASE copy_diff_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;</code>
                   </li>
                   <li>
@@ -176,27 +150,94 @@ export default function App() {
 
               <div className="schema-box">
                 <h3>생성되는 테이블 구조</h3>
-                <pre>{`copy_requests (요청 묶음)
-├── id              INT AUTO_INCREMENT PK
-├── product_name    VARCHAR(255)
-├── requester       VARCHAR(100)
-├── request_date    DATE
-├── note            TEXT
-└── created_at      DATETIME
-
-copy_rows (행별 카피)
-├── id              INT AUTO_INCREMENT PK
-├── request_id      INT → copy_requests.id (FK)
-├── row_index       INT
-├── as_was          TEXT
-├── to_be           TEXT
-├── status          ENUM(변경/추가/삭제/동일)
-└── created_at      DATETIME`}</pre>
+                <pre>{`copy_requests / copy_rows — 카피 추출·이력
+cc_projects / cc_project_copies — 국가별 카피 프로젝트
+samsung_products — 제품 출시 데이터
+tracker_pages / tracker_status / page_files — 작업 현황
+users — 사용자 계정`}</pre>
               </div>
             </div>
           </div>
         )}
       </main>
     </div>
+  )
+}
+
+// ── 사용자 관리 (정규직 전용) ─────────────────────────────────
+function UserManagement() {
+  const [users, setUsers]   = useState([])
+  const [loading, setLoading] = useState(false)
+
+  const load = async () => {
+    setLoading(true)
+    const token = localStorage.getItem('ae_tool_token')
+    const res = await fetch('http://localhost:4000/api/auth/users', {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(r => r.json())
+    if (res.ok) setUsers(res.data)
+    setLoading(false)
+  }
+
+  useEffect(() => { load() }, [])
+
+  const toggleApprove = async (id, current) => {
+    const token = localStorage.getItem('ae_tool_token')
+    await fetch(`http://localhost:4000/api/auth/users/${id}/approve`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ approved: !current }),
+    })
+    load()
+  }
+
+  return (
+    <div className="user-mgmt">
+      <h3 className="user-mgmt-title">사용자 관리 <span className="user-mgmt-badge">관리자</span></h3>
+      {loading && <div className="loading">불러오는 중...</div>}
+      <div className="user-mgmt-list">
+        {users.map(u => (
+          <div key={u.id} className="user-mgmt-item">
+            <div className="user-mgmt-info">
+              <span className="user-mgmt-name">{u.name}</span>
+              <span className="user-mgmt-email">{u.email}</span>
+              <span className={`user-position ${u.position}`}>
+                {u.position === 'regular' ? '정규직' : '인턴'}
+              </span>
+            </div>
+            <button
+              className={`user-mgmt-btn ${u.approved ? 'approved' : 'pending'}`}
+              onClick={() => toggleApprove(u.id, u.approved)}>
+              {u.approved ? '✓ 승인됨' : '대기 중 — 클릭하여 승인'}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── 진입점: 인증 상태에 따라 AuthPage or AppContent ───────────
+function AppRouter() {
+  const { user, loading } = useAuth()
+
+  if (loading) {
+    return (
+      <div className="auth-loading">
+        <div className="auth-loading-spinner" />
+        <span>로딩 중...</span>
+      </div>
+    )
+  }
+
+  return user ? <AppContent /> : <AuthPage />
+}
+export default function App() {
+  return (
+    <DBProvider>
+      <AuthProvider>
+        <AppRouter />
+      </AuthProvider>
+    </DBProvider>
   )
 }

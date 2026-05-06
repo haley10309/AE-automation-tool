@@ -1952,3 +1952,142 @@ mark.diff-ins {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ════════════════════════════════════════════════════════════
+   인증 (로그인 / 회원가입)
+   ════════════════════════════════════════════════════════════ */
+ 
+/* 전체 화면 로딩 */
+.auth-loading {
+  height: 100vh; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px;
+  font-size: 14px; color: var(--text2);
+}
+.auth-loading-spinner {
+  width: 28px; height: 28px; border: 3px solid var(--border);
+  border-top-color: var(--text); border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+ 
+/* 인증 페이지 레이아웃 (좌: 브랜드, 우: 폼) */
+.auth-page {
+  min-height: 100vh; display: grid; grid-template-columns: 1fr 480px;
+  background: var(--bg);
+}
+@media (max-width: 800px) {
+  .auth-page { grid-template-columns: 1fr; }
+  .auth-left  { display: none; }
+}
+ 
+/* 왼쪽 브랜드 패널 */
+.auth-left {
+  background: var(--text); color: #fff;
+  display: flex; flex-direction: column; justify-content: center;
+  padding: 60px 56px; gap: 48px;
+}
+.auth-brand { display: flex; align-items: center; gap: 14px; }
+.auth-logo {
+  width: 48px; height: 48px; background: rgba(255,255,255,.15);
+  border-radius: 12px; display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; letter-spacing: .05em; flex-shrink: 0;
+}
+.auth-brand-text { display: flex; flex-direction: column; gap: 3px; }
+.auth-brand-name { font-size: 18px; font-weight: 700; }
+.auth-brand-sub  { font-size: 13px; color: rgba(255,255,255,.6); }
+.auth-features   { display: flex; flex-direction: column; gap: 24px; }
+.auth-feature    { display: flex; align-items: flex-start; gap: 14px; }
+.auth-feature-icon { font-size: 22px; margin-top: 2px; flex-shrink: 0; }
+.auth-feature-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.auth-feature-desc  { font-size: 12px; color: rgba(255,255,255,.6); line-height: 1.5; }
+ 
+/* 오른쪽 폼 패널 */
+.auth-right {
+  display: flex; align-items: center; justify-content: center;
+  padding: 40px 32px; background: var(--surface);
+  border-left: 1px solid var(--border);
+}
+.auth-form {
+  width: 100%; max-width: 380px;
+  display: flex; flex-direction: column; gap: 20px;
+}
+.auth-form-header { display: flex; flex-direction: column; gap: 6px; }
+.auth-title { font-size: 22px; font-weight: 700; color: var(--text); }
+.auth-sub   { font-size: 13px; color: var(--text2); }
+ 
+.auth-fields { display: flex; flex-direction: column; gap: 14px; }
+.auth-field  { display: flex; flex-direction: column; gap: 6px; }
+.auth-label  { font-size: 12px; font-weight: 600; color: var(--text2); }
+.auth-hint-inline { font-weight: 400; color: var(--text3); }
+.auth-input {
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: 10px 14px; font-size: 14px; font-family: 'Noto Sans KR', sans-serif;
+  color: var(--text); background: var(--surface2); outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.auth-input:focus {
+  border-color: var(--text); background: #fff;
+  box-shadow: 0 0 0 3px rgba(26,24,20,.08);
+}
+ 
+/* 직책 선택 */
+.auth-position-group { display: flex; gap: 10px; }
+.auth-position-btn {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px;
+  border: 1.5px solid var(--border); border-radius: var(--r-md); padding: 10px;
+  cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text2);
+  transition: border-color .15s, background .15s; user-select: none;
+}
+.auth-position-btn:hover { border-color: var(--border-s); background: var(--surface2); }
+.auth-position-btn.selected {
+  border-color: var(--text); background: var(--text); color: #fff;
+}
+.auth-pos-icon { font-size: 18px; }
+ 
+.auth-error   { background: #fef2f2; border: 1px solid #fecaca; border-radius: var(--r-md); padding: 10px 14px; font-size: 13px; color: #991b1b; }
+.auth-success { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: var(--r-md); padding: 10px 14px; font-size: 13px; color: #166534; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+ 
+.auth-submit {
+  background: var(--text); color: #fff; border: none;
+  border-radius: var(--r-md); padding: 12px; font-size: 14px; font-weight: 600;
+  font-family: 'Noto Sans KR', sans-serif; cursor: pointer;
+  transition: opacity .15s;
+}
+.auth-submit:hover { opacity: .85; }
+.auth-submit:disabled { opacity: .5; cursor: not-allowed; }
+ 
+.auth-switch { font-size: 13px; color: var(--text2); text-align: center; }
+.auth-switch-btn {
+  background: none; border: none; color: var(--text); font-size: 13px;
+  font-weight: 600; cursor: pointer; text-decoration: underline; padding: 0 4px;
+}
+ 
+/* ── 헤더 사용자 정보 ── */
+.user-info { display: flex; align-items: center; gap: 10px; }
+.user-name  { font-size: 13px; font-weight: 600; color: var(--text); }
+.user-position {
+  font-size: 10px; font-weight: 700; padding: 2px 8px;
+  border-radius: 99px; letter-spacing: .04em;
+}
+.user-position.regular { background: #dbeafe; color: #1e40af; }
+.user-position.intern  { background: #fef3c7; color: #92400e; }
+.btn-logout {
+  background: transparent; border: 1px solid var(--border-s); border-radius: var(--r-sm);
+  padding: 5px 12px; font-size: 12px; font-family: 'Noto Sans KR', sans-serif;
+  color: var(--text2); cursor: pointer; transition: background .15s;
+}
+.btn-logout:hover { background: var(--surface2); }
+ 
+/* ── 사용자 관리 (관리자) ── */
+.user-mgmt { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 20px; }
+.user-mgmt-title { font-size: 14px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.user-mgmt-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 99px; background: #fee2e2; color: #991b1b; }
+.user-mgmt-list  { display: flex; flex-direction: column; gap: 8px; }
+.user-mgmt-item  { display: flex; align-items: center; justify-content: space-between; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-md); padding: 10px 14px; gap: 12px; flex-wrap: wrap; }
+.user-mgmt-info  { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.user-mgmt-name  { font-size: 13px; font-weight: 600; }
+.user-mgmt-email { font-size: 12px; color: var(--text2); }
+.user-mgmt-btn   { font-size: 12px; font-weight: 600; font-family: 'Noto Sans KR', sans-serif; border: none; border-radius: var(--r-sm); padding: 6px 12px; cursor: pointer; transition: opacity .15s; }
+.user-mgmt-btn.approved { background: #dcfce7; color: #166534; }
+.user-mgmt-btn.pending  { background: #fef3c7; color: #92400e; }
+.user-mgmt-btn:hover    { opacity: .8; }
