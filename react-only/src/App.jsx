@@ -1,6 +1,6 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react' // useEffect 추가
 import './App.css'
-import { api } from './api.js'
+import { api } from './api.js' // 기반 API 사용
 import ExtractTab from './tabs/ExtractTab.jsx'
 import CountryTab from './tabs/CountryTab.jsx'
 import StatusTab  from './tabs/StatusTab.jsx'
@@ -22,32 +22,55 @@ const DB_BADGE = {
 export default function App() {
   const [tab, setTab] = useState(TABS.EXTRACT)
 
-  // ── DB 연결 상태 (Settings 탭 + ExtractTab 공유) ──────────
-  const [dbConfig, setDbConfig] = useState({
-    host: 'localhost', port: '3306', user: 'root', password: '0000', database: 'copy_diff_db',
-  })
+  // 1. 초기 상태를 localStorage에서 읽어오기 (새로고침 대비)
+  const [dbConfig, setDbConfig] = useState(() => {
+    const saved = localStorage.getItem('db_config');
+    return saved ? JSON.parse(saved) : {
+      host: 'localhost', port: '3306', user: 'root', password: '0000', database: 'copy_diff_db',
+    };
+  });
+
   const [dbStatus,  setDbStatus]  = useState('disconnected')
   const [dbMessage, setDbMessage] = useState('')
 
-  const handleConnect = useCallback(async () => {
-    setDbStatus('connecting')
+  // 2. 연결 로직 정의
+  const handleConnect = useCallback(async (targetConfig = dbConfig) => {
+    setDbStatus('connecting');
     try {
-      const res = await api.dbConnect({ ...dbConfig, port: Number(dbConfig.port) })
+      // api.dbConnect 호출
+      const res = await api.dbConnect({ ...targetConfig, port: Number(targetConfig.port) });
       if (res.ok) {
-        const init = await api.dbInit()
-        if (init.ok) { setDbStatus('connected'); setDbMessage('연결 및 테이블 초기화 완료') }
-        else          { setDbStatus('error');     setDbMessage('테이블 생성 실패: ' + init.message) }
+        // api.dbInit 호출
+        const init = await api.dbInit();
+        if (init.ok) {
+          setDbStatus('connected');
+          setDbMessage('연결 및 테이블 초기화 완료');
+          // 설정 저장
+          localStorage.setItem('db_config', JSON.stringify(targetConfig));
+        } else {
+          setDbStatus('error');
+          setDbMessage('테이블 생성 실패: ' + init.message);
+        }
       } else {
-        setDbStatus('error'); setDbMessage(res.message)
+        setDbStatus('error');
+        setDbMessage(res.message);
       }
     } catch (e) {
-      setDbStatus('error'); setDbMessage(e.message)
+      setDbStatus('error');
+      setDbMessage(e.message);
     }
-  }, [dbConfig])
+  }, [dbConfig]);
+
+  // 3. [핵심] 새로고침 시 자동 실행되는 Effect
+  useEffect(() => {
+    // 앱이 처음 로드될 때 저장된 설정이 있다면 자동으로 연결 시도
+    if (dbConfig.host && dbConfig.password) {
+      handleConnect();
+    }
+  }, []); // 마운트 시 1회 실행
 
   return (
     <div className="app">
-
       {/* ── HEADER ── */}
       <header className="app-header">
         <div className="header-left">
@@ -79,8 +102,7 @@ export default function App() {
       </nav>
 
       <main className="main-content">
-
-        {/* ExtractTab: dbStatus를 prop으로 전달 */}
+        {/* 각 탭에 dbStatus 전달 (필요 시 데이터 fetch 트리거로 사용) */}
         {tab === TABS.EXTRACT  && <ExtractTab dbStatus={dbStatus} />}
         {tab === TABS.COUNTRY  && <CountryTab />}
         {tab === TABS.STATUS   && <StatusTab />}
@@ -111,7 +133,7 @@ export default function App() {
               </div>
 
               <div className="settings-actions">
-                <button className="btn-primary" onClick={handleConnect}
+                <button className="btn-primary" onClick={() => handleConnect()}
                   disabled={dbStatus === 'connecting'}>
                   {dbStatus === 'connecting' ? '연결 중...' : '연결 테스트 & 초기화'}
                 </button>
@@ -121,7 +143,7 @@ export default function App() {
                   </span>
                 )}
               </div>
-
+              
               <div className="guide-box">
                 <h3>MySQL 설치 가이드</h3>
                 <ol>
@@ -174,7 +196,6 @@ copy_rows (행별 카피)
             </div>
           </div>
         )}
-
       </main>
     </div>
   )
