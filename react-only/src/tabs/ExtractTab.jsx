@@ -152,6 +152,27 @@ export default function ExtractTab({ dbStatus }) {
       .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800) })
   }
 
+  // 이력 조회 CSV 추출
+  const exportHistoryToCSV = (rows, req, diffOnly) => {
+    if (!rows?.length) return
+    const esc = v => {
+      const s = String(v ?? '')
+      return s.includes(',') || s.includes('"') || s.includes('\n')
+        ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const header = ['행번호', 'AS-WAS', 'TO-BE', '상태']
+    const dataRows = rows.map(r => [r.row_index, r.as_was ?? '', r.to_be ?? '', r.status])
+    const csv = [header, ...dataRows].map(r => r.map(esc).join(',')).join('\r\n')
+    const now = new Date()
+    const ds = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`
+    const label = diffOnly ? '변경행' : '전체'
+    const filename = `${req.product_name}_${label}_${ds}.csv`
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
+    URL.revokeObjectURL(url)
+  }
+
   const filteredRequests = requests.filter(r =>
     !searchQuery ||
     r.product_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -318,11 +339,21 @@ export default function ExtractTab({ dbStatus }) {
                   <span> · 전체 {selectedReq.total_rows}행 / 변경 {selectedReq.diff_rows}행</span>
                 </div>
               </div>
-              <label className="toggle-label">
-                <input type="checkbox" checked={diffOnlyView}
-                  onChange={e => setDiffOnlyView(e.target.checked)} />
-                변경행만 보기
-              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <label className="toggle-label">
+                  <input type="checkbox" checked={diffOnlyView}
+                    onChange={e => setDiffOnlyView(e.target.checked)} />
+                  변경행만 보기
+                </label>
+                <button className="btn-export"
+                  onClick={() => exportHistoryToCSV(
+                    diffOnlyView ? reqRows.filter(r => r.status !== '동일') : reqRows,
+                    selectedReq,
+                    diffOnlyView
+                  )}>
+                  ⬇ CSV 추출
+                </button>
+              </div>
             </div>
             {rowActionMsg && (
               <div className={rowActionMsg.startsWith('✅') || rowActionMsg.startsWith('🗑')
