@@ -34,49 +34,58 @@ export function formatDateTime(isoStr) {
   return `${yy}.${mm}.${dd} ${hh}:${mi}`
 }
 
-// ── 글자 단위 LCS diff ────────────────────────────────────────
-export const CHAR_DIFF_LIMIT = 200
+// ── 단어 단위 diff (음절 단위 제거 — 성능 최적화) ────────────
+// 한국어/영어/숫자/공백을 토큰으로 분리
+function tokenize(str) {
+  // 공백도 토큰으로 유지해야 원문 복원 가능
+  return str.match(/[\uAC00-\uD7A3]+|[A-Za-z0-9]+|[^\uAC00-\uD7A3A-Za-z0-9\s]+|\s+/g) || []
+}
 
-export function computeCharDiff(a, b) {
+function lcs(a, b) {
   const m = a.length, n = b.length
-  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+  // 길이가 너무 길면 diff 생략 (안전장치)
+  if (m * n > 40000) return null
+  const dp = Array.from({ length: m + 1 }, () => new Int32Array(n + 1))
   for (let i = m - 1; i >= 0; i--)
     for (let j = n - 1; j >= 0; j--)
-      dp[i][j] = a[i] === b[j] ? dp[i+1][j+1]+1 : Math.max(dp[i+1][j], dp[i][j+1])
-  const aParts = [], bParts = []
-  let i = 0, j = 0
-  while (i < m || j < n) {
-    if (i < m && j < n && a[i] === b[j]) {
-      aParts.push({ type: 'equal', ch: a[i] }); bParts.push({ type: 'equal', ch: b[j] }); i++; j++
-    } else if (j < n && (i >= m || dp[i][j+1] >= dp[i+1][j])) {
-      bParts.push({ type: 'insert', ch: b[j] }); j++
-    } else {
-      aParts.push({ type: 'delete', ch: a[i] }); i++
-    }
-  }
-  return { aParts, bParts }
+      dp[i][j] = a[i] === b[j] ? dp[i+1][j+1] + 1 : Math.max(dp[i+1][j], dp[i][j+1])
+  return dp
 }
 
 export function computeWordDiff(a, b) {
-  const aw = a.split(/(\s+)/), bw = b.split(/(\s+)/)
-  const m = aw.length, n = bw.length
-  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
-  for (let i = m - 1; i >= 0; i--)
-    for (let j = n - 1; j >= 0; j--)
-      dp[i][j] = aw[i] === bw[j] ? dp[i+1][j+1]+1 : Math.max(dp[i+1][j], dp[i][j+1])
+  if (a === b) return { aParts: [{ type: 'equal', ch: a }], bParts: [{ type: 'equal', ch: b }] }
+
+  const aTok = tokenize(a)
+  const bTok = tokenize(b)
+  const dp   = lcs(aTok, bTok)
+
+  // 토큰이 너무 많거나 길이 초과 시 전체를 변경으로 처리
+  if (!dp) {
+    return {
+      aParts: [{ type: 'delete', ch: a }],
+      bParts: [{ type: 'insert', ch: b }],
+    }
+  }
+
   const aParts = [], bParts = []
   let i = 0, j = 0
-  while (i < m || j < n) {
-    if (i < m && j < n && aw[i] === bw[j]) {
-      aParts.push({ type: 'equal', ch: aw[i] }); bParts.push({ type: 'equal', ch: bw[j] }); i++; j++
-    } else if (j < n && (i >= m || dp[i][j+1] >= dp[i+1][j])) {
-      bParts.push({ type: 'insert', ch: bw[j] }); j++
+  while (i < aTok.length || j < bTok.length) {
+    if (i < aTok.length && j < bTok.length && aTok[i] === bTok[j]) {
+      aParts.push({ type: 'equal', ch: aTok[i] })
+      bParts.push({ type: 'equal', ch: bTok[j] })
+      i++; j++
+    } else if (j < bTok.length && (i >= aTok.length || dp[i][j+1] >= dp[i+1][j])) {
+      bParts.push({ type: 'insert', ch: bTok[j] }); j++
     } else {
-      aParts.push({ type: 'delete', ch: aw[i] }); i++
+      aParts.push({ type: 'delete', ch: aTok[i] }); i++
     }
   }
   return { aParts, bParts }
 }
+
+// 구버전 호환 alias (computeWordDiff로 통일)
+export const computeCharDiff = computeWordDiff
+export const CHAR_DIFF_LIMIT = Infinity  // 더 이상 분기 없음
 
 // ── CSV 내보내기 ──────────────────────────────────────────────
 export function exportToCSV(filename, headers, rows) {
