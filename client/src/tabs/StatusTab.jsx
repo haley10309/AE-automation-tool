@@ -585,7 +585,7 @@ export default function StatusTab() {
   const { dbReady } = useDB()
   const [pages, setPages] = useState([])
   const [loading, setLoading] = useState(true)
-  const [selectedPageId, setSelectedPageId] = useState(null)
+  const [selectedPageId, setSelectedPageId] = useState(() => localStorage.getItem('status_selected_page_id'))
   const [showNewPage, setShowNewPage] = useState(false)
   const [newPageName, setNewPageName] = useState('')
   const [newPageMsg, setNewPageMsg] = useState('')
@@ -644,6 +644,11 @@ export default function StatusTab() {
           
           setPages(dbPages)
           saveToStorage({ pages: dbPages }) // DB 데이터를 로컬스토리지에 동기화
+          // 복원된 pageId가 실제 목록에 없으면 초기화
+          const savedPageId = localStorage.getItem('status_selected_page_id')
+          if (savedPageId && !dbPages.find(p => String(p.id) === String(savedPageId))) {
+            localStorage.removeItem('status_selected_page_id')
+          }
         } else {
           // DB 연결 실패 또는 데이터가 없을 시 localStorage fallback
           const local = loadFromStorage()
@@ -659,7 +664,7 @@ export default function StatusTab() {
     loadPages()
   }, [dbReady])
 
-  const selectedPage = pages.find(p => p.id == selectedPageId)
+  const selectedPage = pages.find(p => String(p.id) === String(selectedPageId))
 
   const createPage = async () => {
     if (!newPageName.trim()) { setNewPageMsg('❌ 이름을 입력하세요.'); return }
@@ -696,7 +701,7 @@ export default function StatusTab() {
   }
 
   if (selectedPage) {
-    return <PageDetail page={selectedPage} onBack={() => setSelectedPageId(null)} onUpdate={updatePage} />
+    return <PageDetail page={selectedPage} onBack={() => { setSelectedPageId(null); localStorage.removeItem('status_selected_page_id') }} onUpdate={updatePage} />
   }
 
   return (
@@ -731,7 +736,7 @@ export default function StatusTab() {
           const unset = page.countries.filter(c => !c.status).length
 
           return (
-            <div key={page.id} className="cst-page-card" onClick={() => setSelectedPageId(page.id)}>
+            <div key={page.id} className="cst-page-card" onClick={() => { setSelectedPageId(page.id); localStorage.setItem('status_selected_page_id', page.id) }}>
               <div className="cst-page-card-header">
                 <h3 className="cst-page-card-name">{page.name}</h3>
                 <span className="cst-page-card-total">{total}개국</span>

@@ -8,7 +8,7 @@ import { parseCol, normalize, isHeaderLike, getStatus, today } from '../utils.js
 export default function ExtractTab() {
   const { dbStatus } = useDB()
   // 모드: 새 추출 vs 이력 조회
-  const [mode, setMode] = useState('new')
+  const [mode, setMode] = useState(() => localStorage.getItem('extract_mode') || 'new')
 
   // 입력
   const [asWasInput, setAsWasInput] = useState('')
@@ -38,7 +38,19 @@ export default function ExtractTab() {
     if (dbStatus !== 'connected') return
     setHistLoading(true)
     const res = await api.dbListRequests()
-    if (res.ok) setRequests(res.data)
+    if (res.ok) {
+      setRequests(res.data)
+      // refresh 후 마지막으로 보던 요청 복원
+      const savedId = localStorage.getItem('extract_selected_req_id')
+      if (savedId) {
+        const found = res.data.find(r => String(r.id) === String(savedId))
+        if (found) {
+          setSelectedReq(found); setMode('view'); setRowActionMsg('')
+          api.dbGetRows({ requestId: found.id, diffOnly: false }).then(r => { if (r.ok) setReqRows(r.data) })
+        }
+        else localStorage.removeItem('extract_selected_req_id')
+      }
+    }
     setHistLoading(false)
   }, [dbStatus])
 
@@ -46,6 +58,8 @@ export default function ExtractTab() {
 
   const loadRows = async req => {
     setSelectedReq(req); setMode('view'); setRowActionMsg('')
+    localStorage.setItem('extract_selected_req_id', req.id)
+    localStorage.setItem('extract_mode', 'view')
     const res = await api.dbGetRows({ requestId: req.id, diffOnly: false })
     if (res.ok) setReqRows(res.data)
   }
@@ -92,7 +106,7 @@ export default function ExtractTab() {
     setSaveMeta({ product_name:'', requester:'', request_date:today(), note:'' })
   }
 
-  const startNew = () => { setMode('new'); setSelectedReq(null); clearAll() }
+  const startNew = () => { setMode('new'); setSelectedReq(null); clearAll(); localStorage.removeItem('extract_selected_req_id'); localStorage.setItem('extract_mode', 'new') }
 
   // ── 저장 ───────────────────────────────────────────────────
   const handleSave = async () => {
@@ -115,7 +129,7 @@ export default function ExtractTab() {
     e.stopPropagation()
     if (!window.confirm(`"${req.product_name}" 요청을 삭제하시겠습니까?`)) return
     if (api.deleteRequest) await api.deleteRequest(req.id)
-    if (selectedReq?.id === req.id) { setSelectedReq(null); setMode('new') }
+    if (selectedReq?.id === req.id) { setSelectedReq(null); setMode('new'); localStorage.removeItem('extract_selected_req_id'); localStorage.setItem('extract_mode', 'new') }
     await loadHistory()
   }
 

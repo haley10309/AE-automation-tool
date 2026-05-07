@@ -26,7 +26,15 @@ const DB_BADGE = {
 function AppContent() {
   const { user, logout } = useAuth()
   const { dbStatus, dbMessage, connect } = useDB()
-  const [tab, setTab] = useState(TABS.EXTRACT)
+  const [tab, setTab] = useState(
+    () => localStorage.getItem('ae_tool_tab') || TABS.EXTRACT
+  )
+
+  // 탭 변경 시 localStorage에 저장
+  const handleTabChange = (key) => {
+    localStorage.setItem('ae_tool_tab', key)
+    setTab(key)
+  }
 
   const [dbConfig, setDbConfig] = useState(() => {
     const saved = localStorage.getItem('db_config')
@@ -69,7 +77,7 @@ function AppContent() {
         ].map(t => (
           <button key={t.key}
             className={`tab-btn ${tab === t.key ? 'active' : ''}`}
-            onClick={() => setTab(t.key)}>
+            onClick={() => handleTabChange(t.key)}>
             {t.label}
           </button>
         ))}

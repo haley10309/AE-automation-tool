@@ -345,7 +345,7 @@ function ProjectDetail({ project, products, onBack, onUpdated }) {
 function ProjectManager({ products }) {
   const [projects, setProjects]   = useState([])
   const [loading, setLoading]     = useState(true)
-  const [selectedId, setSelectedId] = useState(null)
+  const [selectedId, setSelectedId] = useState(() => localStorage.getItem('country_selected_project_id'))
   const [showCreate, setShowCreate] = useState(false)
   const [newName, setNewName]     = useState('')
   const [newNote, setNewNote]     = useState('')
@@ -367,7 +367,7 @@ function ProjectManager({ products }) {
     setCreating(true)
     const res = await api.ccCreateProject({ name: newName.trim(), note: newNote, site_codes: [] })
     setCreating(false)
-    if (res.ok) { setNewName(''); setNewNote(''); setShowCreate(false); setMsg(''); await load(); setSelectedId(res.id) }
+    if (res.ok) { setNewName(''); setNewNote(''); setShowCreate(false); setMsg(''); await load(); setSelectedId(res.id); localStorage.setItem('country_selected_project_id', res.id) }
     else setMsg('❌ ' + res.message)
   }
 
@@ -375,16 +375,24 @@ function ProjectManager({ products }) {
     e.stopPropagation()
     if (!window.confirm(`"${name}" 프로젝트를 삭제하시겠습니까?\n저장된 카피 데이터도 모두 삭제됩니다.`)) return
     await api.ccDeleteProject(id)
-    if (selectedId === id) setSelectedId(null)
+    if (selectedId === id) { setSelectedId(null); localStorage.removeItem('country_selected_project_id') }
     load()
   }
 
-  const selected = projects.find(p => p.id === selectedId)
+  // 복원된 id가 실제 목록에 없으면 무시
+  useEffect(() => {
+    if (projects.length > 0 && selectedId && !projects.find(p => String(p.id) === String(selectedId))) {
+      setSelectedId(null)
+      localStorage.removeItem('country_selected_project_id')
+    }
+  }, [projects, selectedId])
 
-  if (selectedId && selected) {
+  const selected = projects.find(p => String(p.id) === String(selectedId))
+
+  if (selected) {
     return (
       <ProjectDetail project={selected} products={products}
-        onBack={() => setSelectedId(null)} onUpdated={load} />
+        onBack={() => { setSelectedId(null); localStorage.removeItem('country_selected_project_id') }} onUpdated={load} />
     )
   }
 
@@ -430,7 +438,7 @@ function ProjectManager({ products }) {
       )}
       <div className="pj-grid">
         {filtered.map(p => (
-          <div key={p.id} className="pj-card" onClick={() => setSelectedId(p.id)}>
+          <div key={p.id} className="pj-card" onClick={() => { setSelectedId(p.id); localStorage.setItem('country_selected_project_id', p.id) }}>
             <div className="pj-card-header">
               <span className="pj-card-name">{p.name}</span>
               <button className="act-btn act-delete" style={{ padding: '2px 7px' }}
@@ -622,7 +630,7 @@ function ProductPanel({ onClose, onProductsChanged }) {
 // ── 메인 export ───────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════
 export default function CountryTab() {
-  const [subTab, setSubTab]             = useState('quick')
+  const [subTab, setSubTab]             = useState(() => localStorage.getItem('country_sub_tab') || 'quick')
   const [products, setProducts]         = useState([])
   const [loaded, setLoaded]             = useState(false)
   const [loadErr, setLoadErr]           = useState('')
@@ -648,9 +656,9 @@ export default function CountryTab() {
         </span>
         <div className="cc-subtab-nav">
           <button className={`cc-subtab-btn ${subTab === 'quick' ? 'active' : ''}`}
-            onClick={() => setSubTab('quick')}>즉석 검수</button>
+            onClick={() => { setSubTab('quick'); localStorage.setItem('country_sub_tab', 'quick') }}>즉석 검수</button>
           <button className={`cc-subtab-btn ${subTab === 'project' ? 'active' : ''}`}
-            onClick={() => setSubTab('project')}>📁 프로젝트 관리</button>
+            onClick={() => { setSubTab('project'); localStorage.setItem('country_sub_tab', 'project') }}>📁 프로젝트 관리</button>
         </div>
         <button className="btn-manage-product" onClick={() => setShowProductPanel(true)}>
           ⚙ 제품 데이터 관리
