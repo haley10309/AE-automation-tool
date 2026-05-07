@@ -1,13 +1,19 @@
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
+const bcrypt = require('bcrypt'); // [신규] 비밀번호 암호화용
+const jwt = require('jsonwebtoken'); // [신규] 인증 토큰용
 
 const app = express();
 const PORT = 4000;
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); // base64 파일 수신을 위해 limit 확장
+app.use(express.json({ limit: '50mb' }));
 
 let pool = null;
+
+// ── 환경 변수 및 설정 ───────────────────────────────────────────────
+const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_key_for_copy_diff';
+const JWT_EXPIRES = '24h';
 
 // ── 전역 설정 및 시드 데이터 ──────────────────────────────────────────
 const ALL_SITE_CODES = [
@@ -41,10 +47,26 @@ const SEED_PRODUCTS = [
 ];
 
 // ── 공통 미들웨어 ───────────────────────────────────────────────────────
-// DB 연결이 필요한 라우터에서 중복 확인을 제거하기 위한 미들웨어
 const checkDbConnection = (req, res, next) => {
   if (!pool) return res.json({ ok: false, message: 'DB 연결이 없습니다.' });
   next();
+};
+
+// [신규] JWT 검증 미들웨어
+const authMiddleware = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ ok: false, message: '토큰이 제공되지 않았습니다.' });
+  }
+
+  const token = authHeader.split(' ')[1];
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded; // 인증된 유저 정보를 req 객체에 담아 다음 라우트로 넘김
+    next();
+  } catch (err) {
+    return res.status(401).json({ ok: false, message: '유효하지 않거나 만료된 토큰입니다.' });
+  }
 };
 
 // ═════════════════════════════════════════════════════════════════════
@@ -68,6 +90,17 @@ dbRouter.post('/connect', async (req, res) => {
 
 dbRouter.post('/init', checkDbConnection, async (req, res) => {
   try {
+    // [신규] 인증용 users 테이블 생성
+    await pool.execute(`CREATE TABLE IF NOT EXISTS users (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      email VARCHAR(255) NOT NULL UNIQUE,
+      name VARCHAR(100) NOT NULL,
+      password VARCHAR(255) NOT NULL,
+      position ENUM('intern', 'regular') NOT NULL,
+      approved TINYINT(1) DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
     await pool.execute(`CREATE TABLE IF NOT EXISTS copy_requests (
       id INT AUTO_INCREMENT PRIMARY KEY, product_name VARCHAR(255) NOT NULL,
       requester VARCHAR(100), request_date DATE NOT NULL,
@@ -130,6 +163,86 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
 });
 
 app.use('/api', dbRouter);
+
+// ══════════════════════════════════════════════════════════════
+// [신규] 인증 라우트 (authRouter 구조로 모듈화)
+// ══════════════════════════════════════════════════════════════
+const authRouter = express.Router();
+
+authRouter.post('/register', async (req, res) => {
+  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+  try {
+    const { email, name, password, position } = req.body
+    if (!email?.trim())    return res.json({ ok:false, message:'이메일을 입력해주세요.' })
+    if (!name?.trim())     return res.json({ ok:false, message:'이름을 입력해주세요.' })
+    if (!password?.trim()) return res.json({ ok:false, message:'비밀번호를 입력해주세요.' })
+    if (password.length < 8) return res.json({ ok:false, message:'비밀번호는 8자 이상이어야 합니다.' })
+    if (!['intern','regular'].includes(position)) return res.json({ ok:false, message:'직책을 선택해주세요.' })
+
+    // 이메일 중복 확인
+    const [[existing]] = await pool.execute(`SELECT id FROM users WHERE email=?`, [email.trim()])
+    if (existing) return res.json({ ok:false, message:'이미 가입된 이메일입니다.' })
+
+    const hash = await bcrypt.hash(password, 10)
+    // 첫 번째 가입자는 자동 승인 (관리자)
+    const [[{ cnt }]] = await pool.execute(`SELECT COUNT(*) AS cnt FROM users`)
+    const approved = cnt === 0 ? 1 : 0
+
+    await pool.execute(
+      `INSERT INTO users (email, name, password, position, approved) VALUES (?,?,?,?,?)`,
+      [email.trim().toLowerCase(), name.trim(), hash, position, approved]
+    )
+    res.json({ ok:true, message: approved ? '가입이 완료되었습니다. 로그인해주세요.' : '가입 신청이 완료되었습니다. 관리자 승인 후 로그인하실 수 있습니다.' })
+  } catch (err) { res.json({ ok:false, message: err.message }) }
+});
+
+authRouter.post('/login', async (req, res) => {
+  if (!pool) return res.json({ ok:false, message:'DB 연결이 없습니다.' })
+  try {
+    const { email, password } = req.body
+    if (!email || !password) return res.json({ ok:false, message:'이메일과 비밀번호를 입력해주세요.' })
+
+    const [[user]] = await pool.execute(`SELECT * FROM users WHERE email=?`, [email.trim().toLowerCase()])
+    if (!user) return res.json({ ok:false, message:'이메일 또는 비밀번호가 올바르지 않습니다.' })
+    if (!user.approved) return res.json({ ok:false, message:'관리자 승인 대기 중입니다. 승인 후 로그인하실 수 있습니다.' })
+
+    const valid = await bcrypt.compare(password, user.password)
+    if (!valid) return res.json({ ok:false, message:'이메일 또는 비밀번호가 올바르지 않습니다.' })
+
+    const token = jwt.sign(
+      { id:user.id, email:user.email, name:user.name, position:user.position },
+      JWT_SECRET, { expiresIn: JWT_EXPIRES }
+    )
+    res.json({ ok:true, token, user:{ id:user.id, email:user.email, name:user.name, position:user.position } })
+  } catch (err) { res.json({ ok:false, message: err.message }) }
+});
+
+authRouter.get('/me', authMiddleware, async (req, res) => {
+  try {
+    const [[user]] = await pool.execute(`SELECT id,email,name,position FROM users WHERE id=?`, [req.user.id])
+    if (!user) return res.status(401).json({ ok:false, message:'사용자를 찾을 수 없습니다.' })
+    res.json({ ok:true, user })
+  } catch (err) { res.json({ ok:false, message: err.message }) }
+});
+
+authRouter.get('/users', authMiddleware, async (req, res) => {
+  if (req.user.position !== 'regular') return res.status(403).json({ ok:false, message:'권한이 없습니다.' })
+  try {
+    const [rows] = await pool.execute(`SELECT id,email,name,position,approved,created_at FROM users ORDER BY created_at`)
+    res.json({ ok:true, data:rows })
+  } catch (err) { res.json({ ok:false, message: err.message }) }
+});
+
+authRouter.put('/users/:id/approve', authMiddleware, async (req, res) => {
+  if (req.user.position !== 'regular') return res.status(403).json({ ok:false, message:'권한이 없습니다.' })
+  try {
+    const { approved } = req.body
+    await pool.execute(`UPDATE users SET approved=? WHERE id=?`, [approved ? 1 : 0, req.params.id])
+    res.json({ ok:true })
+  } catch (err) { res.json({ ok:false, message: err.message }) }
+});
+
+app.use('/api/auth', authRouter);
 
 // ═════════════════════════════════════════════════════════════════════
 // 2. 공통 도메인: 제품(Products) 관련 라우터
@@ -366,7 +479,6 @@ app.use('/api/cc', countryRouter);
 const statusRouter = express.Router();
 statusRouter.use(checkDbConnection);
 
-// 트래커 페이지 (생성/목록/조회)
 statusRouter.post('/tracker/pages', async (req, res) => {
   try {
     const { id, title } = req.body;
@@ -379,14 +491,11 @@ statusRouter.post('/tracker/pages', async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-// 트래커 페이지 목록 가져오기 (전체 상태 포함)
 statusRouter.get('/tracker/pages', async (req, res) => {
   if (!pool) return res.json({ ok: false });
   try {
     const [pages] = await pool.execute(`SELECT * FROM tracker_pages ORDER BY created_at DESC`);
-    // 전체 페이지의 상태 정보만 가볍게 가져옵니다.
     const [statuses] = await pool.execute(`SELECT page_id, site_code, status FROM tracker_site_status`);
-    
     res.json({ ok: true, data: pages, statuses });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
@@ -403,7 +512,6 @@ statusRouter.get('/tracker/pages/:id', async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-// 트래커 상태 업데이트
 statusRouter.post('/tracker/status', async (req, res) => {
   try {
     const { pageId, siteCode, status, note } = req.body;
@@ -416,7 +524,6 @@ statusRouter.post('/tracker/status', async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-// 파일 관련 (저장/수정/조회/삭제)
 statusRouter.post('/files', async (req, res) => {
   try {
     const { pageId, siteCode, name, size, status, noteAtUpload, uploadedAt, dataUrl } = req.body;

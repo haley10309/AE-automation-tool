@@ -1,10 +1,12 @@
 import { useState, useCallback, useEffect } from 'react'
 import { api } from '../api.js'
+import { useDB } from '../DBContext.jsx'
 import DiffTable from '../components/DiffTable.jsx'
 import HistoryTable from '../components/HistoryTable.jsx'
 import { parseCol, normalize, isHeaderLike, getStatus, today } from '../utils.js'
 
-export default function ExtractTab({ dbStatus }) {
+export default function ExtractTab() {
+  const { dbStatus } = useDB()
   // 모드: 새 추출 vs 이력 조회
   const [mode, setMode] = useState('new')
 

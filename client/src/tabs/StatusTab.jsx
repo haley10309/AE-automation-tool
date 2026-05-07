@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef, memo } from 'react'
 import { api } from '../api.js'
+import { useDB } from '../DBContext.jsx'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
 
 // ── 상태 정의 (0=미설정, 1~15=단계) ─────────────────────────
@@ -581,6 +582,7 @@ function PageDetail({ page, onBack, onUpdate }) {
 }
 
 export default function StatusTab() {
+  const { dbReady } = useDB()
   const [pages, setPages] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedPageId, setSelectedPageId] = useState(null)
@@ -592,6 +594,7 @@ export default function StatusTab() {
   // ── 초기 로드: DB 우선, 실패 시 localStorage fallback ──────
   // ── 초기 로드: 목록 화면에서도 전체 상태(Status)를 한 번에 파악 ──────
   useEffect(() => {
+    if (!dbReady) return
     async function loadPages() {
       try {
         const res = await api.getTrackerPages()
@@ -654,7 +657,7 @@ export default function StatusTab() {
       }
     }
     loadPages()
-  }, [])
+  }, [dbReady])
 
   const selectedPage = pages.find(p => p.id == selectedPageId)
 
@@ -688,8 +691,8 @@ export default function StatusTab() {
     })
   }, [])
 
-  if (loading) {
-    return <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>불러오는 중...</div>
+  if (!dbReady || loading) {
+    return <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>{!dbReady ? 'DB 연결 중...' : '불러오는 중...'}</div>
   }
 
   if (selectedPage) {
