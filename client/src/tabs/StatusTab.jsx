@@ -1,7 +1,9 @@
 import { useState, useCallback, useEffect, useRef, memo } from 'react'
 import { api } from '../api.js'
+import { useAuth } from '../auth.jsx'
 import { useDB } from '../DBContext.jsx'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
+
 
 // ── 상태 정의 (0=미설정, 1~15=단계) ─────────────────────────
 const COPY_STATUSES = [
@@ -58,10 +60,13 @@ const HistoryItem = ({ file, index, onUpdateNote, download }) => {
       <div className="cst-history-left">
         <div className="cst-file-meta-row" style={{ marginBottom: 4 }}>
           <button className="cst-file-name-btn" style={{ fontSize: 11 }}
-            onClick={() => download(file)} disabled={!file.dataUrl}>
+            onClick={() => download(file)}>
             📎 {file.name}
           </button>
           <span className="cst-file-date">{formatDateTime(file.uploadedAt)}</span>
+          {file.uploadedBy && (
+            <span className="cst-file-uploader">👤 {file.uploadedBy}</span>
+          )}
         </div>
 
         
@@ -192,11 +197,29 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
     }
   }
 
-  const download = (f) => {
-    if (!f.dataUrl) return
-    const a = document.createElement('a')
-    a.href = f.dataUrl; a.download = f.name
-    document.body.appendChild(a); a.click(); document.body.removeChild(a)
+  const [downloading, setDownloading] = useState(false)
+
+  const download = async (f) => {
+    // data_url이 이미 있으면 바로 다운로드 (방금 업로드한 파일)
+    if (f.dataUrl) {
+      const a = document.createElement('a')
+      a.href = f.dataUrl; a.download = f.name
+      document.body.appendChild(a); a.click(); document.body.removeChild(a)
+      return
+    }
+    // 없으면 서버에서 단건 조회 (저장된 파일)
+    if (!f.dbId) return
+    setDownloading(true)
+    try {
+      const res = await fetch(`http://localhost:4000/api/files/${f.dbId}/data`)
+      const data = await res.json()
+      if (data.ok && data.data?.data_url) {
+        const a = document.createElement('a')
+        a.href = data.data.data_url; a.download = f.name
+        document.body.appendChild(a); a.click(); document.body.removeChild(a)
+      }
+    } catch (e) { console.warn('다운로드 실패', e) }
+    finally { setDownloading(false) }
   }
 
   return (
@@ -204,10 +227,13 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
       {entry?.file ? (
         <div className="cst-file-info">
           <div className="cst-file-main">
-            <button className="cst-file-name-btn" onClick={() => download(entry.file)}>
-              📎 {entry.file.name}
+            <button className="cst-file-name-btn" onClick={() => download(entry.file)} disabled={downloading}>
+              {downloading ? '⏳ 불러오는 중...' : `📎 ${entry.file.name}`}
             </button>
             <span className="cst-file-date">{formatDateTime(entry.file.uploadedAt)}</span>
+            {entry.file.uploadedBy && (
+              <span className="cst-file-uploader">👤 {entry.file.uploadedBy}</span>
+            )}
           </div>
           <div className="cst-file-actions">
             <button className="cst-file-replace" onClick={() => fileRef.current?.click()} disabled={uploading}>
@@ -284,14 +310,17 @@ const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, han
 
 // ── 페이지 상세 뷰 ────────────────────────────────────────────
 function PageDetail({ page, onBack, onUpdate }) {
+  const { user } = useAuth()
   const [regionFilter, setRegionFilter] = useState('ALL')
   const [showAddCountry, setShowAddCountry] = useState(false)
   const [search, setSearch] = useState('')
+  const [loadingDetail, setLoadingDetail] = useState(true)
   const dropRef = useRef(null)
 
   // ── 페이지 진입 시 DB에서 상태+파일 히스토리 로드 ──────────
   useEffect(() => {
     async function loadFromDB() {
+      setLoadingDetail(true)
       try {
         // 1. tracker_pages upsert (기존 localStorage 페이지도 DB에 등록 보장)
         await api.createTrackerPage({ id: String(page.id), title: page.name })
@@ -300,12 +329,10 @@ function PageDetail({ page, onBack, onUpdate }) {
         const res = await api.getTrackerDetail(String(page.id))
         if (!res.ok) return
 
-        // 3. DB 데이터 → countries 구조로 병합
-        const baseCountries = page.countries?.length
-          ? page.countries
-          : ALL_SITES
-              .filter(s => DEFAULT_COUNTRIES.includes(s.code))
-              .map(s => ({ code: s.code, status: '', note: '', file: null, fileHistory: [] }))
+        // 3. DB 데이터 → countries 구조로 병합 (항상 DB가 정답)
+        const baseCountries = ALL_SITES
+          .filter(s => DEFAULT_COUNTRIES.includes(s.code))
+          .map(s => ({ code: s.code, status: '', note: '', file: null, fileHistory: [] }))
 
         const statusMap = {}
         for (const s of (res.statuses || [])) statusMap[s.site_code] = s
@@ -315,13 +342,14 @@ function PageDetail({ page, onBack, onUpdate }) {
         for (const f of (res.files || [])) {
           if (!fileMap[f.site_code]) fileMap[f.site_code] = []
           fileMap[f.site_code].push({
-            dbId: f.id,
-            name: f.name,
-            size: f.size,
-            uploadedAt: f.uploaded_at,
+            dbId:           f.id,
+            name:           f.name,
+            size:           f.size,
+            uploadedAt:     f.uploaded_at,
             statusAtUpload: f.status,
-            noteAtUpload: f.note_at_upload,
-            dataUrl: f.data_url,
+            noteAtUpload:   f.note_at_upload,
+            uploadedBy:     f.uploaded_by || null,
+            dataUrl:        null,   // 다운로드 클릭 시 서버에서 단건 조회
           })
         }
 
@@ -353,9 +381,11 @@ function PageDetail({ page, onBack, onUpdate }) {
           }
         }
 
-        onUpdate({ ...page, countries: mergedCountries }, true) // true = DB에서 로드 완료, localStorage 저장 허용
+        onUpdate({ ...page, countries: mergedCountries }, true)
       } catch (e) {
         console.error('[DB] 페이지 상세 로드 실패:', e?.message || e)
+      } finally {
+        setLoadingDetail(false)
       }
     }
     loadFromDB()
@@ -405,11 +435,12 @@ function PageDetail({ page, onBack, onUpdate }) {
         noteAtUpload: fileInfo.noteAtUpload || '',
         uploadedAt: fileInfo.uploadedAt,
         dataUrl: fileInfo.dataUrl,
+        uploadedBy: user?.name || user?.email || null,   // ← 추가
       })
       if (res.ok) dbId = res.id
     } catch (e) { console.warn('파일 DB 저장 실패', e) }
 
-    const fileInfoWithId = { ...fileInfo, dbId }
+    const fileInfoWithId = { ...fileInfo, dbId, uploadedBy: user?.name || user?.email || null }
     const updatedCountries = page.countries.map(c => {
       if (c.code === siteCode) {
         return {
@@ -548,6 +579,9 @@ function PageDetail({ page, onBack, onUpdate }) {
         </div>
       </div>
 
+      {loadingDetail ? (
+        <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>DB에서 불러오는 중...</div>
+      ) : (
       <div className="table-wrap">
         <table className="result-table cst-table">
           <thead>
@@ -577,6 +611,7 @@ function PageDetail({ page, onBack, onUpdate }) {
         </tbody>
         </table>
       </div>
+      )}
     </div>
   )
 }
@@ -585,7 +620,7 @@ export default function StatusTab() {
   const { dbReady } = useDB()
   const [pages, setPages] = useState([])
   const [loading, setLoading] = useState(true)
-  const [selectedPageId, setSelectedPageId] = useState(() => localStorage.getItem('status_selected_page_id'))
+  const [selectedPageId, setSelectedPageId] = useState(null)
   const [showNewPage, setShowNewPage] = useState(false)
   const [newPageName, setNewPageName] = useState('')
   const [newPageMsg, setNewPageMsg] = useState('')
@@ -644,11 +679,6 @@ export default function StatusTab() {
           
           setPages(dbPages)
           saveToStorage({ pages: dbPages }) // DB 데이터를 로컬스토리지에 동기화
-          // 복원된 pageId가 실제 목록에 없으면 초기화
-          const savedPageId = localStorage.getItem('status_selected_page_id')
-          if (savedPageId && !dbPages.find(p => String(p.id) === String(savedPageId))) {
-            localStorage.removeItem('status_selected_page_id')
-          }
         } else {
           // DB 연결 실패 또는 데이터가 없을 시 localStorage fallback
           const local = loadFromStorage()
@@ -664,7 +694,7 @@ export default function StatusTab() {
     loadPages()
   }, [dbReady])
 
-  const selectedPage = pages.find(p => String(p.id) === String(selectedPageId))
+  const selectedPage = pages.find(p => p.id == selectedPageId)
 
   const createPage = async () => {
     if (!newPageName.trim()) { setNewPageMsg('❌ 이름을 입력하세요.'); return }
@@ -701,7 +731,7 @@ export default function StatusTab() {
   }
 
   if (selectedPage) {
-    return <PageDetail page={selectedPage} onBack={() => { setSelectedPageId(null); localStorage.removeItem('status_selected_page_id') }} onUpdate={updatePage} />
+    return <PageDetail page={selectedPage} onBack={() => setSelectedPageId(null)} onUpdate={updatePage} />
   }
 
   return (
@@ -736,7 +766,7 @@ export default function StatusTab() {
           const unset = page.countries.filter(c => !c.status).length
 
           return (
-            <div key={page.id} className="cst-page-card" onClick={() => { setSelectedPageId(page.id); localStorage.setItem('status_selected_page_id', page.id) }}>
+            <div key={page.id} className="cst-page-card" onClick={() => setSelectedPageId(page.id)}>
               <div className="cst-page-card-header">
                 <h3 className="cst-page-card-name">{page.name}</h3>
                 <span className="cst-page-card-total">{total}개국</span>
