@@ -130,9 +130,16 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       id INT AUTO_INCREMENT PRIMARY KEY, page_id VARCHAR(100) NOT NULL,
       site_code VARCHAR(50) NOT NULL, name VARCHAR(500) NOT NULL,
       size INT, type VARCHAR(100), status VARCHAR(100) COMMENT '업로드 당시 상태',
-      note_at_upload TEXT COMMENT '업로드 당시 메모', uploaded_at DATETIME NOT NULL,
+      note_at_upload TEXT COMMENT '업로드 당시 메모',
+      uploaded_by VARCHAR(100) DEFAULT NULL COMMENT '업로더 이름',
+      uploaded_at DATETIME NOT NULL,
       data_url LONGTEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_page_site (page_id, site_code))`);
+
+    // 기존 DB에 uploaded_by 컬럼이 없으면 추가 (이미 있으면 무시)
+    try {
+      await pool.execute(`ALTER TABLE page_files ADD COLUMN uploaded_by VARCHAR(100) DEFAULT NULL COMMENT '업로더 이름' AFTER note_at_upload`);
+    } catch (_) { /* 이미 존재하면 무시 */ }
 
     const [[{ cnt }]] = await pool.execute(`SELECT COUNT(*) AS cnt FROM samsung_products`);
     if (cnt === 0) {
@@ -505,7 +512,7 @@ statusRouter.get('/tracker/pages/:id', async (req, res) => {
     const pageId = req.params.id;
     const [statuses] = await pool.execute(`SELECT site_code, status, note FROM tracker_site_status WHERE page_id = ?`, [pageId]);
     const [files] = await pool.execute(
-      `SELECT id, site_code, name, size, status, note_at_upload, uploaded_at, data_url 
+      `SELECT id, site_code, name, size, status, note_at_upload, uploaded_by, uploaded_at
        FROM page_files WHERE page_id = ? ORDER BY uploaded_at ASC`, [pageId]
     );
     res.json({ ok: true, statuses, files });
@@ -526,11 +533,11 @@ statusRouter.post('/tracker/status', async (req, res) => {
 
 statusRouter.post('/files', async (req, res) => {
   try {
-    const { pageId, siteCode, name, size, status, noteAtUpload, uploadedAt, dataUrl } = req.body;
+    const { pageId, siteCode, name, size, status, noteAtUpload, uploadedAt, dataUrl, uploadedBy } = req.body;
     const mysqlDatetime = new Date(uploadedAt).toISOString().slice(0, 19).replace('T', ' ');
     const [result] = await pool.execute(
-      `INSERT INTO page_files (page_id, site_code, name, size, status, note_at_upload, uploaded_at, data_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [pageId, siteCode, name, size, status, noteAtUpload, mysqlDatetime, dataUrl]
+      `INSERT INTO page_files (page_id, site_code, name, size, status, note_at_upload, uploaded_by, uploaded_at, data_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [pageId, siteCode, name, size, status, noteAtUpload, uploadedBy || null, mysqlDatetime, dataUrl]
     );
     res.json({ ok: true, id: result.insertId });
   } catch (err) { res.json({ ok: false, message: err.message }); }
@@ -548,7 +555,7 @@ statusRouter.get('/files', async (req, res) => {
   try {
     const { pageId, siteCode } = req.query;
     if (!pageId) return res.json({ ok: false, message: 'pageId가 필요합니다.' });
-    let sql = `SELECT id, page_id, site_code, name, size, type, status, uploaded_at, data_url, created_at FROM page_files WHERE page_id = ?`;
+    let sql = `SELECT id, page_id, site_code, name, size, type, status, uploaded_by, uploaded_at, created_at FROM page_files WHERE page_id = ?`;
     const params = [String(pageId)];
     if (siteCode) { 
       sql += ` AND site_code = ?`; 
@@ -557,6 +564,17 @@ statusRouter.get('/files', async (req, res) => {
     sql += ` ORDER BY created_at ASC`;
     const [rows] = await pool.execute(sql, params);
     res.json({ ok: true, data: rows });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// 다운로드: data_url은 클릭 시에만 단건 조회
+statusRouter.get('/files/:id/data', async (req, res) => {
+  try {
+    const [[row]] = await pool.execute(
+      `SELECT id, name, data_url FROM page_files WHERE id = ?`, [req.params.id]
+    );
+    if (!row) return res.json({ ok: false, message: '파일을 찾을 수 없습니다.' });
+    res.json({ ok: true, data: row });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 

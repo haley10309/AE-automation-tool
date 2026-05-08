@@ -2105,3 +2105,11 @@ mark.diff-ins {
   color: #fff !important;
   border-color: var(--text) !important;
 }
+
+/* ── 파일 업로더 표시 ── */
+.cst-file-uploader {
+  font-size: 11px;
+  color: #6366f1;
+  font-weight: 500;
+  white-space: nowrap;
+}

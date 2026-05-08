@@ -59,9 +59,9 @@ function AppContent() {
           {/* 사용자 정보 + 로그아웃 */}
           <div className="user-info">
             <span className="user-name">{user.name}</span>
-            <span className={`user-position ${user.position}`}>
+            {/* <span className={`user-position ${user.position}`}>
               {user.position === 'regular' ? '정규직' : '인턴'}
-            </span>
+            </span> */}
             <button className="btn-logout" onClick={logout}>로그아웃</button>
           </div>
         </div>
