@@ -155,7 +155,7 @@ function ProjectListView({ projects, loading, onCreate, onOpen, onDelete }) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// 국가 히스토리 드로어
+// 국가 히스토리 드로어 (변경된 내용만 추려서 표시)
 // ════════════════════════════════════════════════════════════════
 function CountryHistoryDrawer({ projectId, country, onClose }) {
   const [history, setHistory] = useState([])
@@ -177,9 +177,10 @@ function CountryHistoryDrawer({ projectId, country, onClose }) {
     return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
   }
 
-  const parseSafe = (json, fallback = []) => {
-    try { return typeof json === 'string' ? JSON.parse(json) : (json || fallback) }
-    catch { return fallback }
+  const parseSafe = (json) => {
+    if (!json) return []
+    if (typeof json !== 'string') return json
+    try { return JSON.parse(json) } catch { return [] }
   }
 
   return (
@@ -196,107 +197,97 @@ function CountryHistoryDrawer({ projectId, country, onClose }) {
           <div className="empty-state" style={{ padding: 40 }}>
             <div className="empty-icon">📭</div>
             <p>아직 수정 이력이 없습니다.</p>
-            <small>Merge를 재실행하면 변경된 행이 여기에 기록됩니다.</small>
+            <small>Merge를 재실행하면 이전 버전이 여기에 기록됩니다.</small>
           </div>
         ) : (
           <div className="mg-history-list">
             {history.map((h, i) => {
-              const diffRows = parseSafe(h.diff_json, [])
-              const isFirst  = i === history.length - 1  // 가장 오래된 = 최초 저장
-              const changedCount = isFirst
-                ? parseSafe(h.mapped_json, []).length  // 최초: 전체 행 수
-                : diffRows.length
+              const currentMapped = parseSafe(h.mapped_json)
+              const prevMapped = i < history.length - 1 ? parseSafe(history[i+1].mapped_json) : []
+
+              // 원본 인덱스(ri + 1)를 기억해두고, 변경되거나 누락된 행만 필터링합니다.
+              const changedRows = currentMapped.map((row, ri) => {
+                const prevRow = prevMapped[ri] || {}
+                const isChanged = prevRow.local !== undefined && prevRow.local !== row.local
+                return { 
+                  ...row, 
+                  originalIndex: ri + 1, 
+                  prevLocal: prevRow.local, 
+                  isChanged 
+                }
+              }).filter(row => row.isChanged || row.missing)
 
               return (
                 <div key={h.id} className="mg-history-item">
-                  <div className="mg-history-meta"
-                    onClick={() => setExpanded(expanded === i ? null : i)}>
+                  <div className="mg-history-meta" onClick={() => setExpanded(expanded === i ? null : i)}>
                     <span className="mg-history-ver">v{history.length - i}</span>
+                    
+                    {/* 💡 작성자 정보 추가 영역 */}
+                    <span 
+                      className="mg-history-author" 
+                      title={h.saved_by_email ? `이메일: ${h.saved_by_email}` : ''}
+                      style={{ color: '#3b82f6', fontWeight: 600, fontSize: 13, marginRight: 8, cursor: h.saved_by_email ? 'help' : 'default' }}
+                    >
+                      👤 {h.saved_by || '알 수 없음'}
+                    </span>
+                    {/* ────────────────── */}
+
                     <span className="mg-history-date">{fmt(h.saved_at)}</span>
                     <span className="mg-history-rows">
-                      {isFirst
-                        ? `최초 저장 · ${changedCount}행`
-                        : changedCount > 0
-                          ? `변경 ${changedCount}행`
-                          : '변경 없음'}
+                      {changedRows.length > 0 ? `변경 ${changedRows.length}건` : '변경 없음'}
                     </span>
                     <span className="mg-history-toggle">{expanded === i ? '▲ 접기' : '▼ 펼치기'}</span>
                   </div>
 
                   {expanded === i && (
                     <div className="mg-history-body">
-                      {/* 최초 저장: 전체 표시 / 이후: 변경된 행만 표시 */}
-                      {isFirst ? (
-                        // 전체 행
-                        <div className="mg-history-table-wrap">
+                      <div className="mg-history-table-wrap">
+                        {changedRows.length === 0 ? (
+                          <div style={{ padding: '20px', textAlign: 'center', color: '#6b7280', fontSize: '13px', background: '#f9fafb', borderRadius: '6px' }}>
+                            이전 버전과 비교하여 변경된 카피가 없습니다.
+                          </div>
+                        ) : (
                           <table className="mg-history-table">
                             <thead>
                               <tr>
                                 <th style={{ width: 36 }}>#</th>
-                                <th>EN</th>
-                                <th>{h.label || country.label}</th>
+                                <th style={{ width: '30%' }}>EN</th>
+                                <th>{h.label || country.label} (수정된 내역만)</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {parseSafe(h.mapped_json, []).map((row, ri) => (
-                                <tr key={ri} className={row.missing ? 'mg-cell-missing' : ''}>
-                                  <td style={{ textAlign: 'center', color: '#9ca3af', fontSize: 11 }}>{ri + 1}</td>
+                              {changedRows.map((row, idx) => (
+                                <tr key={idx} className={row.missing ? 'mg-cell-missing' : 'mg-cell-changed'}>
+                                  <td style={{ textAlign: 'center', color: '#9ca3af', fontSize: 11, fontWeight: 'bold' }}>
+                                    {row.originalIndex}
+                                  </td>
                                   <td className="mg-history-en">{row.en}</td>
                                   <td className="mg-history-local">
-                                    {row.missing
-                                      ? <span className="mg-missing-badge">⚠ 매핑 없음</span>
-                                      : row.local || <em className="empty-val">빈 값</em>}
+                                    {row.missing ? (
+                                      <span className="mg-missing-badge">⚠ 매핑 없음</span>
+                                    ) : (
+                                      <div className="mg-diff-view">
+                                        <div className="mg-diff-old">
+                                          <span className="mg-diff-label">AS-WAS:</span> 
+                                          <del>{row.prevLocal || <em className="empty-val">빈 값</em>}</del>
+                                        </div>
+                                        <div className="mg-diff-new">
+                                          <span className="mg-diff-label">TO-BE:</span> 
+                                          <ins>{row.local || <em className="empty-val">빈 값</em>}</ins>
+                                        </div>
+                                      </div>
+                                    )}
                                   </td>
                                 </tr>
                               ))}
                             </tbody>
                           </table>
-                        </div>
-                      ) : diffRows.length === 0 ? (
-                        <div style={{ padding: '12px 16px', fontSize: 13, color: '#9ca3af' }}>변경된 행이 없습니다.</div>
-                      ) : (
-                        // 변경된 행만
-                        <div className="mg-history-table-wrap">
-                          <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 8, padding: '0 2px' }}>
-                            이전 버전 대비 변경된 {diffRows.length}개 행
-                          </div>
-                          <table className="mg-history-table">
-                            <thead>
-                              <tr>
-                                <th style={{ width: 36 }}>#행</th>
-                                <th>EN</th>
-                                <th style={{ color: '#dc2626' }}>이전</th>
-                                <th style={{ color: '#059669' }}>변경 후</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {diffRows.map((d, di) => (
-                                <tr key={di} className={d.missing ? 'mg-cell-missing' : ''}>
-                                  <td style={{ textAlign: 'center', color: '#9ca3af', fontSize: 11 }}>{d.row}</td>
-                                  <td className="mg-history-en">{d.en}</td>
-                                  <td className="mg-history-prev">
-                                    {d.prev_local
-                                      ? <span style={{ color: '#dc2626' }}>{d.prev_local}</span>
-                                      : <em className="empty-val">없음</em>}
-                                  </td>
-                                  <td className="mg-history-local">
-                                    {d.missing
-                                      ? <span className="mg-missing-badge">⚠ 매핑 없음</span>
-                                      : d.new_local
-                                        ? <span style={{ color: '#059669', fontWeight: 500 }}>{d.new_local}</span>
-                                        : <em className="empty-val">빈 값</em>}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-
-                      {/* 원본 붙여넣기 */}
+                        )}
+                      </div>
+                      
                       {h.raw_paste && (
                         <details style={{ marginTop: 10 }}>
-                          <summary style={{ fontSize: 11, color: '#6b7280', cursor: 'pointer' }}>원본 컨펌 카피 보기</summary>
+                          <summary style={{ fontSize: 11, color: '#6b7280', cursor: 'pointer' }}>원본 컨펌 카피 보기 (Raw Paste)</summary>
                           <pre className="mg-history-raw">{h.raw_paste}</pre>
                         </details>
                       )}

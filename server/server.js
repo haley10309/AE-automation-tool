@@ -131,6 +131,8 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       raw_paste   TEXT,
       mapped_json JSON COMMENT '전체 매핑 결과',
       diff_json   JSON COMMENT '이전 버전 대비 변경된 행만',
+      saved_by    VARCHAR(100) COMMENT '저장한 사용자 이름',
+      saved_by_email VARCHAR(255) COMMENT '저장한 사용자 이메일',
       saved_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_country (country_id, project_id)
     ) COMMENT='국가별 Merge 변경 이력'`);
@@ -139,6 +141,12 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
     try {
       await pool.execute(`ALTER TABLE merge_country_history ADD COLUMN diff_json JSON COMMENT '변경된 행만' AFTER mapped_json`);
     } catch (_) { /* 이미 존재하면 무시 */ }
+    try {
+      await pool.execute(`ALTER TABLE merge_country_history ADD COLUMN saved_by VARCHAR(100) AFTER diff_json`);
+    } catch (_) {}
+    try {
+      await pool.execute(`ALTER TABLE merge_country_history ADD COLUMN saved_by_email VARCHAR(255) AFTER saved_by`);
+    } catch (_) {}
 
     await pool.execute(`CREATE TABLE IF NOT EXISTS copy_requests (
       id INT AUTO_INCREMENT PRIMARY KEY, product_name VARCHAR(255) NOT NULL,
@@ -697,11 +705,13 @@ mergeRouter.delete('/projects/:id', async (req, res) => {
 
 // ── 국가 upsert (label로 식별 — 있으면 UPDATE, 없으면 INSERT)
 // ── 국가 upsert (label로 식별 — 있으면 UPDATE, 없으면 INSERT)
-mergeRouter.post('/projects/:id/countries', async (req, res) => {
+mergeRouter.post('/projects/:id/countries', authMiddleware, async (req, res) => {
   if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
     const projectId = req.params.id
     const { countryId, label, rawPaste, mappedJson } = req.body
+    const savedBy      = req.user?.name  || '알 수 없음'
+    const savedByEmail = req.user?.email || ''
     if (!label?.trim()) return res.json({ ok: false, message: '국가명을 입력하세요.' })
 
     let finalCountryId = countryId;
@@ -763,9 +773,9 @@ mergeRouter.post('/projects/:id/countries', async (req, res) => {
     // 최초 저장이거나 변경이 있을 때만 히스토리 기록
     if (prevMapped.length === 0 || diffRows.length > 0) {
       await pool.execute(
-        `INSERT INTO merge_country_history (project_id, country_id, label, raw_paste, mapped_json, diff_json)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [projectId, finalCountryId, label, rawPaste || '', mappedJson || null, JSON.stringify(diffRows)]
+        `INSERT INTO merge_country_history (project_id, country_id, label, raw_paste, mapped_json, diff_json, saved_by, saved_by_email)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, finalCountryId, label, rawPaste || '', mappedJson || null, JSON.stringify(diffRows), savedBy, savedByEmail]
       )
     }
 
@@ -796,7 +806,7 @@ mergeRouter.get('/projects/:id/countries/:countryId/history', async (req, res) =
   if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
     const [rows] = await pool.execute(
-      `SELECT id, label, raw_paste, mapped_json, diff_json, saved_at
+      `SELECT id, label, raw_paste, mapped_json, diff_json, saved_by, saved_by_email, saved_at
        FROM merge_country_history
        WHERE country_id = ? AND project_id = ?
        ORDER BY saved_at DESC`,
