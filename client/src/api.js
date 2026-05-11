@@ -52,4 +52,16 @@ export const api = window.electronAPI || {
   // [신규] 히스토리 내 개별 파일 메모만 수정
   updateHistoryNote: (id, body) => call('PUT',   `/api/files/${id}/note`, body),
   createTrackerPage: (body)     => call('POST',  '/api/tracker/pages', body),
+
+  // ── Merge 프로젝트 ──────────────────────────────────────────
+  mergeListProjects:   ()         => call('GET',    '/api/merge/projects'),
+  mergeCreateProject:  (body)     => call('POST',   '/api/merge/projects', body),
+  mergeUpdateProject:  (id, body) => call('PUT',    `/api/merge/projects/${id}`, body),
+  mergeDeleteProject:  (id)       => call('DELETE', `/api/merge/projects/${id}`),
+  mergeGetProject:     (id)       => call('GET',    `/api/merge/projects/${id}`),
+
+  // 국가별 카피 (프로젝트 내)
+  mergeUpsertCountry:  (projectId, body)              => call('POST',   `/api/merge/projects/${projectId}/countries`, body),
+  mergeDeleteCountry:  (projectId, countryId)         => call('DELETE', `/api/merge/projects/${projectId}/countries/${countryId}`),
+  mergeGetCountryHistory: (projectId, countryId)       => call('GET',    `/api/merge/projects/${projectId}/countries/${countryId}/history`),
 }

@@ -7,9 +7,11 @@ import AuthPage from './pages/AuthPage.jsx'
 import ExtractTab from './tabs/ExtractTab.jsx'
 import CountryTab from './tabs/CountryTab.jsx'
 import StatusTab  from './tabs/StatusTab.jsx'
+import MergeTab   from './tabs/MergeTab.jsx'
 
 const TABS = {
   EXTRACT:  'extract',
+  MERGE:    'merge',
   COUNTRY:  'country',
   STATUS:   'status',
   SETTINGS: 'settings',
@@ -71,6 +73,7 @@ function AppContent() {
       <nav className="tab-nav">
         {[
           { key: TABS.EXTRACT,  label: '업데이트 영역 추출 · 조회' },
+          { key: TABS.MERGE,    label: '카피덱 자동 Merge' },
           { key: TABS.COUNTRY,  label: '국가별 카피 제품 출시 반영 검수' },
           { key: TABS.STATUS,   label: '국가별 카피 작업 현황' },
           { key: TABS.SETTINGS, label: 'DB 설정' },
@@ -85,6 +88,7 @@ function AppContent() {
 
       <main className="main-content">
         {tab === TABS.EXTRACT  && <ExtractTab />}
+        {tab === TABS.MERGE    && <MergeTab />}
         {tab === TABS.COUNTRY  && <CountryTab />}
         {tab === TABS.STATUS   && <StatusTab />}
 
