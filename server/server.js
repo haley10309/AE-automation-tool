@@ -100,6 +100,53 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       approved TINYINT(1) DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
+    //머지 db 
+      await pool.execute(`
+    CREATE TABLE IF NOT EXISTS merge_projects (
+      id          INT AUTO_INCREMENT PRIMARY KEY,
+      title       VARCHAR(300) NOT NULL,
+      en_lines    LONGTEXT,
+      created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `)
+   // (server.js의 /api/init 내부)
+    await pool.execute(`CREATE TABLE IF NOT EXISTS merge_countries (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      project_id INT NOT NULL,
+      label VARCHAR(100) NOT NULL,
+      raw_paste TEXT,
+      mapped_json JSON,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      -- 💡 [여기에 추가] 프로젝트 내 동일 국가 중복 방지
+      UNIQUE KEY idx_proj_label (project_id, label)
+    )`);
+
+    // ── merge_country_history 테이블 (변경 이력) ──────────────
+    await pool.execute(`CREATE TABLE IF NOT EXISTS merge_country_history (
+      id          INT AUTO_INCREMENT PRIMARY KEY,
+      project_id  INT NOT NULL,
+      country_id  INT NOT NULL,
+      label       VARCHAR(100),
+      raw_paste   TEXT,
+      mapped_json JSON COMMENT '전체 매핑 결과',
+      diff_json   JSON COMMENT '이전 버전 대비 변경된 행만',
+      saved_by    VARCHAR(100) COMMENT '저장한 사용자 이름',
+      saved_by_email VARCHAR(255) COMMENT '저장한 사용자 이메일',
+      saved_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_country (country_id, project_id)
+    ) COMMENT='국가별 Merge 변경 이력'`);
+
+    // 기존 DB에 diff_json 컬럼이 없으면 추가
+    try {
+      await pool.execute(`ALTER TABLE merge_country_history ADD COLUMN diff_json JSON COMMENT '변경된 행만' AFTER mapped_json`);
+    } catch (_) { /* 이미 존재하면 무시 */ }
+    try {
+      await pool.execute(`ALTER TABLE merge_country_history ADD COLUMN saved_by VARCHAR(100) AFTER diff_json`);
+    } catch (_) {}
+    try {
+      await pool.execute(`ALTER TABLE merge_country_history ADD COLUMN saved_by_email VARCHAR(255) AFTER saved_by`);
+    } catch (_) {}
 
     await pool.execute(`CREATE TABLE IF NOT EXISTS copy_requests (
       id INT AUTO_INCREMENT PRIMARY KEY, product_name VARCHAR(255) NOT NULL,
@@ -584,6 +631,192 @@ statusRouter.delete('/files/:id', async (req, res) => {
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
+
+// ══════════════════════════════════════════════════════════════
+// merge Deck api 
+// ══════════════════════════════════════════════════════════════
+
+
+const mergeRouter = express.Router()
+
+// ── 프로젝트 목록
+mergeRouter.get('/projects', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const [rows] = await pool.execute(
+      `SELECT id, title, created_at, updated_at FROM merge_projects ORDER BY updated_at DESC`
+    )
+    res.json({ ok: true, data: rows })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+// ── 프로젝트 상세 (en_lines + 국가 목록)
+mergeRouter.get('/projects/:id', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const [[project]] = await pool.execute(
+      `SELECT id, title, en_lines, created_at, updated_at FROM merge_projects WHERE id = ?`,
+      [req.params.id]
+    )
+    if (!project) return res.json({ ok: false, message: '프로젝트 없음' })
+    const [countries] = await pool.execute(
+      `SELECT id, label, raw_paste, mapped_json, created_at, updated_at FROM merge_countries WHERE project_id = ? ORDER BY id ASC`,
+      [req.params.id]
+    )
+    res.json({ ok: true, project, countries })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+// ── 프로젝트 생성
+mergeRouter.post('/projects', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const { title, enLines } = req.body
+    if (!title?.trim()) return res.json({ ok: false, message: '프로젝트 이름을 입력하세요.' })
+    const [result] = await pool.execute(
+      `INSERT INTO merge_projects (title, en_lines) VALUES (?, ?)`,
+      [title.trim(), enLines || '']
+    )
+    res.json({ ok: true, id: result.insertId })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+// ── 프로젝트 수정 (제목 / en_lines 업데이트)
+mergeRouter.put('/projects/:id', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const { title, enLines } = req.body
+    await pool.execute(
+      `UPDATE merge_projects SET title = COALESCE(?, title), en_lines = COALESCE(?, en_lines) WHERE id = ?`,
+      [title ?? null, enLines ?? null, req.params.id]
+    )
+    res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+// ── 프로젝트 삭제 (cascade → 국가도 삭제)
+mergeRouter.delete('/projects/:id', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    await pool.execute(`DELETE FROM merge_projects WHERE id = ?`, [req.params.id])
+    res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+// ── 국가 upsert (label로 식별 — 있으면 UPDATE, 없으면 INSERT)
+// ── 국가 upsert (label로 식별 — 있으면 UPDATE, 없으면 INSERT)
+mergeRouter.post('/projects/:id/countries', authMiddleware, async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const projectId = req.params.id
+    const { countryId, label, rawPaste, mappedJson } = req.body
+    const savedBy      = req.user?.name  || '알 수 없음'
+    const savedByEmail = req.user?.email || ''
+    if (!label?.trim()) return res.json({ ok: false, message: '국가명을 입력하세요.' })
+
+    let finalCountryId = countryId;
+
+    if (countryId) {
+      // 1. 기존 국가 업데이트
+      await pool.execute(
+        `UPDATE merge_countries SET label = ?, raw_paste = ?, mapped_json = ? WHERE id = ? AND project_id = ?`,
+        [label, rawPaste || '', mappedJson || null, countryId, projectId]
+      )
+    } else {
+      // 2. 신규 국가 추가
+      const [result] = await pool.execute(
+        `INSERT INTO merge_countries (project_id, label, raw_paste, mapped_json) VALUES (?, ?, ?, ?)`,
+        [projectId, label, rawPaste || '', mappedJson || null]
+      )
+      finalCountryId = result.insertId;
+    }
+
+    // 💡 [핵심 추가] 수정/추가 시 무조건 히스토리 테이블에 한 줄 쌓기
+    // 이전 mapped_json과 비교해서 변경된 행만 diff_json으로 저장
+    let prevMapped = []
+    try {
+      const [[prev]] = await pool.execute(
+        `SELECT mapped_json FROM merge_country_history
+         WHERE country_id = ? AND project_id = ?
+         ORDER BY saved_at DESC LIMIT 1`,
+        [finalCountryId, projectId]
+      )
+      if (prev?.mapped_json) {
+        prevMapped = typeof prev.mapped_json === 'string'
+          ? JSON.parse(prev.mapped_json)
+          : prev.mapped_json
+      }
+    } catch (_) { /* 첫 저장이면 무시 */ }
+
+    // 변경된 행만 추출 (local 값이 다른 행)
+    let newMapped = []
+    try {
+      newMapped = typeof mappedJson === 'string' ? JSON.parse(mappedJson) : (mappedJson || [])
+    } catch (_) {}
+
+    const diffRows = newMapped.reduce((acc, row, i) => {
+      const prev = prevMapped[i]
+      const localChanged = !prev || prev.local !== row.local
+      const missingChanged = !prev || prev.missing !== row.missing
+      if (localChanged || missingChanged) {
+        acc.push({
+          row: i + 1,
+          en: row.en,
+          prev_local: prev?.local ?? null,
+          new_local: row.local,
+          missing: row.missing || false,
+        })
+      }
+      return acc
+    }, [])
+
+    // 최초 저장이거나 변경이 있을 때만 히스토리 기록
+    if (prevMapped.length === 0 || diffRows.length > 0) {
+      await pool.execute(
+        `INSERT INTO merge_country_history (project_id, country_id, label, raw_paste, mapped_json, diff_json, saved_by, saved_by_email)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, finalCountryId, label, rawPaste || '', mappedJson || null, JSON.stringify(diffRows), savedBy, savedByEmail]
+      )
+    }
+
+    res.json({ ok: true, id: Number(finalCountryId) })
+
+  } catch (e) { 
+    if (e.code === 'ER_DUP_ENTRY') {
+      return res.json({ ok: false, message: '이미 이 프로젝트에 같은 이름의 국가가 존재합니다.' })
+    }
+    res.json({ ok: false, message: e.message }) 
+  }
+})
+// ── 국가 삭제
+mergeRouter.delete('/projects/:id/countries/:countryId', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    await pool.execute(
+      `DELETE FROM merge_countries WHERE id = ? AND project_id = ?`,
+      [req.params.countryId, req.params.id]
+    )
+    res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+// ── [3] 히스토리 조회 엔드포인트 추가 ─────────────────────────
+// mergeRouter.delete(...) 바로 아래에 추가
+ 
+mergeRouter.get('/projects/:id/countries/:countryId/history', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const [rows] = await pool.execute(
+      `SELECT id, label, raw_paste, mapped_json, diff_json, saved_by, saved_by_email, saved_at
+       FROM merge_country_history
+       WHERE country_id = ? AND project_id = ?
+       ORDER BY saved_at DESC`,
+      [req.params.countryId, req.params.id]
+    )
+    res.json({ ok: true, data: rows })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+app.use('/api/merge', mergeRouter)
 
 app.use('/api', statusRouter);
 
