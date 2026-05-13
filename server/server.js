@@ -212,6 +212,39 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       FOREIGN KEY (project_id) REFERENCES cc_projects(id) ON DELETE CASCADE
     ) COMMENT='국가별 카피 셀 데이터'`);
 
+    await pool.execute(`CREATE TABLE IF NOT EXISTS cc_project_dnt (
+      id           INT AUTO_INCREMENT PRIMARY KEY,
+      project_id   INT NOT NULL,
+      en_raw       TEXT          COMMENT '영문 원본',
+      site_codes   TEXT          COMMENT '선택 국가 코드 JSON',
+      result_json  LONGTEXT      COMMENT 'DNT 분석 결과 JSON',
+      locals_json  LONGTEXT      COMMENT '로컬어 입력 JSON',
+      saved_by     VARCHAR(100)  COMMENT '저장한 사용자',
+      saved_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (project_id) REFERENCES cc_projects(id) ON DELETE CASCADE
+    ) COMMENT='DNT 사전 검증 스냅샷'`);
+
+    // 즉석 검수 국가 목록 (영구 보존)
+    await pool.execute(`CREATE TABLE IF NOT EXISTS quick_check_sites (
+      id         INT AUTO_INCREMENT PRIMARY KEY,
+      site_code  VARCHAR(20) NOT NULL UNIQUE COMMENT '국가 코드',
+      sort_order INT NOT NULL DEFAULT 0      COMMENT '표시 순서',
+      added_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) COMMENT='즉석 검수 선택 국가 영구 목록'`);
+
+    // 국가별 로컬어 변경 이력
+    await pool.execute(`CREATE TABLE IF NOT EXISTS cc_locals_history (
+      id           INT AUTO_INCREMENT PRIMARY KEY,
+      project_id   INT NOT NULL,
+      site_code    VARCHAR(20)   NOT NULL  COMMENT '국가 코드',
+      local_text   LONGTEXT               COMMENT '변경된 로컬어 전체',
+      en_raw       TEXT                   COMMENT '당시 영문 원본',
+      saved_by     VARCHAR(100)           COMMENT '저장한 사용자 이름',
+      saved_by_email VARCHAR(255)         COMMENT '저장한 사용자 이메일',
+      saved_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (project_id) REFERENCES cc_projects(id) ON DELETE CASCADE
+    ) COMMENT='국가별 로컬어 변경 이력'`);
+
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
@@ -524,6 +557,114 @@ countryRouter.put('/copies/cell', async (req, res) => {
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
+
+// ── 국가별 로컬어 변경 이력 ─────────────────────────────────
+countryRouter.post('/projects/:id/locals-history', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const { siteCode, localText, enRaw, savedBy, savedByEmail } = req.body
+    if (!siteCode) return res.json({ ok: false, message: 'siteCode 필요' })
+    await pool.execute(
+      `INSERT INTO cc_locals_history (project_id, site_code, local_text, en_raw, saved_by, saved_by_email)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [req.params.id, siteCode, localText || '', enRaw || '',
+       savedBy || null, savedByEmail || null]
+    )
+    res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+countryRouter.get('/projects/:id/locals-history/:siteCode', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const [rows] = await pool.execute(
+      `SELECT id, site_code, local_text, en_raw, saved_by, saved_by_email, saved_at
+       FROM cc_locals_history
+       WHERE project_id = ? AND site_code = ?
+       ORDER BY saved_at DESC LIMIT 50`,
+      [req.params.id, req.params.siteCode]
+    )
+    res.json({ ok: true, data: rows })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+// ── DNT 사전 검증 스냅샷 ────────────────────────────────────
+countryRouter.post('/projects/:id/dnt', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const { enRaw, siteCodes, resultJson, localsJson, savedBy } = req.body
+    const [r] = await pool.execute(
+      `INSERT INTO cc_project_dnt (project_id, en_raw, site_codes, result_json, locals_json, saved_by)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [req.params.id, enRaw || '', JSON.stringify(siteCodes || []),
+       resultJson || null, localsJson || null, savedBy || null]
+    )
+    res.json({ ok: true, id: r.insertId })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+countryRouter.get('/projects/:id/dnt', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const [rows] = await pool.execute(
+      `SELECT id, en_raw, site_codes, result_json, locals_json, saved_by, saved_at
+       FROM cc_project_dnt WHERE project_id = ? ORDER BY saved_at DESC`,
+      [req.params.id]
+    )
+    res.json({ ok: true, data: rows })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+countryRouter.delete('/projects/:id/dnt/:snapId', async (req, res) => {
+  if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    await pool.execute(
+      `DELETE FROM cc_project_dnt WHERE id = ? AND project_id = ?`,
+      [req.params.snapId, req.params.id]
+    )
+    res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+// ── 즉석 검수 국가 목록 ─────────────────────────────────────
+// GET: 저장된 국가 목록 조회
+countryRouter.get('/quick-sites', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT site_code FROM quick_check_sites ORDER BY sort_order ASC, added_at ASC`
+    )
+    res.json({ ok: true, data: rows.map(r => r.site_code) })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+// POST: 국가 추가
+countryRouter.post('/quick-sites', async (req, res) => {
+  try {
+    const { siteCode } = req.body
+    if (!siteCode) return res.json({ ok: false, message: 'siteCode 필요' })
+    // sort_order는 현재 최대값 + 1
+    const [[{ maxOrder }]] = await pool.execute(
+      `SELECT COALESCE(MAX(sort_order), -1) AS maxOrder FROM quick_check_sites`
+    )
+    await pool.execute(
+      `INSERT INTO quick_check_sites (site_code, sort_order) VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE sort_order = sort_order`,
+      [siteCode, maxOrder + 1]
+    )
+    res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+// DELETE: 국가 제거
+countryRouter.delete('/quick-sites/:siteCode', async (req, res) => {
+  try {
+    await pool.execute(
+      `DELETE FROM quick_check_sites WHERE site_code = ?`,
+      [req.params.siteCode]
+    )
+    res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
 
 app.use('/api/cc', countryRouter);
 
