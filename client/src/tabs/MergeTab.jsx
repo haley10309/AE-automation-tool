@@ -7,6 +7,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { api } from '../api.js'
 import { useDB } from '../DBContext.jsx'
+import SiteDropdown from '../components/SiteDropdown.jsx'
 
 const LS_EN_KEY = 'merge_en_copy'
 
@@ -533,11 +534,22 @@ function CountryCard({ country, onRemove, onLabelChange, pasteRef, projectId }) 
 
       <div className="mg-country-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <input className="mg-country-label-input" value={country.label}
-            onChange={e => onLabelChange(country.id, e.target.value)}
-            placeholder="국가명 (예: JP)"
-           
-            style={{ cursor: 'default', background: '#f3f4f6', color: '#6b7280' }} />
+          {country.isSaved ? (
+            /* 이미 저장된 국가 — 변경 불가, label만 표시 */
+            <span className="mg-country-label-input"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4,
+                background: '#f3f4f6', color: '#374151', borderRadius: 6,
+                padding: '4px 10px', fontSize: 13, fontWeight: 600, border: '1px solid #e5e7eb' }}>
+              {country.label}
+            </span>
+          ) : (
+            /* 미저장 국가 — SiteDropdown으로 선택 */
+            <SiteDropdown
+              label={country.label ? `🌐 ${country.label}` : '국가 선택 ▾'}
+              excludeCodes={[]}
+              onAdd={site => onLabelChange(country.id, site.code)}
+            />
+          )}
           {country.isSaved && <span style={{ fontSize: 10, color: '#10b981', whiteSpace: 'nowrap' }}>✓ 저장됨</span>}
         </div>
         {country.dbId && (
@@ -548,14 +560,52 @@ function CountryCard({ country, onRemove, onLabelChange, pasteRef, projectId }) 
         )}
       </div>
 
-      <textarea
-        ref={el => { if (el) pasteRef.current[country.id] = el }}
-        className="paste-area mg-paste"
-        value={pasteText}
-        onChange={e => setPasteText(e.target.value)}
-        placeholder={"컨펌된 카피 붙여넣기 (탭 구분)\n\n예:\nFind Your Galaxy\tFind Your Galaxy\nPerformance\tパフォーマンス性能"}
-      />
-      <div className="input-hint">EN[탭]로컬어 — 엑셀에서 두 열 선택 후 Ctrl+C → Ctrl+V</div>
+      {country.isSaved ? (
+        /* ── 저장된 국가: 읽기 전용 잠금 ── */
+        <div style={{
+          position: 'relative', marginTop: 8,
+          borderRadius: 8, overflow: 'hidden',
+          border: '1.5px solid #e5e7eb',
+        }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '6px 10px',
+            background: '#f9fafb',
+            borderBottom: '1px solid #e5e7eb',
+            fontSize: 11, color: '#6b7280', fontWeight: 600,
+          }}>
+            <span>🔒</span>
+            <span>저장된 카피 — 수정하려면 <strong style={{ color: '#f59e0b' }}>국가별 추가 카피</strong>를 사용하세요</span>
+          </div>
+          <textarea
+            ref={el => { if (el) pasteRef.current[country.id] = el }}
+            className="paste-area mg-paste"
+            value={pasteText}
+            readOnly
+            style={{
+              cursor: 'not-allowed',
+              background: '#f3f4f6',
+              color: '#9ca3af',
+              border: 'none',
+              borderRadius: 0,
+              resize: 'none',
+              marginTop: 0,
+            }}
+          />
+        </div>
+      ) : (
+        /* ── 신규 국가: 편집 가능 ── */
+        <>
+          <textarea
+            ref={el => { if (el) pasteRef.current[country.id] = el }}
+            className="paste-area mg-paste"
+            value={pasteText}
+            onChange={e => setPasteText(e.target.value)}
+            placeholder={"컨펌된 카피 붙여넣기 (탭 구분)\n\n예:\nFind Your Galaxy\tFind Your Galaxy\nPerformance\tパフォーマンス性能"}
+          />
+          <div className="input-hint">EN[탭]로컬어 — 엑셀에서 두 열 선택 후 Ctrl+C → Ctrl+V</div>
+        </>
+      )}
 
       {/* 미리보기 테이블 (아코디언) */}
       <PastePreviewTable
@@ -696,9 +746,11 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
     if (saved) { setEnInput(saved); localStorage.removeItem(LS_EN_KEY) }
   }, [])
 
-  const addCountry = () => {
+  const addCountry = (site) => {
     const id = `new_${idSeq}`; setIdSeq(n => n + 1)
-    setCountries(prev => [...prev, { id, dbId: null, label: `국가${idSeq}`, rawPaste: '', mappedJson: null, isSaved: false }])
+    // SiteDropdown이 { code, name, flag, region } 형태의 site 객체를 넘겨줌
+    const label = site?.code ?? `국가${idSeq}`
+    setCountries(prev => [...prev, { id, dbId: null, label, rawPaste: '', mappedJson: null, isSaved: false }])
   }
   const removeCountry = async (id) => {
     const c = countries.find(x => x.id === id)
@@ -739,7 +791,12 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
     if (countries.length === 0)   { setError('국가를 하나 이상 추가해주세요.'); return }
 
     const activeCountries = countries.map(c => ({
-      ...c, rawPaste: pasteRef.current[c.id]?.value ?? c.rawPaste,
+      ...c,
+      // 저장된 국가는 textarea가 readOnly이므로 항상 state의 rawPaste 사용
+      // 신규 국가만 pasteRef(DOM 값)에서 읽음
+      rawPaste: c.isSaved
+        ? c.rawPaste
+        : (pasteRef.current[c.id]?.value ?? c.rawPaste),
     }))
 
     const matrix = {}, dntIssues = []
@@ -779,7 +836,15 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
         if (res.ok) {
           setCountries(prev => prev.map(x =>
             x.id === c.id
-              ? { ...x, dbId: res.id ?? x.dbId, id: x.dbId ? x.id : `db_${res.id}`, isSaved: true, mappedJson }
+              ? {
+                  ...x,
+                  // id를 절대 바꾸지 않음 — id가 바뀌면 CountryCard가
+                  // 언마운트·재마운트되어 textarea 내용이 초기화됨
+                  dbId:     res.id ?? x.dbId,
+                  isSaved:  true,
+                  mappedJson,
+                  rawPaste: c.rawPaste, // 실제 사용된 rawPaste 명시적 보존
+                }
               : x
           ))
         }
@@ -1103,9 +1168,11 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
                   </span>
                 )}
               </div>
-              <button className="btn-primary" style={{ fontSize: 13, padding: '7px 16px' }} onClick={addCountry}>
-                + 국가 추가
-              </button>
+              <SiteDropdown
+                label="+ 국가 추가"
+                excludeCodes={countries.map(c => c.label)}
+                onAdd={addCountry}
+              />
             </div>
             {countries.length === 0 ? (
               <div className="empty-state" style={{ marginTop: 8 }}>
