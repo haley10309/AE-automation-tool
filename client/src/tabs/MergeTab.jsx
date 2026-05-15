@@ -8,6 +8,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { api } from '../api.js'
 import { useDB } from '../DBContext.jsx'
 import SiteDropdown from '../components/SiteDropdown.jsx'
+import { detectBadges } from '../utils.js'
 
 const LS_EN_KEY = 'merge_en_copy'
 
@@ -53,6 +54,27 @@ function checkDNT(en, local, products) {
     }
   }
   return issues
+}
+
+/**
+ * 미출시 제품 감지 (CountryTab의 detectBadges와 동일 로직)
+ * products의 excluded_countries에 siteCode가 포함된 제품이 local에 언급되면 반환
+ */
+function checkUnreleased(local, siteCode, products) {
+  if (!local || !siteCode) return []
+  return detectBadges(local, siteCode, products)
+}
+
+/**
+ * EN DNT 개수 vs 로컬 DNT 개수 불일치 감지 (CountryTab DntPanel getLocalComparisons 동일)
+ * EN 에 DNT가 있는데 로컬에서 개수가 다르면 이슈로 반환
+ */
+function checkDNTCountMismatch(en, local, siteCode, products) {
+  const enDNT = detectBadges(en,    siteCode, products)
+  const lcDNT = detectBadges(local, siteCode, products)
+  if (enDNT.length === 0 && lcDNT.length === 0) return null
+  if (enDNT.length === lcDNT.length) return null
+  return { enCount: enDNT.length, lcCount: lcDNT.length, enItems: enDNT, lcItems: lcDNT }
 }
 /**
  * URL 내 사이트코드 불일치 감지
@@ -1080,7 +1102,13 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
 
                     const rowHasIssue = activeCountries.some(c => {
                       const m = mergeResult.matrix[c.id]?.[i]
-                      return m?.missing || checkDNT(en, m?.local ?? '', products).length > 0
+                      if (m?.missing) return true
+                      const local = m?.local ?? ''
+                      return (
+                        checkDNT(en, local, products).length > 0 ||
+                        checkUnreleased(local, c.label, products).length > 0 ||
+                        checkDNTCountMismatch(en, local, c.label, products) !== null
+                      )
                     })
                     return (
                       <tr key={i} className={rowHasIssue ? 'cc-row-issue' : ''}>
@@ -1090,19 +1118,24 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
                         </td>
                         {activeCountries.map(c => {
                           const m = mergeResult.matrix[c.id]?.[i]
-                          const dntIss   = m?.local ? checkDNT(en, m.local, products) : []
-                          const urlIss   = m?.local ? checkUrlSiteCode(m.local, c.label) : []
-                          const isTBD    = hasTBDorNA(m?.local)
-                          const isMissing = m?.missing || !m
+                          const dntIss        = m?.local ? checkDNT(en, m.local, products) : []
+                          const urlIss        = m?.local ? checkUrlSiteCode(m.local, c.label) : []
+                          const isTBD         = hasTBDorNA(m?.local)
+                          const isMissing     = m?.missing || !m
+                          // 미출시 제품 감지: 로컬 카피에 해당 국가에서 미출시인 제품 언급 여부
+                          const unreleased    = (!isMissing && m?.local) ? checkUnreleased(m.local, c.label, products) : []
+                          // DNT 개수 불일치: EN DNT 개수와 로컬 DNT 개수가 다르면 이슈
+                          const dntMismatch   = (!isMissing && m?.local) ? checkDNTCountMismatch(en, m.local, c.label, products) : null
                           const pq = (perCountrySearch[c.id] ?? '').trim().toLowerCase()
                           const isPerMatch = pq
                             ? ((m?.local ?? '').toLowerCase().includes(pq) || en.toLowerCase().includes(pq))
                             : true
 
+                          const hasAnyIssue = dntIss.length || urlIss.length || unreleased.length || dntMismatch
                           let cellClass = 'cc-td mg-td-local'
                           if (isMissing)          cellClass += ' mg-cell-missing'
                           else if (isTBD)         cellClass += ' mg-cell-tbd'
-                          else if (dntIss.length || urlIss.length) cellClass += ' cc-cell-issue'
+                          else if (hasAnyIssue)   cellClass += ' cc-cell-issue'
                           if (!isPerMatch && pq)  cellClass += ' mg-cell-dim'
 
                           return (
@@ -1126,6 +1159,16 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
                                   ⚠ DNT: "{iss.alias}" {iss.enCount}→{iss.localCount}
                                 </div>
                               ))}
+                              {unreleased.map((name, ui) => (
+                                <div key={`unrel-${ui}`} className="cc-launch-badge" style={{ fontSize: 10, background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d' }}>
+                                  🚫 미출시: {name}
+                                </div>
+                              ))}
+                              {dntMismatch && (
+                                <div className="cc-launch-badge" style={{ fontSize: 10, background: '#ede9fe', color: '#5b21b6', borderColor: '#c4b5fd' }}>
+                                  ⚠ DNT 개수 불일치 EN:{dntMismatch.enCount} / Local:{dntMismatch.lcCount}
+                                </div>
+                              )}
                             </td>
                           )
                         })}
