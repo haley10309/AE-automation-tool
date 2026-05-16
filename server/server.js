@@ -1,11 +1,13 @@
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
-const bcrypt = require('bcrypt'); // [신규] 비밀번호 암호화용
-const jwt = require('jsonwebtoken'); // [신규] 인증 토큰용
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 
 const app = express();
-const PORT = 4000;
+const PORT = process.env.PORT || 4000;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
@@ -87,11 +89,13 @@ dbRouter.post('/connect', async (req, res) => {
       database
     });
 
+    console.log('🔑 password source:', password ? 'from UI' : 'from .env', '/ DB_PASSWORD set:', !!process.env.DB_PASSWORD)
+
     pool = mysql.createPool({
       host,
       port: Number(port),
       user,
-      password: '991208369ok9',
+      password: password || process.env.DB_PASSWORD,
       database,
       waitForConnections: true,
       connectionLimit: 10
