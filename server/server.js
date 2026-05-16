@@ -786,7 +786,7 @@ mergeRouter.get('/projects/:id', async (req, res) => {
     )
     if (!project) return res.json({ ok: false, message: '프로젝트 없음' })
     const [countries] = await pool.execute(
-      `SELECT id, label, raw_paste, mapped_json, created_at, updated_at FROM merge_countries WHERE project_id = ? ORDER BY id ASC`,
+      `SELECT id, label, raw_paste, mapped_json, created_at FROM merge_countries WHERE project_id = ? ORDER BY id ASC`,
       [req.params.id]
     )
     res.json({ ok: true, project, countries })
@@ -831,13 +831,13 @@ mergeRouter.delete('/projects/:id', async (req, res) => {
 
 // ── 국가 upsert (label로 식별 — 있으면 UPDATE, 없으면 INSERT)
 // ── 국가 upsert (label로 식별 — 있으면 UPDATE, 없으면 INSERT)
-mergeRouter.post('/projects/:id/countries', authMiddleware, async (req, res) => {
+mergeRouter.post('/projects/:id/countries', async (req, res) => {
   if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
     const projectId = req.params.id
-    const { countryId, label, rawPaste, mappedJson } = req.body
-    const savedBy      = req.user?.name  || '알 수 없음'
-    const savedByEmail = req.user?.email || ''
+    const { countryId, label, rawPaste, mappedJson, savedBy: _savedBy, savedByEmail: _savedByEmail } = req.body
+    const savedBy      = _savedBy      || req.user?.name  || '알 수 없음'
+    const savedByEmail = _savedByEmail || req.user?.email || ''
     if (!label?.trim()) return res.json({ ok: false, message: '국가명을 입력하세요.' })
 
     let finalCountryId = countryId;
