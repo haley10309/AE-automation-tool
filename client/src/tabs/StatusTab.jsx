@@ -392,6 +392,19 @@ function PageDetail({ page, onBack, onUpdate }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page.id])
 
+  //드롭 다운 클릭 x
+  useEffect(() => {
+  function handleClickOutside(e) {
+    if (dropRef.current && !dropRef.current.contains(e.target)) {
+      setShowAddCountry(false)
+    }
+  }
+  if (showAddCountry) {
+    document.addEventListener('mousedown', handleClickOutside)
+  }
+  return () => document.removeEventListener('mousedown', handleClickOutside)
+}, [showAddCountry])
+
   const activeSiteCodes = (page.countries || []).map(c => c.code)
   const activeSites = ALL_SITES.filter(s => activeSiteCodes.includes(s.code))
   const filtered = activeSites.filter(s => regionFilter === 'ALL' || s.region === regionFilter)
