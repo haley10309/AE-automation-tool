@@ -66,6 +66,7 @@ export const api = window.electronAPI || {
   // [신규] 히스토리 내 개별 파일 메모만 수정
   updateHistoryNote: (id, body) => call('PUT',   `/api/files/${id}/note`, body),
   createTrackerPage: (body)     => call('POST',  '/api/tracker/pages', body),
+  deleteTrackerPage: (id)       => call('DELETE', `/api/tracker/pages/${id}`),
 
   // ── Merge 프로젝트 ──────────────────────────────────────────
   mergeListProjects:   ()         => call('GET',    '/api/merge/projects'),
