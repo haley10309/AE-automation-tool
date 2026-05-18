@@ -148,7 +148,7 @@ function formatDateTime(isoStr) {
   return `${yy}-${mm}-${dd} ${hh}:${mi}`
 }
 
-const DEFAULT_COUNTRIES = ['KR', 'US', 'JP', 'DE', 'FR', 'UK', 'AU', 'CA', 'CN', 'IN']
+const DEFAULT_COUNTRIES = ['']
 
 // ── 상태 셀 ───────────────────────────────────────────────────
 function CountryStatusCell({ siteCode, entry, onStatusChange }) {
@@ -485,6 +485,10 @@ function PageDetail({ page, onBack, onUpdate }) {
   }
 
   const removeCountry = (code) => {
+    if (user?.position !== 'regular') {
+      alert('정규직만 국가를 제거할 수 있습니다.')
+      return
+    }
     if (!window.confirm(`${code} 국가를 이 페이지에서 제거하시겠습니까?`)) return
     onUpdate({ ...page, countries: page.countries.filter(c => c.code !== code) }, true)
   }
@@ -719,9 +723,14 @@ export default function StatusTab() {
     e.stopPropagation()
     if (!window.confirm(`"${page.name}" 페이지를 삭제하시겠습니까?\n페이지 내 모든 상태·파일 데이터가 영구 삭제됩니다.`)) return
     try {
-      await api.deleteTrackerPage(page.id)
+      const res = await api.deleteTrackerPage(page.id)
+      if (!res?.ok) {
+        alert('삭제에 실패했습니다: ' + (res?.message || '서버 오류'))
+        return
+      }
     } catch (err) {
-      console.error('[DB] 페이지 삭제 실패:', err?.message || err)
+      alert('삭제 중 오류가 발생했습니다: ' + (err?.message || err))
+      return
     }
     setPages(prev => {
       const next = prev.filter(p => p.id !== page.id)
