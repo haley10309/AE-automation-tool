@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '../api.js'
+import { useAuth } from '../auth.jsx'
 import SiteDropdown from '../components/SiteDropdown.jsx'
 import { ALL_SITES, SITE_MAP, REGIONS, REGION_COLORS as RC, REGION_BG as RB } from '../constants.js'
 import { parseCol, detectBadges, exportToCSV } from '../utils.js'
@@ -251,90 +252,544 @@ function ProjectDetail({ project, products, onBack, onUpdated }) {
 
       {msg && <div className={msg.startsWith('✅') ? 'success-banner' : 'error-banner'}>{msg}</div>}
 
-      {/* 툴바 */}
-      <div className="pj-toolbar">
-        <div className="pj-toolbar-left">
-          <SiteDropdown excludeCodes={sites.map(s => s.code)} onAdd={addSite} label="+ 국가 추가" />
-          <button className="btn-sm" onClick={() => setRowCount(n => n + 1)}>+ 행 추가</button>
-          {rowCount > 1 && <button className="btn-sm" onClick={() => setRowCount(n => Math.max(1, n - 1))}>− 마지막 행</button>}
-          <span className="cc-status-text">{sites.length}개국 · {rowCount}행</span>
-        </div>
-        <div className="pj-toolbar-right">
-          <button className="btn-export" onClick={() => doExportCSV(sites, rowCount, cells)}>⬇ 엑셀 추출</button>
-          <button className="btn-primary" onClick={handleSave} disabled={saving}>
-            {saving ? '저장 중...' : '💾 저장하기'}
-          </button>
-        </div>
-      </div>
+     
 
-      {sites.length === 0 ? (
-        <div className="empty-state" style={{ marginTop: 24 }}>
-          <div className="empty-icon">🌍</div>
-          <p>국가를 추가해주세요</p>
-          <small>"+ 국가 추가" 버튼으로 열(국가)을 추가합니다.</small>
-        </div>
-      ) : (
-        <div className="cc-table-wrap" style={{ marginTop: 12 }}>
-          <table className="cc-table pj-table">
-            <thead>
-              <tr className="pj-paste-row">
-                <th className="cc-th cc-th-idx" style={{ verticalAlign: 'bottom', paddingBottom: 6 }}>
-                  <span style={{ fontSize: 10, color: '#9ca3af' }}>붙여넣기</span>
-                </th>
-                {sites.map(s => {
-                  const issueCount = getColIssues(s.code)
-                  return (
-                    <th key={s.code} className="cc-th" style={{ padding: '6px 8px', borderTop: `3px solid ${RC[s.region]}` }}>
-                      <div className="cc-th-inner" style={{ marginBottom: 6 }}>
-                        <span className="cc-flag">{s.flag}</span>
-                        <span className="cc-th-name">{s.name}</span>
-                        <span className="cc-card-code" style={{ background: RB[s.region], color: RC[s.region] }}>{s.code}</span>
-                        {issueCount > 0 && (
-                          <span className="cc-launch-badge" style={{ fontSize: 10, marginLeft: 4 }}>⚠ {issueCount}건</span>
-                        )}
-                        <button className="pj-col-remove" onClick={() => removeSite(s.code)} title="열 제거">✕</button>
-                      </div>
-                      <textarea
-                        className="paste-area pj-paste-area"
-                        placeholder={`${s.flag} 카피 열 전체\nCtrl+V로 붙여넣기`}
-                        value={pasteInputs[s.code] || ''}
-                        onChange={e => handlePaste(s.code, e.target.value)}
-                        style={{ width: '100%', height: 64, fontSize: 11, resize: 'vertical' }}
-                      />
-                      <div className="input-hint" style={{ fontSize: 10 }}>
-                        {pasteInputs[s.code]
-                          ? `${pasteInputs[s.code].split(/\r?\n/).length}행 입력됨`
-                          : '붙여넣기 후 자동 분류'}
-                      </div>
-                    </th>
-                  )
-                })}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(ri => (
-                <tr key={ri}>
-                  <td className="cc-td cc-td-idx">{ri}</td>
-                  {sites.map(s => {
-                    const val = cells[`${s.code}__${ri}`] || ''
-                    const badges = getBadges(s.code, ri)
-                    return (
-                      <td key={s.code} className={`cc-td cc-td-cell pj-cell ${badges.length ? 'cc-cell-issue' : ''}`}>
-                        <textarea className="pj-cell-input" value={val} rows={2}
-                          onChange={e => handleCellChange(s.code, ri, e.target.value)}
-                          placeholder="카피 입력" />
-                        {badges.map(b => (
-                          <div key={b} className="cc-launch-badge" style={{ fontSize: 10 }}>⚠ 미출시: {b}</div>
-                        ))}
-                      </td>
-                    )
-                  })}
-                </tr>
+      {/* ── DNT 검증 패널 ── */}
+      <DntPanel projectId={project.id} sites={sites} cells={cells} products={products} onAddSite={addSite} />
+      <SiteDropdown excludeCodes={sites.map(s => s.code)} onAdd={addSite} label="+ 국가 추가" />
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════
+// ── DNT 검증 패널 (ProjectDetail 내부) ───────────────────────
+// ════════════════════════════════════════════════════════════════
+function DntPanel({ projectId, sites: propSites, cells, products, onAddSite }) {
+  const { user } = useAuth()
+  const [dntSites, setDntSites]   = useState([])   // DntPanel 전용 검증 국가
+  const [enRaw, setEnRaw]         = useState('')
+  const [locals, setLocals]       = useState({})
+  const [result, setResult]       = useState(null)
+  const [showLocal, setShowLocal] = useState(false)
+  const [snapshots, setSnapshots] = useState([])
+  const [snapLoading, setSnapLoading] = useState(false)
+  const [saving, setSaving]       = useState(false)
+  const [saveMsg, setSaveMsg]     = useState('')
+  const [expandedSnap, setExpandedSnap] = useState(null)
+  const localSaveTimer = useRef(null)
+  const initialized = useRef(false)
+
+  const enLines = enRaw.split(/\r?\n/).map(l => l.trimEnd()).filter(l => l !== '')
+
+  // 스냅샷 목록 로드 + 최근 스냅샷으로 전체 상태 복원
+  const loadSnapshots = useCallback(async () => {
+    setSnapLoading(true)
+    try {
+      const res = await api.ccGetDNT(projectId)
+      if (res.ok) {
+        setSnapshots(res.data)
+        // 최초 1회만 복원 (사용자가 수정 중인 상태를 덮어쓰지 않음)
+        if (res.data?.length && !initialized.current) {
+          initialized.current = true
+          const latest = res.data[0]
+          // 영문 복원
+          setEnRaw(latest.en_raw || '')
+          // 검증 국가 복원
+          try {
+            const codes = typeof latest.site_codes === 'string'
+              ? JSON.parse(latest.site_codes)
+              : (latest.site_codes || [])
+            const restored = codes.map(c => SITE_MAP[c]).filter(Boolean)
+            if (restored.length) setDntSites(restored)
+          } catch (_) {}
+          // 분석 결과 복원
+          try {
+            const parsed = JSON.parse(latest.result_json || 'null')
+            if (parsed) setResult(parsed)
+          } catch (_) {}
+          // 로컬어 복원
+          try {
+            const locs = JSON.parse(latest.locals_json || 'null')
+            if (locs) setLocals(locs)
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    setSnapLoading(false)
+  }, [projectId])
+
+  useEffect(() => { loadSnapshots() }, [loadSnapshots])
+
+  // 프로젝트 셀에서 첫 번째 EN 컬럼 자동 추출 (EN 열이 있으면 채워줌)
+  // const autoFillEN = () => {
+  //   if (sites.length === 0) return
+  //   const s = sites[0]
+  //   const maxRow = Object.keys(cells)
+  //     .filter(k => k.startsWith(s.code + '__'))
+  //     .reduce((m, k) => Math.max(m, parseInt(k.split('__')[1])), 0)
+  //   const lines = []
+  //   for (let ri = 1; ri <= maxRow; ri++) {
+  //     lines.push(cells[`${s.code}__${ri}`] || '')
+  //   }
+  //   setEnRaw(lines.join('\n'))
+  //   setResult(null)
+  // }
+
+  // 영문 DNT 분석
+  const runAnalysis = () => {
+    const rows = enLines.map((en, i) => {
+      const byCountry = {}
+      let totalDNT = 0
+      dntSites.forEach(s => {
+        const badges = detectBadges(en, s.code, products)
+        byCountry[s.code] = badges
+        totalDNT += badges.length
+      })
+      return { index: i + 1, en, byCountry, totalDNT }
+    })
+    const filtered = rows.filter(r => r.totalDNT > 0)
+    const grandTotal = rows.reduce((a, r) => a + r.totalDNT, 0)
+    const enCountByCountry = {}
+    dntSites.forEach(s => {
+      enCountByCountry[s.code] = rows.reduce((a, r) => a + r.byCountry[s.code].length, 0)
+    })
+    setResult({ rows, filtered, skipped: rows.length - filtered.length, grandTotal, enCountByCountry, sites: [...dntSites] })
+    setShowLocal(false)
+  }
+
+  // 로컬어 DNT 비교
+  const getLocalComparisons = () => (result?.sites || []).map(s => {
+    const localLines = (locals[s.code] || '').split(/\r?\n/).map(l => l.trimEnd())
+    const rowComparisons = enLines.map((en, i) => {
+      const local = localLines[i] || ''
+      const enDNT = detectBadges(en, s.code, products)
+      const lcDNT = detectBadges(local, s.code, products)
+      return { index: i + 1, en, local, enDNT, lcDNT, match: enDNT.length === lcDNT.length }
+    })
+    const enTotal = rowComparisons.reduce((a, r) => a + r.enDNT.length, 0)
+    const lcTotal = rowComparisons.reduce((a, r) => a + r.lcDNT.length, 0)
+    return { site: s, rowComparisons, enTotal, lcTotal, allMatch: enTotal === lcTotal }
+  })
+
+  const localComparisons = showLocal ? getLocalComparisons() : []
+  const allMatch = localComparisons.length > 0 && localComparisons.every(c => c.allMatch)
+
+  // 스냅샷 저장
+  const handleSave = async () => {
+    if (!result) return
+    setSaving(true); setSaveMsg('')
+    try {
+      const res = await api.ccSaveDNT(projectId, {
+        enRaw,
+        siteCodes: dntSites.map(s => s.code),
+        resultJson: JSON.stringify(result),
+        localsJson: Object.keys(locals).length ? JSON.stringify(locals) : null,
+        savedBy: user?.name || user?.email || null,
+      })
+      if (res.ok) {
+        setSaveMsg('✅ 저장 완료')
+        await loadSnapshots()
+        setTimeout(() => setSaveMsg(''), 2000)
+      } else setSaveMsg('❌ ' + res.message)
+    } finally { setSaving(false) }
+  }
+
+  const handleDeleteSnap = async (id) => {
+    if (!window.confirm('이 스냅샷을 삭제하시겠습니까?')) return
+    await api.ccDeleteDNT(projectId, id)
+    loadSnapshots()
+  }
+
+  const fmt = iso => {
+    if (!iso) return ''
+    const d = new Date(iso)
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
+  }
+
+  return (
+    <div className="dnt-panel-wrap">
+              <div className="dnt-panel-body">
+
+          {/* ── Step 1: 영문 ── */}
+          <div className="dnt-section">
+            <div className="dnt-section-title">
+              <span className="mg-step">1</span>영문 원본 카피
+              {/* {sites.length > 0 && (
+                <button className="btn-sm" style={{ marginLeft: 10 }} onClick={autoFillEN}>
+                  ↑ {sites[0]?.code} 열에서 가져오기
+                </button>
+              )} */}
+            </div>
+            <textarea className="paste-area dnt-en-area" value={enRaw}
+              onChange={e => { setEnRaw(e.target.value); setResult(null) }}
+              placeholder={"영문 카피를 한 줄씩 입력\n\n예:\nFind Your Galaxy\nPerformance"} />
+            <div className="input-hint">{enLines.length > 0 ? `${enLines.length}행` : '한 줄 = 카피 1개'}</div>
+          </div>
+
+          {/* ── Step 2: 검증 국가 ── */}
+          <div className="dnt-section">
+            <div className="dnt-section-title">
+              <span className="mg-step">2</span>검증 국가
+            </div>
+            <div className="dnt-site-chips">
+              {dntSites.map(s => (
+                <span key={s.code} className="dnt-chip"
+                  style={{ borderColor: RC[s.region], color: RC[s.region], background: RB[s.region] }}>
+                  {s.flag} {s.code}
+                  <button className="dnt-chip-remove"
+                    onClick={() => setDntSites(prev => prev.filter(x => x.code !== s.code))}>✕</button>
+                </span>
               ))}
-            </tbody>
-          </table>
+              <SiteDropdown
+                excludeCodes={dntSites.map(s => s.code)}
+                onAdd={s => setDntSites(prev => [...prev, s])}
+                label="+ 국가 추가" />
+            </div>
+          </div>
+
+          {/* ── 실행 ── */}
+          <div className="action-row" style={{ marginBottom: 20 }}>
+            <button className="btn-primary"
+              disabled={!enLines.length || !dntSites.length}
+              onClick={runAnalysis}>🔍 DNT 분석 실행</button>
+            {result && (
+              <>
+                <span className={`cc-badge-count ${result.grandTotal > 0 ? 'has-issue' : 'no-issue'}`}>
+                  {result.grandTotal > 0
+                    ? `⚠ DNT ${result.grandTotal}건 — ${result.skipped}행 자동 생략`
+                    : `✓ DNT 없음 (전체 ${enLines.length}행)`}
+                </span>
+                <button className="btn-primary" style={{ background: '#6366f1' }}
+                  onClick={handleSave} disabled={saving}>
+                  {saving ? '저장 중...' : '💾 결과 저장'}
+                </button>
+                {saveMsg && <span className={saveMsg.startsWith('✅') ? 'form-ok' : 'form-err'}>{saveMsg}</span>}
+              </>
+            )}
+          </div>
+
+          {/* ── Step 3: 분석 결과 ── */}
+          {result && (
+            <div className="dnt-result-wrap">
+              <div className="dnt-summary-row">
+                {result.sites.map(s => (
+                  <div key={s.code} className="dnt-summary-chip"
+                    style={{ borderColor: RC[s.region], background: RB[s.region] }}>
+                    <span>{s.flag}</span>
+                    <span className="dnt-summary-code" style={{ color: RC[s.region] }}>{s.code}</span>
+                    <span className={`dnt-summary-count ${result.enCountByCountry[s.code] > 0 ? 'has-issue' : 'no-issue'}`}>
+                      {result.enCountByCountry[s.code] > 0 ? `⚠ ${result.enCountByCountry[s.code]}건` : '✓'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {result.filtered.length === 0 ? (
+                <div className="empty-state" style={{ padding: '24px 0' }}>
+                  <div className="empty-icon">✅</div>
+                  <p>선택한 모든 국가에서 DNT 없음</p>
+                </div>
+              ) : (
+                <div className="cc-table-wrap">
+                  <div className="dnt-table-label">
+                    DNT 발생 {result.filtered.length}행 — 나머지 {result.skipped}행 자동 생략
+                  </div>
+                  <table className="cc-table">
+                    <thead>
+                      <tr>
+                        <th className="cc-th cc-th-idx">#</th>
+                        <th className="cc-th" style={{ minWidth: 180 }}>영문 원본</th>
+                        {result.sites.map(s => (
+                          <th key={s.code} className="cc-th cc-th-country"
+                            style={{ borderTop: `3px solid ${RC[s.region]}` }}>
+                            <div className="cc-th-inner">
+                              <span className="cc-flag">{s.flag}</span>
+                              <span className="cc-card-code" style={{ background: RB[s.region], color: RC[s.region] }}>{s.code}</span>
+                            </div>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {result.filtered.map(row => (
+                        <tr key={row.index} className="cc-row-issue">
+                          <td className="cc-td cc-td-idx">{row.index}</td>
+                          <td className="cc-td dnt-td-en">{row.en}</td>
+                          {result.sites.map(s => (
+                            <td key={s.code}
+                              className={`cc-td cc-td-cell ${row.byCountry[s.code].length ? 'cc-cell-issue' : ''}`}>
+                              {row.byCountry[s.code].length === 0
+                                ? <span style={{ color: '#10b981', fontSize: 12 }}>✓</span>
+                                : row.byCountry[s.code].map(b => (
+                                    <div key={b} className="cc-launch-badge">⚠ {b}</div>
+                                  ))
+                              }
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* ── Step 4: 번역 완료 후 로컬어 비교 ── */}
+              <div className="dnt-local-section">
+                <button className="btn-ghost dnt-local-toggle"
+                  onClick={() => setShowLocal(v => !v)}>
+                  {showLocal ? '▲ 번역 비교 닫기' : '▼ 번역 완료 후 로컬어 DNT 비교'}
+                </button>
+
+                {showLocal && (
+                  <div style={{ marginTop: 16 }}>
+                    <p className="input-hint" style={{ marginBottom: 12 }}>
+                      번역된 로컬어를 국가별로 붙여넣으세요. 영문 DNT 개수와 일치해야 합니다.
+                    </p>
+                    <div className="cc-cards-grid" style={{ marginBottom: 16 }}>
+                      {result.sites.map(s => {
+                        const lc = localComparisons.find(c => c.site.code === s.code)
+                        return (
+                          <div key={s.code} className="cc-card" style={{ borderTopColor: RC[s.region] }}>
+                            <div className="cc-card-header">
+                              <span className="cc-flag">{s.flag}</span>
+                              <div className="cc-card-title">
+                                <span className="cc-card-name">{s.name}</span>
+                                <span className="cc-card-code" style={{ background: RB[s.region], color: RC[s.region] }}>{s.code}</span>
+                              </div>
+                              {lc && locals[s.code] && (
+                                <span className={`cc-badge-count ${lc.allMatch ? 'no-issue' : 'has-issue'}`} style={{ fontSize: 11 }}>
+                                  {lc.allMatch ? '✓ 일치' : `⚠ EN:${lc.enTotal} Local:${lc.lcTotal}`}
+                                </span>
+                              )}
+                            </div>
+                            <textarea className="paste-area" style={{ height: 100 }}
+                              value={locals[s.code] || ''}
+                              onChange={e => {
+                                const val = e.target.value
+                                const newLocals = { ...locals, [s.code]: val }
+                                setLocals(newLocals)
+                                // debounce 자동저장 (1.2초)
+                                clearTimeout(localSaveTimer.current)
+                                localSaveTimer.current = setTimeout(async () => {
+                                  if (!result) return
+                                  try {
+                                    await api.ccSaveDNT(projectId, {
+                                      enRaw,
+                                      siteCodes: result.sites?.map(s => s.code) || [],
+                                      resultJson: JSON.stringify(result),
+                                      localsJson: JSON.stringify(newLocals),
+                                      savedBy: user?.name || user?.email || null,
+                                    })
+                                    await loadSnapshots()
+                                  } catch (_) {}
+                                }, 1200)
+                              }}
+                              placeholder={`${s.flag} ${s.name}\n로컬어 번역 붙여넣기`} />
+                          </div>
+                        )
+                      })}
+                    </div>
+
+                    {Object.keys(locals).some(k => locals[k].trim()) && (
+                      <>
+                        <div className={`dnt-match-banner ${allMatch ? 'match' : 'mismatch'}`}>
+                          {allMatch
+                            ? '✅ 모든 국가에서 DNT 개수 일치 — 로컬어 검증 완료'
+                            : '⚠ 일부 국가에서 DNT 개수 불일치 — 하단 상세 확인'}
+                        </div>
+                        {localComparisons.filter(c => !c.allMatch).map(cmp => (
+                          <div key={cmp.site.code} className="dnt-mismatch-detail">
+                            <div className="dnt-mismatch-header">
+                              {cmp.site.flag} {cmp.site.name} ({cmp.site.code}) — EN: {cmp.enTotal}건 / Local: {cmp.lcTotal}건
+                            </div>
+                            <div className="cc-table-wrap">
+                              <table className="cc-table">
+                                <thead>
+                                  <tr>
+                                    <th className="cc-th cc-th-idx">#</th>
+                                    <th className="cc-th">영문</th>
+                                    <th className="cc-th">로컬어</th>
+                                    <th className="cc-th" style={{ width: 90 }}>EN DNT</th>
+                                    <th className="cc-th" style={{ width: 90 }}>Local DNT</th>
+                                    <th className="cc-th" style={{ width: 40 }}>결과</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {cmp.rowComparisons.filter(r => !r.match || r.enDNT.length > 0).map(r => (
+                                    <tr key={r.index} className={!r.match ? 'cc-row-issue' : ''}>
+                                      <td className="cc-td cc-td-idx">{r.index}</td>
+                                      <td className="cc-td" style={{ fontSize: 12 }}>{r.en}</td>
+                                      <td className="cc-td" style={{ fontSize: 12 }}>{r.local || <em className="empty-val">없음</em>}</td>
+                                      <td className="cc-td">{r.enDNT.length ? r.enDNT.map(b => <div key={b} className="cc-launch-badge" style={{ fontSize: 10 }}>⚠ {b}</div>) : <span style={{ color: '#10b981' }}>✓</span>}</td>
+                                      <td className="cc-td">{r.lcDNT.length ? r.lcDNT.map(b => <div key={b} className="cc-launch-badge" style={{ fontSize: 10 }}>⚠ {b}</div>) : <span style={{ color: '#10b981' }}>✓</span>}</td>
+                                      <td className="cc-td" style={{ textAlign: 'center' }}>{r.match ? <span style={{ color: '#10b981' }}>✓</span> : <span style={{ color: '#ef4444' }}>✗</span>}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── 저장된 스냅샷 목록 ── */}
+          
+
         </div>
-      )}
+          </div>
+  )
+}
+// ════════════════════════════════════════════════════════════════
+// 국가 히스토리 드로어 (변경된 내용만 추려서 표시)
+// ════════════════════════════════════════════════════════════════
+function CountryHistoryDrawer({ projectId, country, onClose }) {
+  const [history, setHistory] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [expanded, setExpanded] = useState(null)
+
+  useEffect(() => {
+    if (!country.dbId) { setLoading(false); return }
+    api.mergeGetCountryHistory(projectId, country.dbId)
+      .then(res => { if (res.ok) setHistory(res.data) })
+      .catch(console.error)
+      .finally(() => setLoading(false))
+  }, [projectId, country.dbId])
+
+  const fmt = iso => {
+    if (!iso) return ''
+    const d = new Date(iso)
+    const pad = n => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  }
+
+  const parseSafe = (json) => {
+    if (!json) return []
+    if (typeof json !== 'string') return json
+    try { return JSON.parse(json) } catch { return [] }
+  }
+
+  return (
+    <div className="mg-drawer-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="mg-drawer">
+        <div className="mg-drawer-header">
+          <span className="mg-drawer-title">📋 {country.label} — 수정 히스토리</span>
+          <button className="cc-remove-btn" onClick={onClose} style={{ fontSize: 18 }}>✕</button>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>불러오는 중...</div>
+        ) : history.length === 0 ? (
+          <div className="empty-state" style={{ padding: 40 }}>
+            <div className="empty-icon">📭</div>
+            <p>아직 수정 이력이 없습니다.</p>
+            <small>Merge를 재실행하면 이전 버전이 여기에 기록됩니다.</small>
+          </div>
+        ) : (
+          <div className="mg-history-list">
+            {history.map((h, i) => {
+              const currentMapped = parseSafe(h.mapped_json)
+              const prevMapped = i < history.length - 1 ? parseSafe(history[i+1].mapped_json) : []
+
+              // 원본 인덱스(ri + 1)를 기억해두고, 변경되거나 누락된 행만 필터링합니다.
+              const changedRows = currentMapped.map((row, ri) => {
+                const prevRow = prevMapped[ri] || {}
+                const isChanged = prevRow.local !== undefined && prevRow.local !== row.local
+                return { 
+                  ...row, 
+                  originalIndex: ri + 1, 
+                  prevLocal: prevRow.local, 
+                  isChanged 
+                }
+              }).filter(row => row.isChanged || row.missing)
+
+              return (
+                <div key={h.id} className="mg-history-item">
+                  <div className="mg-history-meta" onClick={() => setExpanded(expanded === i ? null : i)}>
+                    <span className="mg-history-ver">v{history.length - i}</span>
+                    
+                    {/* 💡 작성자 정보 추가 영역 */}
+                    <span 
+                      className="mg-history-author" 
+                      title={h.saved_by_email ? `이메일: ${h.saved_by_email}` : ''}
+                      style={{ color: '#3b82f6', fontWeight: 600, fontSize: 13, marginRight: 8, cursor: h.saved_by_email ? 'help' : 'default' }}
+                    >
+                      👤 {h.saved_by || '알 수 없음'}
+                    </span>
+                    {/* ────────────────── */}
+
+                    <span className="mg-history-date">{fmt(h.saved_at)}</span>
+                    <span className="mg-history-rows">
+                      {changedRows.length > 0 ? `변경 ${changedRows.length}건` : '변경 없음'}
+                    </span>
+                    <span className="mg-history-toggle">{expanded === i ? '▲ 접기' : '▼ 펼치기'}</span>
+                  </div>
+
+                  {expanded === i && (
+                    <div className="mg-history-body">
+                      <div className="mg-history-table-wrap">
+                        {changedRows.length === 0 ? (
+                          <div style={{ padding: '20px', textAlign: 'center', color: '#6b7280', fontSize: '13px', background: '#f9fafb', borderRadius: '6px' }}>
+                            이전 버전과 비교하여 변경된 카피가 없습니다.
+                          </div>
+                        ) : (
+                          <table className="mg-history-table">
+                            <thead>
+                              <tr>
+                                <th style={{ width: 36 }}>#</th>
+                                <th style={{ width: '30%' }}>EN</th>
+                                <th>{h.label || country.label} (수정된 내역만)</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {changedRows.map((row, idx) => (
+                                <tr key={idx} className={row.missing ? 'mg-cell-missing' : 'mg-cell-changed'}>
+                                  <td style={{ textAlign: 'center', color: '#9ca3af', fontSize: 11, fontWeight: 'bold' }}>
+                                    {row.originalIndex}
+                                  </td>
+                                  <td className="mg-history-en">{row.en}</td>
+                                  <td className="mg-history-local">
+                                    {row.missing ? (
+                                      <span className="mg-missing-badge">⚠ 매핑 없음</span>
+                                    ) : (
+                                      <div className="mg-diff-view">
+                                        <div className="mg-diff-old">
+                                          <span className="mg-diff-label">AS-WAS:</span> 
+                                          <del>{row.prevLocal || <em className="empty-val">빈 값</em>}</del>
+                                        </div>
+                                        <div className="mg-diff-new">
+                                          <span className="mg-diff-label">TO-BE:</span> 
+                                          <ins>{row.local || <em className="empty-val">빈 값</em>}</ins>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                      
+                      {h.raw_paste && (
+                        <details style={{ marginTop: 10 }}>
+                          <summary style={{ fontSize: 11, color: '#6b7280', cursor: 'pointer' }}>원본 컨펌 카피 보기 (Raw Paste)</summary>
+                          <pre className="mg-history-raw">{h.raw_paste}</pre>
+                        </details>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -463,6 +918,8 @@ function ProjectManager({ products }) {
 // ════════════════════════════════════════════════════════════════
 // ── 제품 관리 패널 ─────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════
+
+
 function ProductPanel({ onClose, onProductsChanged }) {
   const [products, setProducts]   = useState([])
   const [loading, setLoading]     = useState(true)
@@ -630,7 +1087,10 @@ function ProductPanel({ onClose, onProductsChanged }) {
 // ── 메인 export ───────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════
 export default function CountryTab() {
-  const [subTab, setSubTab]             = useState(() => localStorage.getItem('country_sub_tab') || 'quick')
+  const [subTab, setSubTab]             = useState(() => {
+    const s = localStorage.getItem('country_sub_tab')
+    return s === 'project' ? 'project' : 'quick'  // 'dnt' 등 삭제된 탭은 quick으로
+  })
   const [products, setProducts]         = useState([])
   const [loaded, setLoaded]             = useState(false)
   const [loadErr, setLoadErr]           = useState('')
@@ -659,6 +1119,7 @@ export default function CountryTab() {
             onClick={() => { setSubTab('quick'); localStorage.setItem('country_sub_tab', 'quick') }}>즉석 검수</button>
           <button className={`cc-subtab-btn ${subTab === 'project' ? 'active' : ''}`}
             onClick={() => { setSubTab('project'); localStorage.setItem('country_sub_tab', 'project') }}>📁 프로젝트 관리</button>
+
         </div>
         <button className="btn-manage-product" onClick={() => setShowProductPanel(true)}>
           ⚙ 제품 데이터 관리
