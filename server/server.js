@@ -129,9 +129,15 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       raw_paste TEXT,
       mapped_json JSON,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       -- 💡 [여기에 추가] 프로젝트 내 동일 국가 중복 방지
       UNIQUE KEY idx_proj_label (project_id, label)
     )`);
+
+    // 기존 merge_countries 테이블에 updated_at 컬럼이 없으면 추가
+    try {
+      await pool.execute(`ALTER TABLE merge_countries ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at`);
+    } catch (_) { /* 이미 존재하면 무시 */ }
 
     // ── merge_country_history 테이블 (변경 이력) ──────────────
     await pool.execute(`CREATE TABLE IF NOT EXISTS merge_country_history (

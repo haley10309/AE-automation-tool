@@ -747,7 +747,10 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
         const baseEnLines = parseEnLines(en)
         const matrix = {}
         loaded.forEach(c => {
-          try { matrix[c.id] = JSON.parse(c.mappedJson) } catch { matrix[c.id] = [] }
+          try {
+            const mj = c.mappedJson
+            matrix[c.id] = Array.isArray(mj) ? mj : typeof mj === 'string' ? JSON.parse(mj) : (mj || [])
+          } catch { matrix[c.id] = [] }
         })
         setMergeResult({ matrix, dntIssues: [], missingWarns: [], baseEnLines, activeCountries: loaded })
       }
@@ -872,8 +875,11 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
         }
       }
       onUpdated()
+      // DB에 저장된 id(db_${c.id}) 기준으로 mergeResult를 재구성해야
+      // 다음 번 진입 시에도 matrix 키가 일치함
+      await load()
     } finally { setSaving(false) }
-  }, [enInput, countries, products, project.id, onUpdated])
+  }, [enInput, countries, products, project.id, onUpdated, load])
 
   // ── 추가 카피 덮어쓰기 저장 ────────────────────────────────
   const runPatch = useCallback(async () => {
