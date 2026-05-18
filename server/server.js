@@ -1,16 +1,27 @@
+require('dotenv').config();
+ 
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
-const bcrypt = require('bcrypt'); // [신규] 비밀번호 암호화용
-const jwt = require('jsonwebtoken'); // [신규] 인증 토큰용
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 
 const app = express();
-const PORT = 4000;
+const PORT = process.env.PORT || 4000;;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 let pool = null;
-
+pool = mysql.createPool({
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
 // ── 환경 변수 및 설정 ───────────────────────────────────────────────
 const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_key_for_copy_diff';
 const JWT_EXPIRES = '24h';
