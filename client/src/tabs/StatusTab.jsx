@@ -475,13 +475,23 @@ function PageDetail({ page, onBack, onUpdate }) {
     }
   }, [page, onUpdate])
 
-  const addCountry = (site) => {
+  const addCountry = async (site) => {
     const updated = { ...page }
     if (!updated.countries.find(c => c.code === site.code)) {
       updated.countries = [...updated.countries, { code: site.code, status: '', note: '', file: null, fileHistory: [] }]
     }
-    onUpdate(updated)
+    onUpdate(updated, true)
     setSearch('')
+
+    // ✅ DB에 빈 상태로 등록 (없으면 새로고침 시 사라짐)
+    try {
+      await api.updateTrackerStatus({
+        pageId: page.id,
+        siteCode: site.code,
+        status: '',
+        note: '',
+      })
+    } catch (e) { console.warn('국가 추가 DB 저장 실패', e) }
   }
 
   const removeCountry = async (code) => {
