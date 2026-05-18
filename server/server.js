@@ -718,6 +718,17 @@ statusRouter.get('/tracker/pages/:id', async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
+statusRouter.delete('/tracker/pages/:id', async (req, res) => {
+  try {
+    const pageId = req.params.id;
+    // page_files는 FK CASCADE가 없으므로 먼저 수동 삭제
+    await pool.execute(`DELETE FROM page_files WHERE page_id = ?`, [pageId]);
+    // tracker_site_status는 ON DELETE CASCADE이므로 tracker_pages 삭제 시 자동 삭제됨
+    await pool.execute(`DELETE FROM tracker_pages WHERE id = ?`, [pageId]);
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
 statusRouter.post('/tracker/status', async (req, res) => {
   try {
     const { pageId, siteCode, status, note } = req.body;

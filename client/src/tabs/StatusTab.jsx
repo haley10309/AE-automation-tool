@@ -715,6 +715,22 @@ export default function StatusTab() {
     setNewPageName(''); setShowNewPage(false); setSelectedPageId(newPage.id)
   }
 
+  const deletePage = useCallback(async (page, e) => {
+    e.stopPropagation()
+    if (!window.confirm(`"${page.name}" 페이지를 삭제하시겠습니까?\n페이지 내 모든 상태·파일 데이터가 영구 삭제됩니다.`)) return
+    try {
+      await api.deleteTrackerPage(page.id)
+    } catch (err) {
+      console.error('[DB] 페이지 삭제 실패:', err?.message || err)
+    }
+    setPages(prev => {
+      const next = prev.filter(p => p.id !== page.id)
+      saveToStorage({ pages: next })
+      return next
+    })
+    if (selectedPageId === page.id) setSelectedPageId(null)
+  }, [selectedPageId])
+
   const updatePage = useCallback((updated, persistToStorage = false) => {
     setPages(prev => {
       const next = prev.map(p => p.id == updated.id ? updated : p)
@@ -769,7 +785,22 @@ export default function StatusTab() {
             <div key={page.id} className="cst-page-card" onClick={() => setSelectedPageId(page.id)}>
               <div className="cst-page-card-header">
                 <h3 className="cst-page-card-name">{page.name}</h3>
-                <span className="cst-page-card-total">{total}개국</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="cst-page-card-total">{total}개국</span>
+                  <button
+                    title="페이지 삭제"
+                    onClick={(e) => deletePage(page, e)}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      fontSize: 14, color: '#9ca3af', padding: '2px 4px', lineHeight: 1,
+                      borderRadius: 4, transition: 'color 0.15s',
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.color = '#ef4444'}
+                    onMouseLeave={e => e.currentTarget.style.color = '#9ca3af'}
+                  >
+                    🗑️
+                  </button>
+                </div>
               </div>
 
               {/* 단계별 컬러 스트립 */}
