@@ -177,13 +177,20 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)`);
 
     await pool.execute(`CREATE TABLE IF NOT EXISTS tracker_pages (
-      id VARCHAR(100) PRIMARY KEY, title VARCHAR(255) NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+      id VARCHAR(100) PRIMARY KEY,
+      title VARCHAR(255) NOT NULL,
+      deleted TINYINT(1) NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
 
     await pool.execute(`CREATE TABLE IF NOT EXISTS tracker_site_status (
-      page_id VARCHAR(100) NOT NULL, site_code VARCHAR(50) NOT NULL,
-      status VARCHAR(100), note TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      PRIMARY KEY (page_id, site_code), FOREIGN KEY (page_id) REFERENCES tracker_pages(id) ON DELETE CASCADE)`);
-
+      page_id VARCHAR(100) NOT NULL,
+      site_code VARCHAR(50) NOT NULL,
+      status VARCHAR(100),
+      note TEXT,
+      deleted TINYINT(1) NOT NULL DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (page_id, site_code),
+      FOREIGN KEY (page_id) REFERENCES tracker_pages(id) ON DELETE CASCADE)`);
     await pool.execute(`CREATE TABLE IF NOT EXISTS page_files (
       id INT AUTO_INCREMENT PRIMARY KEY, page_id VARCHAR(100) NOT NULL,
       site_code VARCHAR(50) NOT NULL, name VARCHAR(500) NOT NULL,
@@ -700,8 +707,8 @@ statusRouter.post('/tracker/pages', async (req, res) => {
 statusRouter.get('/tracker/pages', async (req, res) => {
   if (!pool) return res.json({ ok: false });
   try {
-    const [pages] = await pool.execute(`SELECT * FROM tracker_pages ORDER BY created_at DESC`);
-    const [statuses] = await pool.execute(`SELECT page_id, site_code, status FROM tracker_site_status`);
+    const [pages] = await pool.execute(`SELECT * FROM tracker_pages WHERE deleted = 0 ORDER BY created_at DESC`);
+    const [statuses] = await pool.execute(`SELECT page_id, site_code, status FROM tracker_site_status WHERE deleted = 0`);
     res.json({ ok: true, data: pages, statuses });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
@@ -709,7 +716,9 @@ statusRouter.get('/tracker/pages', async (req, res) => {
 statusRouter.get('/tracker/pages/:id', async (req, res) => {
   try {
     const pageId = req.params.id;
-    const [statuses] = await pool.execute(`SELECT site_code, status, note FROM tracker_site_status WHERE page_id = ?`, [pageId]);
+    const [statuses] = await pool.execute(
+      `SELECT site_code, status, note FROM tracker_site_status WHERE page_id = ? AND deleted = 0`, [pageId]
+    );
     const [files] = await pool.execute(
       `SELECT id, site_code, name, size, status, note_at_upload, uploaded_by, uploaded_at
        FROM page_files WHERE page_id = ? ORDER BY uploaded_at ASC`, [pageId]
@@ -720,11 +729,8 @@ statusRouter.get('/tracker/pages/:id', async (req, res) => {
 
 statusRouter.delete('/tracker/pages/:id', async (req, res) => {
   try {
-    const pageId = req.params.id;
-    // page_files는 FK CASCADE가 없으므로 먼저 수동 삭제
-    await pool.execute(`DELETE FROM page_files WHERE page_id = ?`, [pageId]);
-    // tracker_site_status는 ON DELETE CASCADE이므로 tracker_pages 삭제 시 자동 삭제됨
-    await pool.execute(`DELETE FROM tracker_pages WHERE id = ?`, [pageId]);
+    await pool.execute(`UPDATE tracker_pages SET deleted = 1 WHERE id = ?`, [req.params.id]);
+    await pool.execute(`UPDATE tracker_site_status SET deleted = 1 WHERE page_id = ?`, [req.params.id]);
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
@@ -742,8 +748,8 @@ statusRouter.post('/tracker/status', async (req, res) => {
   try {
     const { pageId, siteCode, status, note } = req.body;
     await pool.execute(
-      `INSERT INTO tracker_site_status (page_id, site_code, status, note) VALUES (?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE status = VALUES(status), note = VALUES(note)`,
+      `INSERT INTO tracker_site_status (page_id, site_code, status, note, deleted) VALUES (?, ?, ?, ?, 0)
+       ON DUPLICATE KEY UPDATE status = VALUES(status), note = VALUES(note), deleted = 0`,
       [pageId, siteCode, status || '', note || '']
     );
     res.json({ ok: true });
