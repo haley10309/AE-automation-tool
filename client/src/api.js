@@ -62,6 +62,7 @@ export const api = window.electronAPI || {
   getFiles:        ({ pageId, siteCode }) =>
     call('GET', `/api/files?pageId=${pageId}${siteCode ? `&siteCode=${siteCode}` : ''}`),
   deleteFile:      (id)       => call('DELETE', `/api/files/${id}`),
+  deleteTrackerStatus: (pageId, siteCode) => call('DELETE', `/api/tracker/status?pageId=${pageId}&siteCode=${siteCode}`),
   
   // [신규] 히스토리 내 개별 파일 메모만 수정
   updateHistoryNote: (id, body) => call('PUT',   `/api/files/${id}/note`, body),

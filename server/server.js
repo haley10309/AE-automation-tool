@@ -728,7 +728,16 @@ statusRouter.delete('/tracker/pages/:id', async (req, res) => {
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
-
+statusRouter.delete('/tracker/status', async (req, res) => {
+  try {
+    const { pageId, siteCode } = req.query
+    await pool.execute(
+      'DELETE FROM tracker_site_status WHERE page_id = ? AND site_code = ?',
+      [pageId, siteCode]
+    )
+    res.json({ ok: true })
+  } catch (err) { res.json({ ok: false, message: err.message }) }
+})
 statusRouter.post('/tracker/status', async (req, res) => {
   try {
     const { pageId, siteCode, status, note } = req.body;

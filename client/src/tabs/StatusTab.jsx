@@ -484,15 +484,20 @@ function PageDetail({ page, onBack, onUpdate }) {
     setSearch('')
   }
 
-  const removeCountry = (code) => {
+  const removeCountry = async (code) => {
     if (user?.position !== 'regular') {
       alert('정규직만 국가를 제거할 수 있습니다.')
       return
     }
     if (!window.confirm(`${code} 국가를 이 페이지에서 제거하시겠습니까?`)) return
+
+    // DB에서 삭제
+    try {
+      await api.deleteTrackerStatus(page.id, code)
+    } catch (e) { console.warn('국가 상태 DB 삭제 실패', e) }
+
     onUpdate({ ...page, countries: page.countries.filter(c => c.code !== code) }, true)
   }
-
   // ── 통계 계산 ──────────────────────────────────────────────
   const totalCountries = page.countries.length
   const statusCounts = {}
