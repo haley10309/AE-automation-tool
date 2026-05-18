@@ -12,6 +12,17 @@ import { detectBadges } from '../utils.js'
 
 const LS_EN_KEY = 'merge_en_copy'
 
+// Ab50B7b0 C0acC6a9C790 position D655C778
+function getCurrentUserPosition() {
+  try {
+    const token = localStorage.getItem('ae_tool_token')
+    if (!token) return null
+    const payload = JSON.parse(atob(token.split('.')[1]))
+    return payload?.position ?? null
+  } catch { return null }
+}
+const isRegular = () => getCurrentUserPosition() === 'regular'
+
 // ── 유틸 ─────────────────────────────────────────────────────
 function parseEnLines(raw) {
   return raw.split(/\r?\n/).map(l => l.trimEnd()).filter(l => l !== '')
@@ -193,8 +204,10 @@ function ProjectListView({ projects, loading, onCreate, onOpen, onDelete }) {
           <div key={p.id} className="mg-proj-card" onClick={() => onOpen(p)}>
             <div className="mg-proj-card-header">
               <span className="mg-proj-card-name">{p.title}</span>
-              <button className="act-btn act-delete" style={{ padding: '2px 7px' }}
-                onClick={e => { e.stopPropagation(); onDelete(p.id, p.title) }}>🗑</button>
+              {isRegular() && (
+                <button className="act-btn act-delete" style={{ padding: '2px 7px' }}
+                  onClick={e => { e.stopPropagation(); onDelete(p.id, p.title) }}>🗑</button>
+              )}
             </div>
             <div className="mg-proj-card-meta">
               {(p.country_count ?? 0) > 0 && <span className="mg-proj-badge">{p.country_count}개국</span>}
@@ -549,10 +562,12 @@ function CountryCard({ country, onRemove, onLabelChange, pasteRef, projectId }) 
     )}
     <div className={`mg-country-card ${country.isSaved ? 'mg-country-saved' : ''}`}
       style={{ position: 'relative' }}>
-      <button className="cc-remove-btn mg-country-delete-btn"
-        onClick={() => onRemove(country.id)}
-        title="국가 삭제"
-        style={{ position: 'absolute', top: 8, right: 8 }}>✕</button>
+      {isRegular() && (
+        <button className="cc-remove-btn mg-country-delete-btn"
+          onClick={() => onRemove(country.id)}
+          title="국가 삭제"
+          style={{ position: 'absolute', top: 8, right: 8 }}>✕</button>
+      )}
 
       <div className="mg-country-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -747,7 +762,10 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
         const baseEnLines = parseEnLines(en)
         const matrix = {}
         loaded.forEach(c => {
-          try { matrix[c.id] = JSON.parse(c.mappedJson) } catch { matrix[c.id] = [] }
+          try {
+            const mj = c.mappedJson
+            matrix[c.id] = Array.isArray(mj) ? mj : typeof mj === 'string' ? JSON.parse(mj) : (mj || [])
+          } catch { matrix[c.id] = [] }
         })
         setMergeResult({ matrix, dntIssues: [], missingWarns: [], baseEnLines, activeCountries: loaded })
       }
@@ -775,6 +793,7 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
     setCountries(prev => [...prev, { id, dbId: null, label, rawPaste: '', mappedJson: null, isSaved: false }])
   }
   const removeCountry = async (id) => {
+    if (!isRegular()) { alert('정규직만 국가를 삭제할 수 있습니다.'); return }
     const c = countries.find(x => x.id === id)
     if (c?.dbId) {
       if (!window.confirm(`${c.label} 국가를 삭제하시겠습니까?`)) return
@@ -872,8 +891,11 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
         }
       }
       onUpdated()
+      // DB에 저장된 id(db_${c.id}) 기준으로 mergeResult를 재구성해야
+      // 다음 번 진입 시에도 matrix 키가 일치함
+      await load()
     } finally { setSaving(false) }
-  }, [enInput, countries, products, project.id, onUpdated])
+  }, [enInput, countries, products, project.id, onUpdated, load])
 
   // ── 추가 카피 덮어쓰기 저장 ────────────────────────────────
   const runPatch = useCallback(async () => {
@@ -1401,6 +1423,7 @@ export default function MergeTab() {
     if (res.ok) { await loadProjects(); setOpenProject({ id: res.id, title }) }
   }
   const handleDelete = async (id, title) => {
+    if (!isRegular()) { alert('정규직만 프로젝트를 삭제할 수 있습니다.'); return }
     if (!window.confirm(`"${title}" 프로젝트를 삭제하시겠습니까?`)) return
     await api.mergeDeleteProject(id)
     if (openProject?.id === id) setOpenProject(null)

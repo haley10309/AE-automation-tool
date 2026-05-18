@@ -272,7 +272,7 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
   )
 }
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, removeCountry }) => {
+const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, removeCountry, isRegular }) => {
   return (
     <tr className="cst-row">
       <td className="cst-td">
@@ -302,7 +302,9 @@ const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, han
         />
       </td>
       <td className="cst-td">
-        <button className="act-btn act-delete" onClick={() => removeCountry(site.code)}>✕</button>
+        {isRegular && (
+          <button className="act-btn act-delete" onClick={() => removeCountry(site.code)}>✕</button>
+        )}
       </td>
     </tr>
   )
@@ -392,6 +394,19 @@ function PageDetail({ page, onBack, onUpdate }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page.id])
 
+  //드롭 다운 클릭 x
+  useEffect(() => {
+  function handleClickOutside(e) {
+    if (dropRef.current && !dropRef.current.contains(e.target)) {
+      setShowAddCountry(false)
+    }
+  }
+  if (showAddCountry) {
+    document.addEventListener('mousedown', handleClickOutside)
+  }
+  return () => document.removeEventListener('mousedown', handleClickOutside)
+}, [showAddCountry])
+
   const activeSiteCodes = (page.countries || []).map(c => c.code)
   const activeSites = ALL_SITES.filter(s => activeSiteCodes.includes(s.code))
   const filtered = activeSites.filter(s => regionFilter === 'ALL' || s.region === regionFilter)
@@ -475,24 +490,39 @@ function PageDetail({ page, onBack, onUpdate }) {
     }
   }, [page, onUpdate])
 
-  const addCountry = (site) => {
+  const addCountry = async (site) => {
     const updated = { ...page }
     if (!updated.countries.find(c => c.code === site.code)) {
       updated.countries = [...updated.countries, { code: site.code, status: '', note: '', file: null, fileHistory: [] }]
     }
-    onUpdate(updated)
+    onUpdate(updated, true)
     setSearch('')
+
+    // ✅ DB에 빈 상태로 등록 (없으면 새로고침 시 사라짐)
+    try {
+      await api.updateTrackerStatus({
+        pageId: page.id,
+        siteCode: site.code,
+        status: '',
+        note: '',
+      })
+    } catch (e) { console.warn('국가 추가 DB 저장 실패', e) }
   }
 
-  const removeCountry = (code) => {
+  const removeCountry = async (code) => {
     if (user?.position !== 'regular') {
       alert('정규직만 국가를 제거할 수 있습니다.')
       return
     }
     if (!window.confirm(`${code} 국가를 이 페이지에서 제거하시겠습니까?`)) return
+
+    // DB에서 삭제
+    try {
+      await api.deleteTrackerStatus(page.id, code)
+    } catch (e) { console.warn('국가 상태 DB 삭제 실패', e) }
+
     onUpdate({ ...page, countries: page.countries.filter(c => c.code !== code) }, true)
   }
-
   // ── 통계 계산 ──────────────────────────────────────────────
   const totalCountries = page.countries.length
   const statusCounts = {}
@@ -609,6 +639,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 handleFileUpload={handleFileUpload}
                 handleHistoryNoteUpdate={handleHistoryNoteUpdate}
                 removeCountry={removeCountry}
+                isRegular={user?.position === 'regular'}
               />
             )
           })}
@@ -622,6 +653,7 @@ function PageDetail({ page, onBack, onUpdate }) {
 
 export default function StatusTab() {
   const { dbReady } = useDB()
+  const { user } = useAuth()
   const [pages, setPages] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedPageId, setSelectedPageId] = useState(null)
@@ -721,6 +753,7 @@ export default function StatusTab() {
 
   const deletePage = useCallback(async (page, e) => {
     e.stopPropagation()
+    if (user?.position !== 'regular') { alert('정규직만 페이지를 삭제할 수 있습니다.'); return }
     if (!window.confirm(`"${page.name}" 페이지를 삭제하시겠습니까?\n페이지 내 모든 상태·파일 데이터가 영구 삭제됩니다.`)) return
     try {
       const res = await api.deleteTrackerPage(page.id)
@@ -738,7 +771,7 @@ export default function StatusTab() {
       return next
     })
     if (selectedPageId === page.id) setSelectedPageId(null)
-  }, [selectedPageId])
+  }, [selectedPageId, user])
 
   const updatePage = useCallback((updated, persistToStorage = false) => {
     setPages(prev => {
@@ -796,7 +829,7 @@ export default function StatusTab() {
                 <h3 className="cst-page-card-name">{page.name}</h3>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span className="cst-page-card-total">{total}개국</span>
-                  <button
+                  {user?.position === 'regular' && <button
                     title="페이지 삭제"
                     onClick={(e) => deletePage(page, e)}
                     style={{
@@ -808,7 +841,7 @@ export default function StatusTab() {
                     onMouseLeave={e => e.currentTarget.style.color = '#9ca3af'}
                   >
                     🗑️
-                  </button>
+                  </button>}
                 </div>
               </div>
 

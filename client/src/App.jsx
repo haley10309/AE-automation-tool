@@ -72,10 +72,10 @@ function AppContent() {
       {/* ── TABS ── */}
       <nav className="tab-nav">
         {[
-          { key: TABS.EXTRACT,  label: '업데이트 영역 추출 · 조회' },
-          { key: TABS.MERGE,    label: '카피덱 자동 Merge' },
-          { key: TABS.COUNTRY,  label: '국가별 카피 제품 출시 반영 검수' },
-          { key: TABS.STATUS,   label: '국가별 카피 작업 현황' },
+          { key: TABS.EXTRACT,  label: 'Updated copy' },
+          { key: TABS.MERGE,    label: 'Copy Merge' },
+          { key: TABS.COUNTRY,  label: 'Product reflection' },
+          { key: TABS.STATUS,   label: 'Status' },
           { key: TABS.SETTINGS, label: 'DB 설정' },
         ].map(t => (
           <button key={t.key}
