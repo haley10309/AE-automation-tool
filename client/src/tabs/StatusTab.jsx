@@ -272,7 +272,7 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
   )
 }
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, removeCountry }) => {
+const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, removeCountry, isRegular }) => {
   return (
     <tr className="cst-row">
       <td className="cst-td">
@@ -302,7 +302,9 @@ const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, han
         />
       </td>
       <td className="cst-td">
-        <button className="act-btn act-delete" onClick={() => removeCountry(site.code)}>✕</button>
+        {isRegular && (
+          <button className="act-btn act-delete" onClick={() => removeCountry(site.code)}>✕</button>
+        )}
       </td>
     </tr>
   )
@@ -637,6 +639,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 handleFileUpload={handleFileUpload}
                 handleHistoryNoteUpdate={handleHistoryNoteUpdate}
                 removeCountry={removeCountry}
+                isRegular={user?.position === 'regular'}
               />
             )
           })}
@@ -650,6 +653,7 @@ function PageDetail({ page, onBack, onUpdate }) {
 
 export default function StatusTab() {
   const { dbReady } = useDB()
+  const { user } = useAuth()
   const [pages, setPages] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedPageId, setSelectedPageId] = useState(null)
@@ -749,6 +753,7 @@ export default function StatusTab() {
 
   const deletePage = useCallback(async (page, e) => {
     e.stopPropagation()
+    if (user?.position !== 'regular') { alert('정규직만 페이지를 삭제할 수 있습니다.'); return }
     if (!window.confirm(`"${page.name}" 페이지를 삭제하시겠습니까?\n페이지 내 모든 상태·파일 데이터가 영구 삭제됩니다.`)) return
     try {
       const res = await api.deleteTrackerPage(page.id)
@@ -766,7 +771,7 @@ export default function StatusTab() {
       return next
     })
     if (selectedPageId === page.id) setSelectedPageId(null)
-  }, [selectedPageId])
+  }, [selectedPageId, user])
 
   const updatePage = useCallback((updated, persistToStorage = false) => {
     setPages(prev => {
@@ -824,7 +829,7 @@ export default function StatusTab() {
                 <h3 className="cst-page-card-name">{page.name}</h3>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span className="cst-page-card-total">{total}개국</span>
-                  <button
+                  {user?.position === 'regular' && <button
                     title="페이지 삭제"
                     onClick={(e) => deletePage(page, e)}
                     style={{
@@ -836,7 +841,7 @@ export default function StatusTab() {
                     onMouseLeave={e => e.currentTarget.style.color = '#9ca3af'}
                   >
                     🗑️
-                  </button>
+                  </button>}
                 </div>
               </div>
 

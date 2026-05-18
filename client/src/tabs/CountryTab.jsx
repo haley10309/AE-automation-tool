@@ -810,6 +810,7 @@ function CountryHistoryDrawer({ projectId, country, onClose }) {
 // ── 프로젝트 목록 ─────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════
 function ProjectManager({ products }) {
+  const { user } = useAuth()
   const [projects, setProjects]   = useState([])
   const [loading, setLoading]     = useState(true)
   const [selectedId, setSelectedId] = useState(() => localStorage.getItem('country_selected_project_id'))
@@ -840,6 +841,7 @@ function ProjectManager({ products }) {
 
   const handleDelete = async (id, name, e) => {
     e.stopPropagation()
+    if (user?.position !== 'regular') { alert('정규직만 프로젝트를 삭제할 수 있습니다.'); return }
     if (!window.confirm(`"${name}" 프로젝트를 삭제하시겠습니까?\n저장된 카피 데이터도 모두 삭제됩니다.`)) return
     await api.ccDeleteProject(id)
     if (selectedId === id) { setSelectedId(null); localStorage.removeItem('country_selected_project_id') }
@@ -908,8 +910,10 @@ function ProjectManager({ products }) {
           <div key={p.id} className="pj-card" onClick={() => { setSelectedId(p.id); localStorage.setItem('country_selected_project_id', p.id) }}>
             <div className="pj-card-header">
               <span className="pj-card-name">{p.name}</span>
-              <button className="act-btn act-delete" style={{ padding: '2px 7px' }}
-                onClick={e => handleDelete(p.id, p.name, e)}>🗑</button>
+              {user?.position === 'regular' && (
+                <button className="act-btn act-delete" style={{ padding: '2px 7px' }}
+                  onClick={e => handleDelete(p.id, p.name, e)}>🗑</button>
+              )}
             </div>
             {p.note && <div className="pj-card-note">{p.note}</div>}
             <div className="pj-card-meta">
@@ -933,6 +937,7 @@ function ProjectManager({ products }) {
 
 
 function ProductPanel({ onClose, onProductsChanged }) {
+  const { user } = useAuth()
   const [products, setProducts]   = useState([])
   const [loading, setLoading]     = useState(true)
   const [editingId, setEditingId] = useState(null)
@@ -976,6 +981,7 @@ function ProductPanel({ onClose, onProductsChanged }) {
   }
 
   const handleDelete = async (id, name) => {
+    if (user?.position !== 'regular') { alert('정규직만 제품을 삭제할 수 있습니다.'); return }
     if (!window.confirm(`"${name}"을(를) 삭제하시겠습니까?`)) return
     const res = await api.deleteProduct(id)
     if (res.ok) { await load(); onProductsChanged() }
@@ -1018,7 +1024,9 @@ function ProductPanel({ onClose, onProductsChanged }) {
                   </div>
                   <div className="pp-item-actions">
                     <button className="act-btn act-edit" onClick={() => openEdit(p)}>✏ 수정</button>
-                    <button className="act-btn act-delete" onClick={() => handleDelete(p.id, p.name)}>🗑</button>
+                    {user?.position === 'regular' && (
+                      <button className="act-btn act-delete" onClick={() => handleDelete(p.id, p.name)}>🗑</button>
+                    )}
                   </div>
                 </div>
               ))}
