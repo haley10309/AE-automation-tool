@@ -336,7 +336,7 @@ function DntPanel({ projectId, sites: propSites, cells, products, onAddSite }) {
   // }
 
   // 영문 DNT 분석
-  const runAnalysis = () => {
+  const runAnalysis = async () => {
     const rows = enLines.map((en, i) => {
       const byCountry = {}
       let totalDNT = 0
@@ -353,8 +353,24 @@ function DntPanel({ projectId, sites: propSites, cells, products, onAddSite }) {
     dntSites.forEach(s => {
       enCountByCountry[s.code] = rows.reduce((a, r) => a + r.byCountry[s.code].length, 0)
     })
-    setResult({ rows, filtered, skipped: rows.length - filtered.length, grandTotal, enCountByCountry, sites: [...dntSites] })
+    const newResult = { rows, filtered, skipped: rows.length - filtered.length, grandTotal, enCountByCountry, sites: [...dntSites] }
+    setResult(newResult)
     setShowLocal(false)
+    setSaving(true); setSaveMsg('')
+    try {
+      const res = await api.ccSaveDNT(projectId, {
+        enRaw,
+        siteCodes: dntSites.map(s => s.code),
+        resultJson: JSON.stringify(newResult),
+        localsJson: Object.keys(locals).length ? JSON.stringify(locals) : null,
+        savedBy: user?.name || user?.email || null,
+      })
+      if (res.ok) {
+        setSaveMsg('✅ 저장 완료')
+        await loadSnapshots()
+        setTimeout(() => setSaveMsg(''), 2000)
+      } else setSaveMsg('❌ ' + res.message)
+    } finally { setSaving(false) }
   }
 
   // 로컬어 DNT 비교
@@ -459,10 +475,6 @@ function DntPanel({ projectId, sites: propSites, cells, products, onAddSite }) {
                     ? `⚠ DNT ${result.grandTotal}건 — ${result.skipped}행 자동 생략`
                     : `✓ DNT 없음 (전체 ${enLines.length}행)`}
                 </span>
-                <button className="btn-primary" style={{ background: '#6366f1' }}
-                  onClick={handleSave} disabled={saving}>
-                  {saving ? '저장 중...' : '💾 결과 저장'}
-                </button>
                 {saveMsg && <span className={saveMsg.startsWith('✅') ? 'form-ok' : 'form-err'}>{saveMsg}</span>}
               </>
             )}
