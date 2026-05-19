@@ -76,7 +76,6 @@ function AppContent() {
           { key: TABS.MERGE,    label: 'Copy Merge' },
           { key: TABS.COUNTRY,  label: 'Product reflection' },
           { key: TABS.STATUS,   label: 'Status' },
-          { key: TABS.SETTINGS, label: 'DB 설정' },
         ].map(t => (
           <button key={t.key}
             className={`tab-btn ${tab === t.key ? 'active' : ''}`}
@@ -84,6 +83,12 @@ function AppContent() {
             {t.label}
           </button>
         ))}
+        <button
+          className={`tab-btn ${tab === TABS.SETTINGS ? 'active' : ''}`}
+          style={{ marginLeft: 'auto' }}
+          onClick={() => handleTabChange(TABS.SETTINGS)}>
+          DB 설정
+        </button>
       </nav>
 
       <main className="main-content">
