@@ -1,5 +1,5 @@
 require('dotenv').config();
- 
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
@@ -1005,4 +1005,10 @@ app.use('/api/merge', mergeRouter)
 app.use('/api', statusRouter);
 
 // ── 서버 실행 ───────────────────────────────────────────────────────────
+// ── 정적 파일 서빙 & SPA fallback (API 라우터 등록 후 마지막에 위치) ──
+app.use(express.static(path.join(__dirname, '../client/dist')));
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../client/dist', 'index.html'));
+});
+
 app.listen(PORT, () => console.log('✅ 서버 실행 중: http://localhost:' + PORT));
