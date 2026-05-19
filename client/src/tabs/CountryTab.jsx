@@ -47,7 +47,8 @@ cells[a.code] = { text, badges, serviceIssues }
       })
       rows.push({ index: i + 1, cells, hasBadge })
     }
-    const total = rows.reduce((acc, r) => acc + Object.values(r.cells).reduce((a, c) => a + c.badges.length + (c.serviceIssues?.length || 0), 0), 0)
+    const total = rows.reduce((acc, r) =>
+      acc + Object.values(r.cells).reduce((a, c) => a + (c.badges?.length || 0) + (c.serviceIssues?.length || 0), 0), 0)
     setResult({ sites: parsed, rows, totalBadges: total })
   }
 
@@ -366,7 +367,10 @@ const runAnalysis = async () => {
   const grandTotal = rows.reduce((a, r) => a + r.totalDNT, 0)
   const enCountByCountry = {}
   dntSites.forEach(s => {
-    enCountByCountry[s.code] = rows.reduce((a, r) => a + r.byCountry[s.code].badges.length + r.byCountry[s.code].serviceIssues.length, 0)  // ✅
+    enCountByCountry[s.code] = rows.reduce((a, r) => {
+      const cell = r.byCountry[s.code]
+      return a + (cell?.badges?.length || 0) + (cell?.serviceIssues?.length || 0)
+    }, 0)
   })
   const newResult = { rows, filtered, skipped: rows.length - filtered.length, grandTotal, enCountByCountry, sites: [...dntSites] }
     setResult(newResult)
@@ -544,7 +548,9 @@ const runAnalysis = async () => {
                           <td className="cc-td dnt-td-en">{row.en}</td>
                           
                           {result.sites.map(s => {
-                            const { badges, serviceIssues } = row.byCountry[s.code]
+                            const cell = row.byCountry[s.code]
+                            const badges = cell?.badges ?? (Array.isArray(cell) ? cell : [])
+                            const serviceIssues = cell?.serviceIssues ?? []
                             const hasIssue = badges.length > 0 || serviceIssues.length > 0
                             return (
                               <td key={s.code}
