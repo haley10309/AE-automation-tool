@@ -41,8 +41,9 @@ function QuickCheck({ products }) {
       parsed.forEach(a => {
         const text = a.rows[i] || ''
         const badges = detectBadges(text, a.code, products)
-        if (badges.length) hasBadge = true
-        cells[a.code] = { text, badges, serviceIssues }
+const serviceIssues = detectServiceIssues(text, a.code)  // ✅ 추가
+if (badges.length || serviceIssues.length) hasBadge = true  // ✅ 서비스 이슈도 hasBadge 반영
+cells[a.code] = { text, badges, serviceIssues }
       })
       rows.push({ index: i + 1, cells, hasBadge })
     }
@@ -349,24 +350,25 @@ function DntPanel({ projectId, sites: propSites, cells, products, onAddSite }) {
   // }
 
   // 영문 DNT 분석
-  const runAnalysis = async () => {
-    const rows = enLines.map((en, i) => {
-      const byCountry = {}
-      let totalDNT = 0
-      dntSites.forEach(s => {
-        const badges = detectBadges(en, s.code, products)
-        byCountry[s.code] = badges
-        totalDNT += badges.length
-      })
-      return { index: i + 1, en, byCountry, totalDNT }
-    })
-    const filtered = rows.filter(r => r.totalDNT > 0)
-    const grandTotal = rows.reduce((a, r) => a + r.totalDNT, 0)
-    const enCountByCountry = {}
+const runAnalysis = async () => {
+  const rows = enLines.map((en, i) => {
+    const byCountry = {}
+    let totalDNT = 0
     dntSites.forEach(s => {
-      enCountByCountry[s.code] = rows.reduce((a, r) => a + r.byCountry[s.code].length, 0)
+      const badges = detectBadges(en, s.code, products)
+      const serviceIssues = detectServiceIssues(en, s.code)       // ✅ 추가
+      byCountry[s.code] = { badges, serviceIssues }               // ✅ 구조 변경
+      totalDNT += badges.length + serviceIssues.length            // ✅ 합산
     })
-    const newResult = { rows, filtered, skipped: rows.length - filtered.length, grandTotal, enCountByCountry, sites: [...dntSites] }
+    return { index: i + 1, en, byCountry, totalDNT }
+  })
+  const filtered = rows.filter(r => r.totalDNT > 0)
+  const grandTotal = rows.reduce((a, r) => a + r.totalDNT, 0)
+  const enCountByCountry = {}
+  dntSites.forEach(s => {
+    enCountByCountry[s.code] = rows.reduce((a, r) => a + r.byCountry[s.code].badges.length + r.byCountry[s.code].serviceIssues.length, 0)  // ✅
+  })
+  const newResult = { rows, filtered, skipped: rows.length - filtered.length, grandTotal, enCountByCountry, sites: [...dntSites] }
     setResult(newResult)
     setShowLocal(false)
     setSaving(true); setSaveMsg('')
@@ -540,17 +542,25 @@ function DntPanel({ projectId, sites: propSites, cells, products, onAddSite }) {
                         <tr key={row.index} className="cc-row-issue">
                           <td className="cc-td cc-td-idx">{row.index}</td>
                           <td className="cc-td dnt-td-en">{row.en}</td>
-                          {result.sites.map(s => (
-                            <td key={s.code}
-                              className={`cc-td cc-td-cell ${row.byCountry[s.code].length ? 'cc-cell-issue' : ''}`}>
-                              {row.byCountry[s.code].length === 0
-                                ? <span style={{ color: '#10b981', fontSize: 12 }}>✓</span>
-                                : row.byCountry[s.code].map(b => (
-                                    <div key={b} className="cc-launch-badge">⚠ {b}</div>
-                                  ))
-                              }
-                            </td>
-                          ))}
+                          
+                          {result.sites.map(s => {
+                            const { badges, serviceIssues } = row.byCountry[s.code]
+                            const hasIssue = badges.length > 0 || serviceIssues.length > 0
+                            return (
+                              <td key={s.code}
+                                className={`cc-td cc-td-cell ${hasIssue ? 'cc-cell-issue' : ''}`}>
+                                {!hasIssue
+                                  ? <span style={{ color: '#10b981', fontSize: 12 }}>✓</span>
+                                  : <>
+                                      {badges.map(b => (
+                                        <div key={b} className="cc-launch-badge">⚠ {b}</div>
+                                      ))}
+                                      <ServiceIssueBadges issues={serviceIssues} />   {/* ✅ 서비스 배지 추가 */}
+                                    </>
+                                }
+                              </td>
+                            )
+                          })}
                         </tr>
                       ))}
                     </tbody>
@@ -1320,26 +1330,26 @@ function ServiceIssueBadges({ issues }) {
         if (issue.type === 'not_operated') {
           return (
             <div key={idx} className="cc-launch-badge" style={{ background: '#fee2e2', color: '#b91c1c', borderColor: '#fca5a5' }}>
-              ⛔ 미운영 서비스: {issue.service}
+              ⛔ 미운영: {issue.service}
             </div>
           )
         }
         if (issue.type === 'wrong_text') {
           return (
             <div key={idx} className="cc-launch-badge" style={{ background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d' }}>
-              ⚠ {issue.service} 텍스트 오류
-              <div style={{ marginTop: 2, fontSize: '0.85em', opacity: 0.8 }}>
-                감지: <em>{issue.found}</em> → 정답: <strong>{issue.expected}</strong>
+              ⚠ {issue.service}
+              <div style={{ marginTop: 2, fontSize: '0.85em', opacity: 0.75 }}>
+                → <strong>{issue.expected}</strong>
               </div>
             </div>
           )
         }
         if (issue.type === 'wrong_url') {
           return (
-            <div key={idx} className="cc-launch-badge" style={{ background: '#eff6ff', color: '#1e40af', borderColor: '#93c5fd' }}>
-              🔗 {issue.service} URL 오류
-              <div style={{ marginTop: 2, fontSize: '0.85em', opacity: 0.8, fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                감지: {issue.found} → 정답: <strong>{issue.expected}</strong>
+            <div key={idx} className="cc-launch-badge" style={{ background: '#eff6ff', color: '#1e40af', borderColor: '#93c5fd', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+              🔗 {issue.service}
+              <div style={{ marginTop: 2, fontSize: '0.85em', opacity: 0.75 }}>
+                → <strong>{issue.expected}</strong>
               </div>
             </div>
           )
@@ -1396,7 +1406,7 @@ export default function CountryTab() {
         </div>
  
         {/* ── 관리 버튼 그룹 ── */}
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, marginLeft: 'auto' }}>
           {/* 기존 제품 데이터 관리 버튼 */}
           <button className="btn-manage-product" onClick={() => setShowProductPanel(true)}>
             ⚙ 제품 데이터 관리

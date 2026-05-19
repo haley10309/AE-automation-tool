@@ -9,6 +9,7 @@ import { api } from '../api.js'
 import { useDB } from '../DBContext.jsx'
 import SiteDropdown from '../components/SiteDropdown.jsx'
 import { detectBadges } from '../utils.js'
+import { detectServiceIssues } from '../components/ServiceCheck.jsx'
 
 const LS_EN_KEY = 'merge_en_copy'
 
@@ -1134,13 +1135,14 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
 
                         const rowHasIssue = activeCountries.some(c => {
                           const m = mergeResult.matrix[c.id]?.[i]
-                      if (m?.missing) return true
-                      const local = m?.local ?? ''
-                      return (
-                        checkDNT(en, local, products).length > 0 ||
-                        checkUnreleased(local, c.label, products).length > 0 ||
-                        checkDNTCountMismatch(en, local, c.label, products) !== null
-                      )
+                          if (m?.missing) return true
+                          const local = m?.local ?? ''
+                          return (
+                            checkDNT(en, local, products).length > 0 ||
+                            checkUnreleased(local, c.label, products).length > 0 ||
+                            checkDNTCountMismatch(en, local, c.label, products) !== null ||
+                            detectServiceIssues(local, c.label).length > 0          // ✅ 추가
+                          )
                         })
                         return (
                           <tr key={i} className={rowHasIssue ? 'cc-row-issue' : ''}>
@@ -1154,16 +1156,15 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
                           const urlIss        = m?.local ? checkUrlSiteCode(m.local, c.label) : []
                           const isTBD         = hasTBDorNA(m?.local)
                           const isMissing     = m?.missing || !m
-                          // 미출시 제품 감지: 로컬 카피에 해당 국가에서 미출시인 제품 언급 여부
                           const unreleased    = (!isMissing && m?.local) ? checkUnreleased(m.local, c.label, products) : []
-                          // DNT 개수 불일치: EN DNT 개수와 로컬 DNT 개수가 다르면 이슈
                           const dntMismatch   = (!isMissing && m?.local) ? checkDNTCountMismatch(en, m.local, c.label, products) : null
-                              const pq = (perCountrySearch[c.id] ?? '').trim().toLowerCase()
-                              const isPerMatch = pq
-                                ? ((m?.local ?? '').toLowerCase().includes(pq) || en.toLowerCase().includes(pq))
-                                : true
+                          const svcIssues     = (!isMissing && m?.local) ? detectServiceIssues(m.local, c.label) : []   // ✅ 추가
 
-                          const hasAnyIssue = dntIss.length || urlIss.length || unreleased.length || dntMismatch
+                          const hasAnyIssue = dntIss.length || urlIss.length || unreleased.length || dntMismatch || svcIssues.length  // ✅ 추가
+                          const pq = (perCountrySearch[c.id] ?? '').trim().toLowerCase()
+                          const isPerMatch = pq
+                            ? ((m?.local ?? '').toLowerCase().includes(pq) || en.toLowerCase().includes(pq))
+                            : true
                               let cellClass = 'cc-td mg-td-local'
                           if (isMissing)          cellClass += ' mg-cell-missing'
                           else if (isTBD)         cellClass += ' mg-cell-tbd'
@@ -1201,6 +1202,26 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
                                   ⚠ DNT 개수 불일치 EN:{dntMismatch.enCount} / Local:{dntMismatch.lcCount}
                                 </div>
                               )}
+                              {svcIssues.map((issue, si) => {
+                                if (issue.type === 'not_operated') return (
+                                  <div key={`svc-${si}`} className="cc-launch-badge" style={{ fontSize: 10, background: '#fee2e2', color: '#b91c1c', borderColor: '#fca5a5' }}>
+                                    ⛔ 미운영: {issue.service}
+                                  </div>
+                                )
+                                if (issue.type === 'wrong_text') return (
+                                  <div key={`svc-${si}`} className="cc-launch-badge" style={{ fontSize: 10, background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d' }}>
+                                    ⚠ {issue.service}
+                                    <div style={{ marginTop: 2, fontSize: '0.85em', opacity: 0.75 }}>→ <strong>{issue.expected}</strong></div>
+                                  </div>
+                                )
+                                if (issue.type === 'wrong_url') return (
+                                  <div key={`svc-${si}`} className="cc-launch-badge" style={{ fontSize: 10, background: '#eff6ff', color: '#1e40af', borderColor: '#93c5fd', wordBreak: 'break-all' }}>
+                                    🔗 {issue.service}
+                                    <div style={{ marginTop: 2, fontSize: '0.85em', opacity: 0.75 }}>→ <strong>{issue.expected}</strong></div>
+                                  </div>
+                                )
+                                return null
+                              })}
                                 </td>
                               )
                             })}
