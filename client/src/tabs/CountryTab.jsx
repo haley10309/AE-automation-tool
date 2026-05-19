@@ -4,6 +4,7 @@ import { useAuth } from '../auth.jsx'
 import SiteDropdown from '../components/SiteDropdown.jsx'
 import { ALL_SITES, SITE_MAP, REGIONS, REGION_COLORS as RC, REGION_BG as RB } from '../constants.js'
 import { parseCol, detectBadges, exportToCSV } from '../utils.js'
+import {SERVICE_KEYS,SERVICE_DATA,  detectServiceIssues} from '../components/ServiceCheck.jsx'
 
 // ── CSV 내보내기 헬퍼 ─────────────────────────────────────────
 function doExportCSV(sites, rowCount, cells) {
@@ -41,11 +42,11 @@ function QuickCheck({ products }) {
         const text = a.rows[i] || ''
         const badges = detectBadges(text, a.code, products)
         if (badges.length) hasBadge = true
-        cells[a.code] = { text, badges }
+        cells[a.code] = { text, badges, serviceIssues }
       })
       rows.push({ index: i + 1, cells, hasBadge })
     }
-    const total = rows.reduce((acc, r) => acc + Object.values(r.cells).reduce((a, c) => a + c.badges.length, 0), 0)
+    const total = rows.reduce((acc, r) => acc + Object.values(r.cells).reduce((a, c) => a + c.badges.length + (c.serviceIssues?.length || 0), 0), 0)
     setResult({ sites: parsed, rows, totalBadges: total })
   }
 
@@ -130,10 +131,13 @@ function CountryTable({ sites, rows, products: _p }) {
             {sites.map(s => {
               const cell = row.cells[s.code]
               return (
-                <td key={s.code} className={`cc-td cc-td-cell ${cell.badges.length > 0 ? 'cc-cell-issue' : ''}`}>
+                  <td key={s.code} className={`cc-td cc-td-cell ${
+                    cell.badges.length > 0 || cell.serviceIssues?.length > 0 ? 'cc-cell-issue' : ''
+                  }`}>
                   <div className="cc-cell-text">{cell.text || <em className="empty-val">빈 값</em>}</div>
                   {cell.badges.map(b => <div key={b} className="cc-launch-badge">⚠ 미출시: {b}</div>)}
-                </td>
+                    <ServiceIssueBadges issues={cell.serviceIssues} />
+                  </td>
               )
             })}
           </tr>
@@ -219,8 +223,17 @@ function ProjectDetail({ project, products, onBack, onUpdated }) {
   }
 
   const getBadges  = (code, ri) => detectBadges(cells[`${code}__${ri}`] || '', code, products)
-  const getColIssues = code => { let n = 0; for (let ri = 1; ri <= rowCount; ri++) n += getBadges(code, ri).length; return n }
-
+  
+  const getSvcIssues  = (code, ri) =>
+    detectServiceIssues(cells[`${code}__${ri}`] || '', code)
+  const getColIssues = code => {
+    let n = 0
+    for (let ri = 1; ri <= rowCount; ri++) {
+      n += getBadges(code, ri).length
+      n += getSvcIssues(code, ri).length
+    }
+    return n
+  }
   if (loading) return <div className="loading" style={{ padding: 40 }}>불러오는 중...</div>
 
   const rows = Array.from({ length: rowCount }, (_, i) => i + 1)
@@ -1102,20 +1115,256 @@ function ProductPanel({ onClose, onProductsChanged }) {
     </div>
   )
 }
-
+// ════════════════════════════════════════════════════════════════
+// ── ServicePanel (서비스 운영 현황 패널) ─────────────────────
+// ════════════════════════════════════════════════════════════════
+//
+// [삽입 위치] ProductPanel 컴포넌트 바로 아래 (CountryTab export 위)
+//
+// ProductPanel과 동일한 오버레이/패널 구조 사용.
+// SERVICE_DATA를 읽기 전용 테이블로 표시.
+// ════════════════════════════════════════════════════════════════
+ 
+function ServicePanel({ onClose }) {
+  const [regionFilter, setRegionFilter] = useState('ALL')
+  const [search, setSearch]             = useState('')
+  const [highlight, setHighlight]       = useState('ALL') // 'ALL'|'carePlus'|'tradeIn'|'limited'
+ 
+  const filteredSites = ALL_SITES.filter(s => {
+    if (regionFilter !== 'ALL' && s.region !== regionFilter) return false
+    if (search) {
+      const q = search.toLowerCase()
+      if (!s.code.toLowerCase().includes(q) && !s.name.toLowerCase().includes(q)) return false
+    }
+    const d = SERVICE_DATA[s.code]
+    if (!d) return false
+    if (highlight === 'carePlus'  && d.carePlus)  return false   // Care+ 미운영만
+    if (highlight === 'noCarePlus' && d.carePlus) return false
+    if (highlight === 'tradeIn'   && d.tradeIn)   return false
+    if (highlight === 'noTradeIn' && d.tradeIn)   return false
+    return true
+  })
+ 
+  // 미운영 카운트
+  const stats = SERVICE_KEYS.reduce((acc, { key, label }) => {
+    acc[key] = Object.values(SERVICE_DATA).filter(d => !d[key]).length
+    return acc
+  }, {})
+ 
+  return (
+    <div className="product-panel-overlay" onClick={onClose}>
+      <div
+        className="product-panel"
+        style={{ maxWidth: 960, width: '92vw' }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* ── 헤더 ── */}
+        <div className="pp-header">
+          <div className="pp-title-row">
+            <span className="pp-title">🛎 서비스 운영 현황</span>
+            <button className="pp-close-btn" onClick={onClose}>✕</button>
+          </div>
+          <div className="pp-subtitle" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+            {SERVICE_KEYS.map(({ key, label }) => (
+              <span key={key} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+                <span style={{
+                  display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                  background: key === 'samsungHealth' ? '#10b981'
+                    : key === 'appsServices' ? '#3b82f6'
+                    : key === 'carePlus'     ? '#8b5cf6'
+                    : '#f59e0b',
+                }} />
+                {label}
+                <span style={{ color: '#ef4444', fontWeight: 600 }}>({stats[key]}개국 미운영)</span>
+              </span>
+            ))}
+          </div>
+        </div>
+ 
+        <div className="pp-body">
+          {/* ── 필터 행 ── */}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
+            {/* 지역 필터 */}
+            <div className="pp-region-tabs" style={{ margin: 0 }}>
+              {['ALL', ...REGIONS].map(r => (
+                <button
+                  key={r}
+                  className={`cc-region-btn ${regionFilter === r ? 'active' : ''}`}
+                  style={regionFilter === r && r !== 'ALL' ? { background: RC[r], color: '#fff' } : {}}
+                  onClick={() => setRegionFilter(r)}
+                >{r}</button>
+              ))}
+            </div>
+ 
+            {/* 검색 */}
+            <input
+              className="form-input"
+              placeholder="국가 검색 (코드/이름)"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{ width: 160, fontSize: 12 }}
+            />
+          </div>
+ 
+          {/* ── 서비스 테이블 ── */}
+          <div className="cc-table-wrap" style={{ maxHeight: '62vh', overflowY: 'auto' }}>
+            <table className="cc-table" style={{ fontSize: 12, tableLayout: 'fixed', width: '100%' }}>
+              <colgroup>
+                <col style={{ width: 110 }} />
+                <col style={{ width: '22%' }} />
+                <col style={{ width: '25%' }} />
+                <col style={{ width: '22%' }} />
+                <col style={{ width: '25%' }} />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th className="cc-th" style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-card)' }}>국가</th>
+                  {SERVICE_KEYS.map(({ key, label }) => (
+                    <th key={key} className="cc-th" style={{
+                      position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-card)',
+                      borderTop: `3px solid ${
+                        key === 'samsungHealth' ? '#10b981'
+                        : key === 'appsServices' ? '#3b82f6'
+                        : key === 'carePlus'     ? '#8b5cf6'
+                        : '#f59e0b'
+                      }`,
+                    }}>
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filteredSites.map(s => {
+                  const d = SERVICE_DATA[s.code]
+                  if (!d) return null
+                  return (
+                    <tr key={s.code}>
+                      {/* 국가 셀 */}
+                      <td className="cc-td" style={{ verticalAlign: 'middle' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <span className="cc-flag">{s.flag}</span>
+                          <span
+                            className="cc-card-code"
+                            style={{ background: RB[s.region], color: RC[s.region] }}
+                          >{s.code}</span>
+                        </div>
+                        <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>{s.name}</div>
+                      </td>
+ 
+                      {/* 서비스 4종 셀 */}
+                      {SERVICE_KEYS.map(({ key }) => {
+                        const entry = d[key]
+                        return (
+                          <td key={key} className="cc-td" style={{ verticalAlign: 'top', padding: '6px 8px' }}>
+                            {entry ? (
+                              <div>
+                                <div style={{ fontWeight: 500, marginBottom: 2, lineHeight: 1.3 }}>
+                                  {entry.text}
+                                </div>
+                                <div style={{
+                                  color: '#6b7280', fontSize: 10,
+                                  wordBreak: 'break-all', fontFamily: 'monospace',
+                                  background: 'var(--bg-hover, #f3f4f6)',
+                                  padding: '1px 4px', borderRadius: 3, display: 'inline-block',
+                                }}>
+                                  {entry.url}
+                                </div>
+                              </div>
+                            ) : (
+                              <span style={{
+                                color: '#d1d5db', fontSize: 11,
+                                display: 'flex', alignItems: 'center', gap: 3,
+                              }}>
+                                <span style={{ fontSize: 14 }}>✗</span> 미운영
+                              </span>
+                            )}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  )
+                })}
+                {filteredSites.length === 0 && (
+                  <tr>
+                    <td colSpan={5} style={{ padding: 32, textAlign: 'center', color: '#9ca3af' }}>
+                      검색 결과 없음
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+ 
+          {/* ── 범례 ── */}
+          <div style={{ marginTop: 10, fontSize: 11, color: '#9ca3af' }}>
+            총 {filteredSites.length}개국 표시 중 · 텍스트와 URL은 카피 검수 시 자동 감지 기준으로 사용됩니다.
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+ 
+ 
+// ════════════════════════════════════════════════════════════════
+// ── 서비스 배지 렌더 헬퍼 ─────────────────────────────────────
+// ════════════════════════════════════════════════════════════════
+// CountryTable, ProjectDetail 셀에서 공통으로 사용
+ 
+function ServiceIssueBadges({ issues }) {
+  if (!issues?.length) return null
+  return (
+    <>
+      {issues.map((issue, idx) => {
+        if (issue.type === 'not_operated') {
+          return (
+            <div key={idx} className="cc-launch-badge" style={{ background: '#fee2e2', color: '#b91c1c', borderColor: '#fca5a5' }}>
+              ⛔ 미운영 서비스: {issue.service}
+            </div>
+          )
+        }
+        if (issue.type === 'wrong_text') {
+          return (
+            <div key={idx} className="cc-launch-badge" style={{ background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d' }}>
+              ⚠ {issue.service} 텍스트 오류
+              <div style={{ marginTop: 2, fontSize: '0.85em', opacity: 0.8 }}>
+                감지: <em>{issue.found}</em> → 정답: <strong>{issue.expected}</strong>
+              </div>
+            </div>
+          )
+        }
+        if (issue.type === 'wrong_url') {
+          return (
+            <div key={idx} className="cc-launch-badge" style={{ background: '#eff6ff', color: '#1e40af', borderColor: '#93c5fd' }}>
+              🔗 {issue.service} URL 오류
+              <div style={{ marginTop: 2, fontSize: '0.85em', opacity: 0.8, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                감지: {issue.found} → 정답: <strong>{issue.expected}</strong>
+              </div>
+            </div>
+          )
+        }
+        return null
+      })}
+    </>
+  )
+}
+ 
 // ════════════════════════════════════════════════════════════════
 // ── 메인 export ───────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════
 export default function CountryTab() {
-  const [subTab, setSubTab]             = useState(() => {
+  const [subTab, setSubTab] = useState(() => {
     const s = localStorage.getItem('country_sub_tab')
-    return s === 'project' ? 'project' : 'quick'  // 'dnt' 등 삭제된 탭은 quick으로
+    return s === 'project' ? 'project' : 'quick'
   })
-  const [products, setProducts]         = useState([])
-  const [loaded, setLoaded]             = useState(false)
-  const [loadErr, setLoadErr]           = useState('')
+  const [products, setProducts]           = useState([])
+  const [loaded, setLoaded]               = useState(false)
+  const [loadErr, setLoadErr]             = useState('')
   const [showProductPanel, setShowProductPanel] = useState(false)
-
+  // ▼ 신규: 서비스 패널 상태
+  const [showServicePanel, setShowServicePanel] = useState(false)
+ 
   const loadProducts = useCallback(async () => {
     try {
       const res = await api.getProducts()
@@ -1123,34 +1372,56 @@ export default function CountryTab() {
       else setLoadErr(res.message)
     } catch { setLoadErr('서버를 먼저 실행해주세요 (npm start)') }
   }, [])
-
+ 
   useEffect(() => { loadProducts() }, [loadProducts])
-
+ 
   return (
     <div className="country-check">
       {loadErr && <div className="error-banner">{loadErr}</div>}
-
+ 
       <div className="cc-product-status">
         <span className={`db-badge ${loaded ? 'badge-green' : 'badge-yellow'}`}>
           {loaded ? `제품 ${products.length}종 로드됨` : '로딩 중...'}
         </span>
+ 
         <div className="cc-subtab-nav">
-          <button className={`cc-subtab-btn ${subTab === 'quick' ? 'active' : ''}`}
-            onClick={() => { setSubTab('quick'); localStorage.setItem('country_sub_tab', 'quick') }}>즉석 검수</button>
-          <button className={`cc-subtab-btn ${subTab === 'project' ? 'active' : ''}`}
-            onClick={() => { setSubTab('project'); localStorage.setItem('country_sub_tab', 'project') }}>📁 프로젝트 관리</button>
-
+          <button
+            className={`cc-subtab-btn ${subTab === 'quick' ? 'active' : ''}`}
+            onClick={() => { setSubTab('quick'); localStorage.setItem('country_sub_tab', 'quick') }}
+          >즉석 검수</button>
+          <button
+            className={`cc-subtab-btn ${subTab === 'project' ? 'active' : ''}`}
+            onClick={() => { setSubTab('project'); localStorage.setItem('country_sub_tab', 'project') }}
+          >📁 프로젝트 관리</button>
         </div>
-        <button className="btn-manage-product" onClick={() => setShowProductPanel(true)}>
-          ⚙ 제품 데이터 관리
-        </button>
+ 
+        {/* ── 관리 버튼 그룹 ── */}
+        <div style={{ display: 'flex', gap: 8 }}>
+          {/* 기존 제품 데이터 관리 버튼 */}
+          <button className="btn-manage-product" onClick={() => setShowProductPanel(true)}>
+            ⚙ 제품 데이터 관리
+          </button>
+          {/* ▼ 신규: 서비스 운영 현황 버튼 */}
+          <button
+            className="btn-manage-product"
+            style={{ background: 'var(--bg-hover, #f0f9ff)', color: '#1d4ed8', borderColor: '#93c5fd' }}
+            onClick={() => setShowServicePanel(true)}
+          >
+            🛎 서비스 운영 현황
+          </button>
+        </div>
       </div>
-
-      {subTab === 'quick'   && <QuickCheck   products={products} />}
+ 
+      {subTab === 'quick'   && <QuickCheck products={products} />}
       {subTab === 'project' && <ProjectManager products={products} />}
-
+ 
       {showProductPanel && (
         <ProductPanel onClose={() => setShowProductPanel(false)} onProductsChanged={loadProducts} />
+      )}
+ 
+      {/* ▼ 신규: 서비스 패널 */}
+      {showServicePanel && (
+        <ServicePanel onClose={() => setShowServicePanel(false)} />
       )}
     </div>
   )
