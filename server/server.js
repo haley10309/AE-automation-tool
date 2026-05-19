@@ -268,7 +268,19 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       saved_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (project_id) REFERENCES cc_projects(id) ON DELETE CASCADE
     ) COMMENT='국가별 로컬어 변경 이력'`);
-
+    // ── soft delete 컬럼 추가 (기존 테이블 호환) ──
+    for (const ddl of [
+      `ALTER TABLE page_files          ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
+      `ALTER TABLE samsung_products    ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
+      `ALTER TABLE copy_rows           ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
+      `ALTER TABLE cc_projects         ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
+      `ALTER TABLE cc_project_dnt      ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
+      `ALTER TABLE quick_check_sites   ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
+      `ALTER TABLE merge_projects      ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
+      `ALTER TABLE merge_countries     ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
+    ]) {
+      try { await pool.execute(ddl) } catch (_) { /* 이미 존재하면 무시 */ }
+    }
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
@@ -370,7 +382,7 @@ productRouter.get('/', async (req, res) => {
     return res.json({ ok: true, data });
   }
   try {
-    const [rows] = await pool.execute(`SELECT * FROM samsung_products ORDER BY id`);
+    const [rows] = await pool.execute(`SELECT * FROM samsung_products WHERE deleted = 0 ORDER BY id`);
     const data = rows.map(r => ({
       ...r,
       aliases: typeof r.aliases === 'string' ? JSON.parse(r.aliases) : r.aliases,
@@ -406,7 +418,7 @@ productRouter.put('/:id', checkDbConnection, async (req, res) => {
 
 productRouter.delete('/:id', checkDbConnection, async (req, res) => {
   try {
-    await pool.execute(`DELETE FROM samsung_products WHERE id=?`, [req.params.id]);
+    await pool.execute(`UPDATE samsung_products SET deleted = 1 WHERE id = ?`, [req.params.id]);
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
@@ -455,7 +467,7 @@ extractRouter.get('/requests', async (req, res) => {
 extractRouter.get('/rows', async (req, res) => {
   try {
     const { requestId, diffOnly } = req.query;
-    let sql = `SELECT * FROM copy_rows WHERE request_id = ?`;
+    let sql = `SELECT * FROM copy_rows WHERE request_id = ? AND deleted = 0`;
     if (diffOnly === 'true') sql += ` AND status != '동일'`;
     sql += ` ORDER BY row_index`;
     const [rows] = await pool.execute(sql, [requestId]);
@@ -480,7 +492,7 @@ extractRouter.put('/rows/:id', async (req, res) => {
 
 extractRouter.delete('/rows/:id', async (req, res) => {
   try {
-    await pool.execute(`DELETE FROM copy_rows WHERE id=?`, [req.params.id]);
+    await pool.execute(`UPDATE copy_rows SET deleted = 1 WHERE id = ?`, [req.params.id]);
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
@@ -498,6 +510,7 @@ countryRouter.get('/projects', async (req, res) => {
     const [rows] = await pool.execute(`
       SELECT p.*, COUNT(DISTINCT c.site_code) AS country_count, MAX(c.row_index) AS max_row
       FROM cc_projects p LEFT JOIN cc_project_copies c ON c.project_id = p.id
+      WHERE p.deleted = 0
       GROUP BY p.id ORDER BY p.updated_at DESC`);
     res.json({ ok: true, data: rows });
   } catch (err) { res.json({ ok: false, message: err.message }); }
@@ -528,7 +541,7 @@ countryRouter.put('/projects/:id', async (req, res) => {
 
 countryRouter.delete('/projects/:id', async (req, res) => {
   try {
-    await pool.execute(`DELETE FROM cc_projects WHERE id=?`, [req.params.id]);
+    await pool.execute(`UPDATE cc_projects SET deleted = 1 WHERE id = ?`, [req.params.id]);
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
@@ -632,7 +645,7 @@ countryRouter.get('/projects/:id/dnt', async (req, res) => {
   try {
     const [rows] = await pool.execute(
       `SELECT id, en_raw, site_codes, result_json, locals_json, saved_by, saved_at
-       FROM cc_project_dnt WHERE project_id = ? ORDER BY saved_at DESC`,
+      FROM cc_project_dnt WHERE project_id = ? AND deleted = 0 ORDER BY saved_at DESC`,
       [req.params.id]
     )
     res.json({ ok: true, data: rows })
@@ -642,8 +655,8 @@ countryRouter.get('/projects/:id/dnt', async (req, res) => {
 countryRouter.delete('/projects/:id/dnt/:snapId', async (req, res) => {
   if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
-    await pool.execute(
-      `DELETE FROM cc_project_dnt WHERE id = ? AND project_id = ?`,
+   await pool.execute(
+      `UPDATE cc_project_dnt SET deleted = 1 WHERE id = ? AND project_id = ?`,
       [req.params.snapId, req.params.id]
     )
     res.json({ ok: true })
@@ -655,7 +668,7 @@ countryRouter.delete('/projects/:id/dnt/:snapId', async (req, res) => {
 countryRouter.get('/quick-sites', async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT site_code FROM quick_check_sites ORDER BY sort_order ASC, added_at ASC`
+      `SELECT site_code FROM quick_check_sites WHERE deleted = 0 ORDER BY sort_order ASC, added_at ASC`
     )
     res.json({ ok: true, data: rows.map(r => r.site_code) })
   } catch (e) { res.json({ ok: false, message: e.message }) }
@@ -672,7 +685,7 @@ countryRouter.post('/quick-sites', async (req, res) => {
     )
     await pool.execute(
       `INSERT INTO quick_check_sites (site_code, sort_order) VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE sort_order = sort_order`,
+      ON DUPLICATE KEY UPDATE sort_order = sort_order, deleted = 0`,
       [siteCode, maxOrder + 1]
     )
     res.json({ ok: true })
@@ -683,7 +696,7 @@ countryRouter.post('/quick-sites', async (req, res) => {
 countryRouter.delete('/quick-sites/:siteCode', async (req, res) => {
   try {
     await pool.execute(
-      `DELETE FROM quick_check_sites WHERE site_code = ?`,
+      `UPDATE quick_check_sites SET deleted = 1 WHERE site_code = ?`,
       [req.params.siteCode]
     )
     res.json({ ok: true })
@@ -744,7 +757,7 @@ statusRouter.delete('/tracker/status', async (req, res) => {
   try {
     const { pageId, siteCode } = req.query
     await pool.execute(
-      'DELETE FROM tracker_site_status WHERE page_id = ? AND site_code = ?',
+      'UPDATE tracker_site_status SET deleted = 1 WHERE page_id = ? AND site_code = ?',
       [pageId, siteCode]
     )
     res.json({ ok: true })
@@ -786,7 +799,7 @@ statusRouter.get('/files', async (req, res) => {
   try {
     const { pageId, siteCode } = req.query;
     if (!pageId) return res.json({ ok: false, message: 'pageId가 필요합니다.' });
-    let sql = `SELECT id, page_id, site_code, name, size, type, status, uploaded_by, uploaded_at, created_at FROM page_files WHERE page_id = ?`;
+    let sql = `SELECT id, page_id, site_code, name, size, type, status, uploaded_by, uploaded_at, created_at FROM page_files WHERE page_id = ? AND deleted = 0`;
     const params = [String(pageId)];
     if (siteCode) { 
       sql += ` AND site_code = ?`; 
@@ -811,7 +824,7 @@ statusRouter.get('/files/:id/data', async (req, res) => {
 
 statusRouter.delete('/files/:id', async (req, res) => {
   try {
-    await pool.execute(`DELETE FROM page_files WHERE id=?`, [req.params.id]);
+    await pool.execute(`UPDATE page_files SET deleted = 1 WHERE id = ?`, [req.params.id]);
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
@@ -828,7 +841,7 @@ mergeRouter.get('/projects', async (req, res) => {
   if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
     const [rows] = await pool.execute(
-      `SELECT id, title, created_at, updated_at FROM merge_projects ORDER BY updated_at DESC`
+      `SELECT id, title, created_at, updated_at FROM merge_projects WHERE deleted = 0 ORDER BY updated_at DESC`
     )
     res.json({ ok: true, data: rows })
   } catch (e) { res.json({ ok: false, message: e.message }) }
@@ -844,7 +857,7 @@ mergeRouter.get('/projects/:id', async (req, res) => {
     )
     if (!project) return res.json({ ok: false, message: '프로젝트 없음' })
     const [countries] = await pool.execute(
-      `SELECT id, label, raw_paste, mapped_json, created_at, updated_at FROM merge_countries WHERE project_id = ? ORDER BY id ASC`,
+      `SELECT id, label, raw_paste, mapped_json, created_at, updated_at FROM merge_countries WHERE project_id = ? AND deleted = 0 ORDER BY id ASC`,
       [req.params.id]
     )
     res.json({ ok: true, project, countries })
@@ -882,7 +895,7 @@ mergeRouter.put('/projects/:id', async (req, res) => {
 mergeRouter.delete('/projects/:id', async (req, res) => {
   if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
-    await pool.execute(`DELETE FROM merge_projects WHERE id = ?`, [req.params.id])
+    await pool.execute(`UPDATE merge_projects SET deleted = 1 WHERE id = ?`, [req.params.id])
     res.json({ ok: true })
   } catch (e) { res.json({ ok: false, message: e.message }) }
 })
@@ -977,7 +990,7 @@ mergeRouter.delete('/projects/:id/countries/:countryId', async (req, res) => {
   if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
     await pool.execute(
-      `DELETE FROM merge_countries WHERE id = ? AND project_id = ?`,
+      `UPDATE merge_countries SET deleted = 1 WHERE id = ? AND project_id = ?`,
       [req.params.countryId, req.params.id]
     )
     res.json({ ok: true })
