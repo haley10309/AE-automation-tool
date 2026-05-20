@@ -3,6 +3,7 @@ import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import { useDB } from '../DBContext.jsx'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
+import * as XLSX from 'xlsx'
 
 
 // ── 상태 정의 (0=미설정, 1~15=단계) ─────────────────────────
@@ -146,6 +147,221 @@ function formatDateTime(isoStr) {
   const hh = String(d.getHours()).padStart(2, '0')
   const mi = String(d.getMinutes()).padStart(2, '0')
   return `${yy}-${mm}-${dd} ${hh}:${mi}`
+}
+// ── 국가 순서 (MergeTab과 동일) ──────────────────────────────
+const SITE_CODE_ORDER = [
+  'CA_FR','CA','MX','BR','LATIN','LATIN_EN','CO','AR','PY','UY','CL','PE',
+  'SG','AU','NZ','ID','TH','MM','VN','MY','PH','JP','IN','BD',
+  'AE','AE_AR','IL','PS','SA','SA_EN','TR','IRAN',
+  'LEVANT','LEVANT_AR','IQ_AR','IQ_KU','LB',
+  'PK','EG','N_AFRICA','AFRICA_EN','AFRICA_FR','AFRICA_PT','ZA',
+  'UK','IE','DE','AT','CH','CH_FR','FR','IT','GR','ES','PT',
+  'BE','BE_FR','NL','SE','DK','FI','NO',
+  'PL','RO','BG','HU','CZ','SK',
+  'EE','LV','LT','HR','RS','SI','AL','MK','BA','UA',
+]
+
+const SITE_CODE_LOCAL = {
+  CA_FR: 'SECA',    CA: 'SECA',
+  MX: 'SEM',        BR: 'SEDA',
+  LATIN: 'SELA',    LATIN_EN: 'SELA',
+  CO: 'SAMCOL',     AR: 'SEAS',     PY: 'SEAS',    UY: 'SEAS',
+  CL: 'SECH',       PE: 'SEPR',
+  SG: 'SAPL',       AU: 'SEAU',     NZ: 'SENZ',
+  ID: 'SEIN',       TH: 'TSE',      MM: 'TSE',
+  VN: 'SAVINA',     MY: 'SME',      PH: 'SEPCO',
+  JP: 'SEJ',        IN: 'SIEL',     BD: 'SIEL',
+  AE: 'SGE',        AE_AR: 'SGE',   IL: 'SEIL',    PS: 'SEIL',
+  SA: 'KSA',        SA_EN: 'KSA',   TR: 'SETK',    IRAN: 'IRAN',
+  LEVANT: 'SELV',   LEVANT_AR: 'SELV', IQ_AR: 'SELV', IQ_KU: 'SELV',
+  LB: 'SELV',       PK: 'SEPAK',    EG: 'SEEG-S',  N_AFRICA: 'SEMAG',
+  AFRICA_EN: 'Africa RHQ', AFRICA_FR: 'Africa RHQ', AFRICA_PT: 'Africa RHQ',
+  ZA: 'SSA',
+  UK: 'SEUK',       IE: 'SEUK',     DE: 'SEG',     AT: 'SEAS',
+  CH: 'SEAS',       CH_FR: 'SEAS',  FR: 'SEF',     IT: 'SEI',
+  GR: 'SEGR',       ES: 'SEIB',     PT: 'SEIB',
+  BE: 'SEBN',       BE_FR: 'SEBN',  NL: 'SEBN',
+  SE: 'SENA',       DK: 'SENA',     FI: 'SENA',    NO: 'SENA',
+  PL: 'SEPOL',      RO: 'SEROM',    BG: 'SEROM',   HU: 'SEH',
+  CZ: 'SECZ',       SK: 'SECZ',
+  EE: 'SEB',        LV: 'SEB',      LT: 'SEB',
+  HR: 'SEAD',       RS: 'SEAD',     SI: 'SEAD',    AL: 'SEAD',
+  MK: 'SEAD',       BA: 'SEAD',     UA: 'SEUC',
+}
+
+const SITE_CODE_LANGUAGE = {
+  CA_FR: 'French',     CA: 'English',
+  MX: 'Spanish',       BR: 'Portuguese',
+  LATIN: 'Spanish',    LATIN_EN: 'English',
+  CO: 'Spanish',       AR: 'Spanish',      PY: 'Spanish',    UY: 'Spanish',
+  CL: 'Spanish',       PE: 'Spanish',
+  SG: 'English',       AU: 'English',      NZ: 'English',
+  ID: 'Indonesian',    TH: 'Thai',         MM: 'English',
+  VN: 'Vietnamese',    MY: 'English',      PH: 'English',
+  JP: 'Japanese',      IN: 'English',      BD: 'English',
+  AE: 'English',       AE_AR: 'Arabic',    IL: 'Hebrew',     PS: 'Arabic',
+  SA: 'Arabic',        SA_EN: 'English',   TR: 'Turkish',    IRAN: 'Persian',
+  LEVANT: 'English',   LEVANT_AR: 'Arabic', IQ_AR: 'Arabic', IQ_KU: 'Kurdish',
+  LB: 'English',       PK: 'English',      EG: 'Arabic',     N_AFRICA: 'French',
+  AFRICA_EN: 'English', AFRICA_FR: 'French', AFRICA_PT: 'Portuguese',
+  ZA: 'English',       UK: 'English',      IE: 'English',
+  DE: 'German',        AT: 'German',       CH: 'German',     CH_FR: 'French',
+  FR: 'French',        IT: 'Italian',      GR: 'Greek',
+  ES: 'Spanish',       PT: 'Portuguese',
+  BE: 'Dutch',         BE_FR: 'French',    NL: 'Dutch',
+  SE: 'Swedish',       DK: 'Danish',       FI: 'Finnish',    NO: 'Norwegian',
+  PL: 'Polish',        RO: 'Romanian',     BG: 'Bulgarian',  HU: 'Hungarian',
+  CZ: 'Czech',         SK: 'Slovakian',
+  EE: 'Estonian',      LV: 'Latvian',      LT: 'Lithuanian',
+  HR: 'Croatian',      RS: 'Serbian',      SI: 'Slovenijan',
+  AL: 'Albanian',      MK: 'Macedonian',   BA: 'Bosnian',    UA: 'Ukrainian',
+}
+
+// ── 고정 순서 + 권역/언어 메타 ────────────────────────────────
+const SITE_ORDER_META = [
+  { local: 'SECA',       code: 'CA_FR',      lang: 'French'      },
+  { local: '',           code: 'CA',          lang: 'English'     },
+  { local: 'SEM',        code: 'MX',          lang: 'Spanish'     },
+  { local: 'SEDA',       code: 'BR',          lang: 'Portuguese'  },
+  { local: 'SELA',       code: 'LATIN',       lang: 'Spanish'     },
+  { local: '',           code: 'LATIN_EN',    lang: 'English'     },
+  { local: 'SAMCOL',     code: 'CO',          lang: 'Spanish'     },
+  { local: 'SEAS',       code: 'AR',          lang: 'Spanish'     },
+  { local: '',           code: 'PY',          lang: 'Spanish'     },
+  { local: '',           code: 'UY',          lang: 'Spanish'     },
+  { local: 'SECH',       code: 'CL',          lang: 'Spanish'     },
+  { local: 'SEPR',       code: 'PE',          lang: 'Spanish'     },
+  { local: 'SAPL',       code: 'SG',          lang: 'English'     },
+  { local: 'SEAU',       code: 'AU',          lang: 'English'     },
+  { local: 'SENZ',       code: 'NZ',          lang: 'English'     },
+  { local: 'SEIN',       code: 'ID',          lang: 'Indonesian'  },
+  { local: 'TSE',        code: 'TH',          lang: 'Thai'        },
+  { local: 'TSE',        code: 'MM',          lang: 'English'     },
+  { local: 'SAVINA',     code: 'VN',          lang: 'Vietnamese'  },
+  { local: 'SME',        code: 'MY',          lang: 'English'     },
+  { local: 'SEPCO',      code: 'PH',          lang: 'English'     },
+  { local: 'SEJ',        code: 'JP',          lang: 'Japanese'    },
+  { local: 'SIEL',       code: 'IN',          lang: 'English'     },
+  { local: '',           code: 'BD',          lang: 'English'     },
+  { local: 'SGE',        code: 'AE',          lang: 'English'     },
+  { local: 'SGE',        code: 'AE_AR',       lang: 'Arabic'      },
+  { local: 'SEIL',       code: 'IL',          lang: 'Hebrew'      },
+  { local: 'SEIL',       code: 'PS',          lang: 'Arabic'      },
+  { local: 'KSA',        code: 'SA',          lang: 'Arabic'      },
+  { local: '',           code: 'SA_EN',       lang: 'English'     },
+  { local: 'SETK',       code: 'TR',          lang: 'Turkish'     },
+  { local: 'IRAN',       code: 'IRAN',        lang: 'Persian'     },
+  { local: 'SELV',       code: 'LEVANT',      lang: 'English'     },
+  { local: '',           code: 'LEVANT_AR',   lang: 'Arabic'      },
+  { local: '',           code: 'IQ_AR',       lang: 'Arabic'      },
+  { local: '',           code: 'IQ_KU',       lang: 'Kurdish'     },
+  { local: '',           code: 'LB',          lang: 'English'     },
+  { local: 'SEPAK',      code: 'PK',          lang: 'English'     },
+  { local: 'SEEG-S',     code: 'EG',          lang: 'Arabic'      },
+  { local: 'SEMAG',      code: 'N_AFRICA',    lang: 'French'      },
+  { local: 'Africa RHQ', code: 'AFRICA_EN',   lang: 'English'     },
+  { local: '',           code: 'AFRICA_FR',   lang: 'French'      },
+  { local: '',           code: 'AFRICA_PT',   lang: 'Portuguese'  },
+  { local: 'SSA',        code: 'ZA',          lang: 'English'     },
+  { local: 'SEUK',       code: 'UK',          lang: 'English'     },
+  { local: '',           code: 'IE',          lang: 'English'     },
+  { local: 'SEG',        code: 'DE',          lang: 'German'      },
+  { local: 'SEAS',       code: 'AT',          lang: 'German'      },
+  { local: '',           code: 'CH',          lang: 'German'      },
+  { local: '',           code: 'CH_FR',       lang: 'French'      },
+  { local: 'SEF',        code: 'FR',          lang: 'French'      },
+  { local: 'SEI',        code: 'IT',          lang: 'Italian'     },
+  { local: 'SEGR',       code: 'GR',          lang: 'Greek'       },
+  { local: 'SEIB',       code: 'ES',          lang: 'Spanish'     },
+  { local: '',           code: 'PT',          lang: 'Portuguese'  },
+  { local: 'SEBN',       code: 'BE',          lang: 'Dutch'       },
+  { local: '',           code: 'BE_FR',       lang: 'French'      },
+  { local: '',           code: 'NL',          lang: 'Dutch'       },
+  { local: 'SENA',       code: 'SE',          lang: 'Swedish'     },
+  { local: '',           code: 'DK',          lang: 'Danish'      },
+  { local: '',           code: 'FI',          lang: 'Finnish'     },
+  { local: '',           code: 'NO',          lang: 'Norwegian'   },
+  { local: 'SEPOL',      code: 'PL',          lang: 'Polish'      },
+  { local: 'SEROM',      code: 'RO',          lang: 'Romanian'    },
+  { local: '',           code: 'BG',          lang: 'Bulgarian'   },
+  { local: 'SEH',        code: 'HU',          lang: 'Hungarian'   },
+  { local: 'SECZ',       code: 'CZ',          lang: 'Czech'       },
+  { local: '',           code: 'SK',          lang: 'Slovakian'   },
+  { local: 'SEB',        code: 'EE',          lang: 'Estonian'    },
+  { local: '',           code: 'LV',          lang: 'Latvian'     },
+  { local: '',           code: 'LT',          lang: 'Lithuanian'  },
+  { local: 'SEAD',       code: 'HR',          lang: 'Croatian'    },
+  { local: '',           code: 'RS',          lang: 'Serbian'     },
+  { local: '',           code: 'SI',          lang: 'Slovenijan'  },
+  { local: '',           code: 'AL',          lang: 'Albanian'    },
+  { local: '',           code: 'MK',          lang: 'Macedonian'  },
+  { local: '',           code: 'BA',          lang: 'Bosnian'     },
+  { local: 'SEUC',       code: 'UA',          lang: 'Ukrainian'   },
+]
+
+function exportStatusXLSX(page) {
+  const statusMap = {}
+  page.countries.forEach(c => { statusMap[c.code] = c })
+
+  // 헤더 행 (row index 0)
+  const aoa = [['Local', 'Site Code', 'Language', 'Status', 'Note']]
+
+  // 데이터 행: 페이지에 있는 국가만, SITE_ORDER_META 순서로
+  const dataRows = SITE_ORDER_META.filter(m => statusMap[m.code])
+  dataRows.forEach(m => {
+    const c = statusMap[m.code]
+    const statusLabel = COPY_STATUSES.find(s => s.value === c.status)?.label || '미설정'
+    aoa.push([m.local, m.code, m.lang, statusLabel, c.note || ''])
+  })
+
+  // 페이지에 있지만 SITE_ORDER_META에 없는 국가는 맨 뒤에 추가
+  const orderedCodes = new Set(dataRows.map(m => m.code))
+  page.countries
+    .filter(c => !orderedCodes.has(c.code))
+    .forEach(c => {
+      const statusLabel = COPY_STATUSES.find(s => s.value === c.status)?.label || '미설정'
+      aoa.push(['', c.code, '', statusLabel, c.note || ''])
+    })
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa)
+
+ // ── A열 셀 병합: 첫 행에 local 값이 있고 뒤따르는 ''행들을 그룹으로 묶음
+const merges = []
+let i = 1  // 헤더(0행) 제외
+while (i < aoa.length) {
+  const localVal = aoa[i][0]
+  if (!localVal) { i++; continue }  // 빈 행은 앞 그룹에 속하므로 스킵
+
+  // 이 local을 가진 그룹의 끝 행 탐색 (다음 비어있는 행들을 모두 포함)
+  let groupEnd = i
+  while (groupEnd + 1 < aoa.length && aoa[groupEnd + 1][0] === '') {
+    groupEnd++
+  }
+
+  // 2행 이상일 때만 병합
+  if (groupEnd > i) {
+    merges.push({ s: { r: i, c: 0 }, e: { r: groupEnd, c: 0 } })
+  }
+
+  i = groupEnd + 1
+}
+if (merges.length) ws['!merges'] = merges
+
+  // ── 열 너비 ──────────────────────────────────────────────────
+  ws['!cols'] = [
+    { wch: 12 },  // Local
+    { wch: 12 },  // Site Code
+    { wch: 12 },  // Language
+    { wch: 22 },  // Status
+    { wch: 30 },  // Note
+  ]
+
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Status')
+
+  const ds = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  const safeName = page.name.replace(/[\\/:*?"<>|]/g, '_')
+  XLSX.writeFile(wb, `status_${safeName}_${ds}.xlsx`)
 }
 
 const DEFAULT_COUNTRIES = ['']
@@ -544,9 +760,15 @@ function PageDetail({ page, onBack, onUpdate }) {
     <div className="cst-page-detail">
       <div className="cst-detail-header">
         <button className="cst-back-btn" onClick={onBack}>← 페이지 목록</button>
+        
         <div className="cst-detail-title-row">
           <h2 className="cst-detail-title">{page.name}</h2>
+          
           <span className="cst-detail-date">생성: {page.createdAt?.slice(0, 10)}</span>
+          <button className="btn-export" onClick={() => exportStatusXLSX(page)}
+          style={{ marginLeft: 'auto', display: 'block' }}>
+          ⬇ 엑셀 추출
+        </button>
         </div>
 
         <div className="cst-status-summary">
