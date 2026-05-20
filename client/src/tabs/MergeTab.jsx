@@ -122,24 +122,97 @@ function hasTBDorNA(local) {
   return /\bTBD\b/i.test(local) || /\bN\/A\b/i.test(local)
 }
 
-function exportCSV(baseEnLines, countries, matrix) {
+// ── 엑셀 추출 시 고정 국가 순서 ──────────────────────────────
+const SITE_CODE_ORDER = [
+  'CA_FR','CA',
+  'MX','BR',
+  'LATIN','LATIN_EN',
+  'CO','AR','PY','UY','CL','PE',
+  'SG','AU','NZ','ID','TH','MM','VN','MY','PH','JP','IN','BD',
+  'AE','AE_AR','IL','PS','SA','SA_EN','TR','IRAN',
+  'LEVANT','LEVANT_AR','IQ_AR','IQ_KU','LB',
+  'PK','EG','N_AFRICA',
+  'AFRICA_EN','AFRICA_FR','AFRICA_PT','ZA',
+  'UK','IE','DE','AT','CH','CH_FR','FR','IT','GR','ES','PT',
+  'BE','BE_FR','NL',
+  'SE','DK','FI','NO',
+  'PL','RO','BG','HU','CZ','SK',
+  'EE','LV','LT',
+  'HR','RS','SI','AL','MK','BA','UA',
+]
+
+const SITE_CODE_LANGUAGE = {
+  CA_FR: 'French',     CA: 'English',
+  MX: 'Spanish',       BR: 'Portuguese',
+  LATIN: 'Spanish',    LATIN_EN: 'English',
+  CO: 'Spanish',       AR: 'Spanish',      PY: 'Spanish',   UY: 'Spanish',
+  CL: 'Spanish',       PE: 'Spanish',
+  SG: 'English',       AU: 'English',      NZ: 'English',
+  ID: 'Indonesian',    TH: 'Thai',         MM: 'English',
+  VN: 'Vietnamese',    MY: 'English',      PH: 'English',
+  JP: 'Japanese',      IN: 'English',      BD: 'English',
+  AE: 'English',       AE_AR: 'Arabic',    IL: 'Hebrew',    PS: 'Arabic',
+  SA: 'Arabic',        SA_EN: 'English',   TR: 'Turkish',   IRAN: 'Persian',
+  LEVANT: 'English',   LEVANT_AR: 'Arabic', IQ_AR: 'Arabic', IQ_KU: 'Kurdish',
+  LB: 'English',       PK: 'English',      EG: 'Arabic',    N_AFRICA: 'French',
+  AFRICA_EN: 'English', AFRICA_FR: 'French', AFRICA_PT: 'Portuguese',
+  ZA: 'English',       UK: 'English',      IE: 'English',
+  DE: 'German',        AT: 'German',       CH: 'German',    CH_FR: 'French',
+  FR: 'French',        IT: 'Italian',      GR: 'Greek',
+  ES: 'Spanish',       PT: 'Portuguese',
+  BE: 'Dutch',         BE_FR: 'French',    NL: 'Dutch',
+  SE: 'Swedish',       DK: 'Danish',       FI: 'Finnish',   NO: 'Norwegian',
+  PL: 'Polish',        RO: 'Romanian',     BG: 'Bulgarian', HU: 'Hungarian',
+  CZ: 'Czech',         SK: 'Slovakian',
+  EE: 'Estonian',      LV: 'Latvian',      LT: 'Lithuanian',
+  HR: 'Croatian',      RS: 'Serbian',      SI: 'Slovenijan',
+  AL: 'Albanian',      MK: 'Macedonian',   BA: 'Bosnian',   UA: 'Ukrainian',
+}
+
+function exportCSV(baseEnLines, countries, projectTitle) {
   const esc = v => {
     const s = String(v ?? '')
-    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s
+    return s.includes(',') || s.includes('"') || s.includes('\n')
+      ? `"${s.replace(/"/g, '""')}"` : s
   }
-  const header = ['#', 'EN (기준)', ...(countries || []).map(c => c.label)]
+  const sorted = [...countries].sort((a, b) => {
+    const aLang = SITE_CODE_LANGUAGE[a.label] ?? ''
+    const bLang = SITE_CODE_LANGUAGE[b.label] ?? ''
+    const aEn = aLang === 'English' ? 0 : 1
+    const bEn = bLang === 'English' ? 0 : 1
+
+    // 영어 우선
+    if (aEn !== bEn) return aEn - bEn
+
+    // 같은 그룹(영어끼리 or 비영어끼리) 안에서는 기존 SITE_CODE_ORDER 순서 유지
+    const ai = SITE_CODE_ORDER.indexOf(a.label)
+    const bi = SITE_CODE_ORDER.indexOf(b.label)
+    if (ai === -1 && bi === -1) return 0
+    if (ai === -1) return 1
+    if (bi === -1) return -1
+    return ai - bi
+  })
+
+  // 1행: # / EN (기준) / 사이트코드...
+  const row1 = ['#', 'EN (기준)', ...sorted.map(c => c.label)]
+  // 2행: (빈칸) / (빈칸) / 언어...
+  const row2 = ['', '', ...sorted.map(c => SITE_CODE_LANGUAGE[c.label] ?? '')]
+  // 3행~: 카피
   const rows = baseEnLines.map((en, i) => [
     i + 1, en,
-    ...countries.map(c => {
+    ...sorted.map(c => {
       const mapped = c.mappedJson ? JSON.parse(c.mappedJson) : []
       return mapped[i]?.local ?? ''
     }),
   ])
-  const csv = [header, ...rows].map(r => r.map(esc).join(',')).join('\r\n')
+
+  const csv = [row1, row2, ...rows].map(r => r.map(esc).join(',')).join('\r\n')
   const ds = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  const safeName = (projectTitle || 'merge').replace(/[\\/:*?"<>|]/g, '_')  // 파일명 특수문자 제거
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
-  const a = document.createElement('a'); a.href = url; a.download = `merge_${ds}.csv`; a.click()
+  const a = document.createElement('a')
+  a.href = url; a.download = `merge_${safeName}_${ds}.csv`; a.click()
   URL.revokeObjectURL(url)
 }
 
@@ -998,7 +1071,7 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
     exportCSV(
       mergeResult.baseEnLines,
       (mergeResult.activeCountries || []).map(c => ({ ...c, mappedJson: JSON.stringify(mergeResult.matrix[c.id] || []) })),
-      mergeResult.matrix
+      project.title
     )
   }
 

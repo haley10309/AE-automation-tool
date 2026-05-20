@@ -50,9 +50,9 @@ function AppContent() {
       {/* ── HEADER ── */}
       <header className="app-header">
         <div className="header-left">
-          <div className="logo-mark">CD</div>
+          <img src="/app-icon.png" alt="logo" style={{ width: 40, height: 40, borderRadius: 10, objectFit: "cover" }} />
           <div>
-            <h1>AE Automation Tool</h1>
+            <h1>AE Magnifier</h1>
             <p>AS-WAS / TO-BE 비교 &amp; 히스토리 관리</p>
           </div>
         </div>
