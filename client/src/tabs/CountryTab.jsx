@@ -271,7 +271,7 @@ function ProjectDetail({ project, products, onBack, onUpdated }) {
 
       {/* ── DNT 검증 패널 ── */}
       <DntPanel projectId={project.id} sites={sites} cells={cells} products={products} onAddSite={addSite} />
-      <SiteDropdown excludeCodes={sites.map(s => s.code)} onAdd={addSite} label="+ 국가 추가" />
+      {/* <SiteDropdown excludeCodes={sites.map(s => s.code)} onAdd={addSite} label="+ 국가 추가" /> */}
     </div>
   )
 }
