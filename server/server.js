@@ -517,13 +517,31 @@ countryRouter.use(checkDbConnection);
 countryRouter.get('/projects', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
-      SELECT p.*, COUNT(DISTINCT c.site_code) AS country_count, MAX(c.row_index) AS max_row
-      FROM cc_projects p LEFT JOIN cc_project_copies c ON c.project_id = p.id
+      SELECT p.*, dnt.site_codes AS dnt_site_codes, dnt.en_raw AS dnt_en_raw
+      FROM cc_projects p
+      LEFT JOIN (
+        SELECT project_id, site_codes, en_raw
+        FROM cc_project_dnt
+        WHERE deleted = 0
+        AND id IN (
+          SELECT MAX(id) FROM cc_project_dnt WHERE deleted = 0 GROUP BY project_id
+        )
+      ) dnt ON dnt.project_id = p.id
       WHERE p.deleted = 0
-      GROUP BY p.id ORDER BY p.updated_at DESC`);
-    res.json({ ok: true, data: rows });
+      ORDER BY p.updated_at DESC`);
+
+    const data = rows.map(p => {
+      const siteCodes = (() => {
+        try { return JSON.parse(p.dnt_site_codes || '[]') } catch { return [] }
+      })()
+      const enLines = (p.dnt_en_raw || '').split('\n').filter(l => l.trim() !== '')
+      const { dnt_site_codes, dnt_en_raw, ...rest } = p
+      return { ...rest, country_count: siteCodes.length, max_row: enLines.length }
+    })
+    res.json({ ok: true, data });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
+
 
 countryRouter.post('/projects', async (req, res) => {
   try {
@@ -850,9 +868,20 @@ mergeRouter.get('/projects', async (req, res) => {
   if (!pool) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
     const [rows] = await pool.execute(
-      `SELECT id, title, created_at, updated_at FROM merge_projects WHERE deleted = 0 ORDER BY updated_at DESC`
+      `SELECT p.id, p.title, p.en_lines, p.created_at, p.updated_at,
+              COUNT(c.id) AS country_count
+       FROM merge_projects p
+       LEFT JOIN merge_countries c ON c.project_id = p.id AND c.deleted = 0
+       WHERE p.deleted = 0
+       GROUP BY p.id
+       ORDER BY p.updated_at DESC`
     )
-    res.json({ ok: true, data: rows })
+    const data = rows.map(p => {
+      const enLines = (p.en_lines || '').split('\n').filter(l => l.trim() !== '')
+      const { en_lines, ...rest } = p
+      return { ...rest, row_count: enLines.length }
+    })
+    res.json({ ok: true, data })
   } catch (e) { res.json({ ok: false, message: e.message }) }
 })
 
