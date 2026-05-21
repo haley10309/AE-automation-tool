@@ -272,6 +272,7 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
     for (const ddl of [
       `ALTER TABLE page_files          ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
       `ALTER TABLE samsung_products    ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
+      `ALTER TABLE copy_requests       ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
       `ALTER TABLE copy_rows           ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
       `ALTER TABLE cc_projects         ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
       `ALTER TABLE cc_project_dnt      ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
@@ -458,9 +459,17 @@ extractRouter.get('/requests', async (req, res) => {
     const [rows] = await pool.execute(`
       SELECT r.id, r.product_name, r.requester, r.request_date, r.note, r.created_at,
              COUNT(c.id) AS total_rows, SUM(c.status != '동일') AS diff_rows
-      FROM copy_requests r LEFT JOIN copy_rows c ON c.request_id = r.id
+      FROM copy_requests r LEFT JOIN copy_rows c ON c.request_id = r.id AND c.deleted = 0
+      WHERE r.deleted = 0
       GROUP BY r.id ORDER BY r.created_at DESC`);
     res.json({ ok: true, data: rows });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+extractRouter.delete('/requests/:id', async (req, res) => {
+  try {
+    await pool.execute(`UPDATE copy_requests SET deleted = 1 WHERE id = ?`, [req.params.id]);
+    res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 

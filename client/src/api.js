@@ -22,6 +22,7 @@ export const api = window.electronAPI || {
     call('GET', `/api/rows?requestId=${requestId}&diffOnly=${diffOnly}`),
   updateRow:      (id, body) => call('PUT',    `/api/rows/${id}`, body),
   deleteRow:      (id)       => call('DELETE', `/api/rows/${id}`),
+  deleteRequest:  (id)       => call('DELETE', `/api/requests/${id}`),
 
   // 제품 CRUD
   getProducts:      ()         => call('GET',    '/api/products'),
