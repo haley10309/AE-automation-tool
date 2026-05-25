@@ -1,3 +1,13 @@
+process.on('uncaughtException', (err) => {
+  const fs = require('fs');
+  const path = require('path');
+  fs.appendFileSync(
+    path.join(__dirname, 'server-error.log'),
+    `[${new Date().toISOString()}] ${err.stack}\n`
+  );
+  process.exit(1);
+});
+
 require('dotenv').config();
 
 const express = require('express');
