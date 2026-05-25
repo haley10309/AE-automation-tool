@@ -1,5 +1,5 @@
 {
-  "name": "my-app",
+  "name": "ae-automation-tool",
   "version": "1.0.0",
   "main": "electron/main.js",
   "scripts": {
@@ -11,7 +11,8 @@
     "electron-builder": "^24.0.0"
   },
   "build": {
-    "appId": "com.company.myapp",
+    "appId": "com.company.ae-automation-tool",
+     "productName": "AE Automation Tool",
     "files": [
       "electron/**/*",
       "package.json"
