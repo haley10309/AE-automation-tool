@@ -43,17 +43,25 @@ pool = mysql.createPool({
   queueLimit: 0
 });
 
-fs.appendFileSync(
-  path.join(__dirname, 'server-error.log'),
-  `[${new Date().toISOString()}] __dirname: ${__dirname}\n`
-);
-fs.appendFileSync(
-  path.join(__dirname, 'server-error.log'),
-  `[${new Date().toISOString()}] .env 경로: ${path.join(__dirname, '.env')}\n`
-);
-fs.appendFileSync(
-  path.join(__dirname, 'server-error.log'),
-  `[${new Date().toISOString()}] .env 존재: ${fs.existsSync(path.join(__dirname, '.env'))}\n`
+process.on('uncaughtException', (err) => {
+  require('fs').appendFileSync(
+    require('path').join(__dirname, 'server-error.log'),
+    `[${new Date().toISOString()}] ${err.stack}\n`
+  );
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  require('fs').appendFileSync(
+    require('path').join(__dirname, 'server-error.log'),
+    `[${new Date().toISOString()}] UnhandledRejection: ${reason?.stack || reason}\n`
+  );
+  process.exit(1);
+});
+
+require('fs').appendFileSync(
+  require('path').join(__dirname, 'server-error.log'),
+  `[${new Date().toISOString()}] 서버 시작 시도\n`
 );
 
 // ── 환경 변수 및 설정 ───────────────────────────────────────────────
