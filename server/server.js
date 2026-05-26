@@ -1,6 +1,8 @@
 process.on('uncaughtException', (err) => {
-  require('fs').appendFileSync(
-    require('path').join(__dirname, 'server-error.log'),
+  const fs = require('fs');
+  const path = require('path');
+  fs.appendFileSync(
+    path.join(__dirname, 'server-error.log'),
     `[${new Date().toISOString()}] ${err.stack}\n`
   );
   process.exit(1);
@@ -208,7 +210,7 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       mapped_json JSON,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      -- 💡 [여기에 추가] 프로젝트 내 동일 국가 중복 방지      UNIQUE KEY idx_proj_label (project_id, label)
+      UNIQUE KEY idx_proj_label (project_id, label)
     )`);
 
     // 기존 merge_countries 테이블에 updated_at 컬럼이 없으면 추가
@@ -551,7 +553,7 @@ extractRouter.delete('/requests/:id', async (req, res) => {
 extractRouter.get('/rows', async (req, res) => {
   try {
     const { requestId, diffOnly } = req.query;
-    let sql = `SELECT * FROM copy_rows WHERE request_id = ?`;
+    let sql = `SELECT * FROM copy_rows WHERE request_id = ? AND deleted = 0`;
     if (diffOnly === 'true') sql += ` AND status != '동일'`;
     sql += ` ORDER BY row_index`;
     const [rows] = await pool.execute(sql, [requestId]);
@@ -576,7 +578,7 @@ extractRouter.put('/rows/:id', async (req, res) => {
 
 extractRouter.delete('/rows/:id', async (req, res) => {
   try {
-    await pool.execute(`DELETE FROM copy_rows WHERE id=?`, [req.params.id]);
+    await pool.execute(`UPDATE copy_rows SET deleted = 1 WHERE id = ?`, [req.params.id]);
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
