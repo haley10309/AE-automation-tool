@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../auth.jsx'
+import { useDB } from '../DBContext.jsx'
 
 // ── 로그인 폼 ─────────────────────────────────────────────────
 function LoginForm({ onSwitch }) {
@@ -155,6 +156,7 @@ function SignupForm({ onSwitch }) {
 
 // ── 메인 AuthPage ─────────────────────────────────────────────
 export default function AuthPage() {
+  const { dbStatus, dbMessage, dbConfig, setDbConfig, connect } = useDB()
   const [mode, setMode] = useState('login')   // 'login' | 'signup'
 
   return (
@@ -197,6 +199,44 @@ export default function AuthPage() {
           ? <LoginForm  onSwitch={() => setMode('signup')} />
           : <SignupForm onSwitch={() => setMode('login')}  />
         }
+      </div>
+      {/* ── DB 연결 섹션 ── */}
+      <div className="auth-card db-connect-card">
+        <h3>DB 연결 설정</h3>
+
+        <div className={`db-status-banner ${dbStatus}`}>
+          {{ disconnected: '미연결', connecting: '연결 중...', connected: 'DB 연결됨 ✓', error: '연결 오류' }[dbStatus]}
+          {dbMessage && <span className="db-status-msg">{dbMessage}</span>}
+        </div>
+
+        <div className="form-grid">
+          {[
+            ['host',     '호스트',          'ex) 192.168.0.10'],
+            ['port',     '포트',            '3306'],
+            ['user',     '사용자명',         'root'],
+            ['password', '비밀번호',         ''],
+            ['database', '데이터베이스명',   'copy_diff_db'],
+          ].map(([key, label, ph]) => (
+            <div key={key} className="form-row">
+              <label className="form-label">{label}</label>
+              <input
+                className="form-input"
+                type={key === 'password' ? 'password' : 'text'}
+                placeholder={ph}
+                value={dbConfig[key]}
+                onChange={e => setDbConfig(p => ({ ...p, [key]: e.target.value }))}
+              />
+            </div>
+          ))}
+        </div>
+
+        <button
+          className="btn-primary"
+          onClick={() => connect(dbConfig)}
+          disabled={dbStatus === 'connecting'}
+        >
+          {dbStatus === 'connecting' ? '연결 중...' : '연결 테스트'}
+        </button>
       </div>
     </div>
   )

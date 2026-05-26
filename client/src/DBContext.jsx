@@ -2,9 +2,12 @@ import { createContext, useContext, useState, useEffect, useCallback } from 'rea
 import { api } from './api.js'
 
 const DBContext = createContext({
-  dbStatus: 'disconnected',
-  dbReady:  false,
-  connect:  async () => {},
+  dbStatus:   'disconnected',
+  dbMessage:  '',
+  dbReady:    false,
+  dbConfig:   {},
+  setDbConfig: () => {},
+  connect:    async () => {},
 })
 
 export function useDB() {
@@ -12,8 +15,16 @@ export function useDB() {
 }
 
 export function DBProvider({ children }) {
-  const [dbStatus, setDbStatus] = useState('disconnected')
+  const [dbStatus,  setDbStatus]  = useState('disconnected')
   const [dbMessage, setDbMessage] = useState('')
+
+  // ✅ dbConfig 상태를 Context로 끌어올림 (host/password 기본값 비워서 강제 입력 유도)
+  const [dbConfig, setDbConfig] = useState(() => {
+    const saved = localStorage.getItem('db_config')
+    return saved ? JSON.parse(saved) : {
+      host: '', port: '3306', user: 'root', password: '', database: 'copy_diff_db',
+    }
+  })
 
   const connect = useCallback(async (config) => {
     setDbStatus('connecting')
@@ -39,13 +50,14 @@ export function DBProvider({ children }) {
     }
   }, [])
 
-  // 앱 시작 시 저장된 설정으로 자동 연결
+  // ✅ 저장된 설정이 있을 때만 자동 연결 (없으면 AuthPage에서 수동 입력)
   useEffect(() => {
     const saved = localStorage.getItem('db_config')
-    const config = saved ? JSON.parse(saved) : {
-      host: 'localhost', port: '3306', user: 'root', password: '0000', database: 'copy_diff_db',
+    if (saved) {
+      const config = JSON.parse(saved)
+      setDbConfig(config)     // ← 상태도 같이 동기화
+      connect(config)
     }
-    connect(config)
   }, []) // eslint-disable-line
 
   return (
@@ -53,6 +65,8 @@ export function DBProvider({ children }) {
       dbStatus,
       dbMessage,
       dbReady: dbStatus === 'connected',
+      dbConfig,       // ✅ 추가
+      setDbConfig,    // ✅ 추가
       connect,
     }}>
       {children}

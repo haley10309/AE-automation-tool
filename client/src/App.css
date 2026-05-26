@@ -2498,3 +2498,522 @@ mark.diff-ins {
 .mg-edit-body {
   padding: 20px 18px;
 }
+
+/* ================================================================
+   AUTH PAGE — 로그인 / 회원가입 / DB 설정
+   ================================================================ */
+
+/* ── 전체 레이아웃 ── */
+.auth-page {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr auto;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+/* ── 왼쪽 패널 (브랜드) ── */
+.auth-left {
+  grid-column: 1;
+  grid-row: 1;
+  background: var(--text);
+  padding: 52px 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  position: relative;
+  overflow: hidden;
+}
+
+/* 배경 장식 원 */
+.auth-left::before,
+.auth-left::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  opacity: 0.06;
+  background: #fff;
+  pointer-events: none;
+}
+.auth-left::before {
+  width: 420px;
+  height: 420px;
+  bottom: -120px;
+  right: -80px;
+}
+.auth-left::after {
+  width: 200px;
+  height: 200px;
+  top: -60px;
+  left: -40px;
+}
+
+/* ── 브랜드 로고 영역 ── */
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  animation: authFadeUp 0.5s ease both;
+}
+
+.auth-logo {
+  width: 44px;
+  height: 44px;
+  background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.auth-brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.auth-brand-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: -0.01em;
+}
+
+.auth-brand-sub {
+  font-size: 11.5px;
+  color: rgba(255,255,255,0.45);
+}
+
+/* ── 피처 목록 ── */
+.auth-features {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  flex: 1;
+  justify-content: center;
+  padding: 48px 0 32px;
+}
+
+.auth-feature {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  animation: authFadeUp 0.5s ease both;
+}
+.auth-feature:nth-child(1) { animation-delay: 0.08s; }
+.auth-feature:nth-child(2) { animation-delay: 0.14s; }
+.auth-feature:nth-child(3) { animation-delay: 0.20s; }
+
+.auth-feature-icon {
+  font-size: 20px;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-top: 2px;
+  filter: grayscale(0.2);
+}
+
+.auth-feature-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 4px;
+  letter-spacing: -0.01em;
+}
+
+.auth-feature-desc {
+  font-size: 12.5px;
+  color: rgba(255,255,255,0.45);
+  line-height: 1.6;
+}
+
+/* ── 오른쪽 패널 (폼) ── */
+.auth-right {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 40px;
+  background: #fff;
+}
+
+/* ── 폼 공통 ── */
+.auth-form {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  animation: authFadeUp 0.45s ease both;
+}
+
+.auth-form-header {
+  margin-bottom: 28px;
+}
+
+.auth-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+  margin-bottom: 6px;
+}
+
+.auth-sub {
+  font-size: 13px;
+  color: var(--text2);
+  line-height: 1.5;
+}
+
+/* ── 입력 필드 ── */
+.auth-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auth-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text2);
+  letter-spacing: 0.01em;
+}
+
+.auth-hint-inline {
+  font-weight: 400;
+  color: var(--text3);
+  font-size: 11.5px;
+  margin-left: 2px;
+}
+
+.auth-input {
+  border: 1.5px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 10px 14px;
+  font-size: 13.5px;
+  font-family: 'Noto Sans KR', sans-serif;
+  color: var(--text);
+  background: var(--surface2);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+  width: 100%;
+}
+
+.auth-input:focus {
+  border-color: var(--text);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(26,24,20,0.08);
+}
+
+.auth-input::placeholder {
+  color: var(--text3);
+  font-size: 13px;
+}
+
+/* ── 직책 선택 ── */
+.auth-position-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.auth-position-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: 'Noto Sans KR', sans-serif;
+  color: var(--text2);
+  background: var(--surface2);
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.auth-position-btn:hover {
+  border-color: var(--border-s);
+  background: #fff;
+}
+
+.auth-position-btn.selected {
+  border-color: var(--text);
+  background: var(--text);
+  color: #fff;
+}
+
+.auth-pos-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* ── 에러 / 성공 메시지 ── */
+.auth-error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: var(--r-md);
+  padding: 9px 13px;
+  font-size: 12.5px;
+  color: #991b1b;
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+
+.auth-success {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: var(--r-md);
+  padding: 9px 13px;
+  font-size: 12.5px;
+  color: #166534;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  line-height: 1.5;
+}
+
+/* ── 제출 버튼 ── */
+.auth-submit {
+  width: 100%;
+  background: var(--text);
+  color: #fff;
+  border: none;
+  border-radius: var(--r-md);
+  padding: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: 'Noto Sans KR', sans-serif;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+  letter-spacing: -0.01em;
+  margin-bottom: 18px;
+}
+
+.auth-submit:hover { opacity: 0.85; }
+.auth-submit:active { transform: scale(0.99); }
+.auth-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── 전환 링크 ── */
+.auth-switch {
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text3);
+}
+
+.auth-switch-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12.5px;
+  font-family: 'Noto Sans KR', sans-serif;
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+  margin-left: 4px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.auth-switch-btn:hover { opacity: 0.7; }
+
+/* ── 로딩 스피너 ── */
+.auth-loading {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  font-size: 13px;
+  color: var(--text2);
+  background: var(--bg);
+}
+
+.auth-loading-spinner {
+  width: 28px;
+  height: 28px;
+  border: 2.5px solid var(--border);
+  border-top-color: var(--text);
+  border-radius: 50%;
+  animation: authSpin 0.7s linear infinite;
+}
+
+/* ── DB 연결 섹션 (하단 풀 스트립) ── */
+.auth-card.db-connect-card {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  background: var(--surface2);
+  border-top: 1px solid var(--border);
+  padding: 20px 48px;
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 24px;
+}
+
+.auth-card.db-connect-card h3 {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text2);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* 상태 배너 */
+.db-status-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 99px;
+  white-space: nowrap;
+}
+
+.db-status-banner.disconnected {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+.db-status-banner.connecting {
+  background: #fef9c3;
+  color: #92400e;
+  animation: authPulse 1.2s ease infinite;
+}
+.db-status-banner.connected {
+  background: #dcfce7;
+  color: #166534;
+}
+.db-status-banner.error {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.db-status-banner::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.db-status-msg {
+  font-weight: 400;
+  opacity: 0.8;
+  font-size: 11.5px;
+}
+
+/* 입력 필드 행 (가로 배치) */
+.auth-card.db-connect-card .form-grid {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.auth-card.db-connect-card .form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.auth-card.db-connect-card .form-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text3);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.auth-card.db-connect-card .form-input {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 6px 10px;
+  font-size: 12.5px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text);
+  background: #fff;
+  outline: none;
+  width: 130px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.auth-card.db-connect-card .form-input:focus {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px rgba(26,24,20,0.07);
+}
+
+/* 호스트는 넓게 */
+.auth-card.db-connect-card .form-row:first-child .form-input { width: 160px; }
+/* 포트는 좁게 */
+.auth-card.db-connect-card .form-row:nth-child(2) .form-input { width: 72px; }
+
+.auth-card.db-connect-card .btn-primary {
+  white-space: nowrap;
+  padding: 8px 18px;
+  font-size: 12.5px;
+}
+
+/* ── 애니메이션 ── */
+@keyframes authFadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes authSpin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes authPulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.65; }
+}
+
+/* ── 반응형 ── */
+@media (max-width: 860px) {
+  .auth-page {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr auto;
+  }
+  .auth-left {
+    grid-column: 1;
+    grid-row: 1;
+    padding: 32px 28px;
+    min-height: unset;
+  }
+  .auth-features { padding: 28px 0 0; gap: 20px; }
+  .auth-right {
+    grid-column: 1;
+    grid-row: 2;
+    padding: 36px 28px;
+  }
+  .auth-card.db-connect-card {
+    grid-column: 1;
+    grid-row: 3;
+    grid-template-columns: 1fr;
+    padding: 20px 28px;
+    gap: 12px;
+  }
+  .auth-card.db-connect-card .form-grid {
+    gap: 6px;
+  }
+}
