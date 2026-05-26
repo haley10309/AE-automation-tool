@@ -1,17 +1,21 @@
 process.on('uncaughtException', (err) => {
-  const fs = require('fs');
-  const path = require('path');
-  fs.appendFileSync(
-    path.join(__dirname, 'server-error.log'),
+  require('fs').appendFileSync(
+    require('path').join(__dirname, 'server-error.log'),
     `[${new Date().toISOString()}] ${err.stack}\n`
   );
   process.exit(1);
 });
-// 시작 로그
-const fs = require('fs');
-const path = require('path');
-fs.appendFileSync(
-  path.join(__dirname, 'server-error.log'),
+
+process.on('unhandledRejection', (reason) => {
+  require('fs').appendFileSync(
+    require('path').join(__dirname, 'server-error.log'),
+    `[${new Date().toISOString()}] UnhandledRejection: ${reason?.stack || reason}\n`
+  );
+  process.exit(1);
+});
+
+require('fs').appendFileSync(
+  require('path').join(__dirname, 'server-error.log'),
   `[${new Date().toISOString()}] 서버 시작 시도\n`
 );
 require('dotenv').config();
