@@ -1,7 +1,6 @@
 import { memo, useState, useRef, useCallback, useTransition } from 'react'
 import DiffHighlight from './DiffHighlight.jsx'
 import { STATUS_COLOR } from '../constants.js'
-import React from 'react'
 
 const PAGE_SIZE = 30  // 한 번에 렌더할 최대 행 수
 

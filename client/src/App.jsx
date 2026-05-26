@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import React from 'react'
 import './App.css'
 import { api } from './api.js'
 import { AuthProvider, useAuth } from './auth.jsx'
@@ -51,9 +50,9 @@ function AppContent() {
       {/* ── HEADER ── */}
       <header className="app-header">
         <div className="header-left">
-          <div className="logo-mark">CD</div>
+          <img src="/app-icon.png" alt="logo" style={{ width: 40, height: 40, borderRadius: 10, objectFit: "cover" }} />
           <div>
-            <h1>AE Automation Tool</h1>
+            <h1>AE Magnifier</h1>
             <p>AS-WAS / TO-BE 비교 &amp; 히스토리 관리</p>
           </div>
         </div>
@@ -73,11 +72,10 @@ function AppContent() {
       {/* ── TABS ── */}
       <nav className="tab-nav">
         {[
-          { key: TABS.EXTRACT,  label: '업데이트 영역 추출 · 조회' },
-          { key: TABS.MERGE,    label: '카피덱 자동 Merge' },
-          { key: TABS.COUNTRY,  label: '국가별 카피 제품 출시 반영 검수' },
-          { key: TABS.STATUS,   label: '국가별 카피 작업 현황' },
-          { key: TABS.SETTINGS, label: 'DB 설정' },
+          { key: TABS.EXTRACT,  label: 'Updated copy' },
+          { key: TABS.MERGE,    label: 'Copy Merge' },
+          { key: TABS.COUNTRY,  label: 'Product reflection' },
+          { key: TABS.STATUS,   label: 'Status' },
         ].map(t => (
           <button key={t.key}
             className={`tab-btn ${tab === t.key ? 'active' : ''}`}
@@ -85,6 +83,12 @@ function AppContent() {
             {t.label}
           </button>
         ))}
+        <button
+          className={`tab-btn ${tab === TABS.SETTINGS ? 'active' : ''}`}
+          style={{ marginLeft: 'auto' }}
+          onClick={() => handleTabChange(TABS.SETTINGS)}>
+          DB 설정
+        </button>
       </nav>
 
       <main className="main-content">

@@ -1,7 +1,6 @@
 import { memo } from 'react'
 import DiffHighlight from './DiffHighlight.jsx'
 import { STATUS_COLOR } from '../constants.js'
-import React from 'react'
 
 const DiffTable = memo(function DiffTable({ rows }) {
   if (!rows || rows.length === 0)

@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
 import { api } from '../api.js'
-import React from 'react'
 import { useDB } from '../DBContext.jsx'
 import DiffTable from '../components/DiffTable.jsx'
 import HistoryTable from '../components/HistoryTable.jsx'
@@ -299,14 +298,14 @@ export default function ExtractTab() {
                         <button className="btn-copy" onClick={copyTSV}>
                           {copied ? '복사됨 ✓' : 'TSV 복사 (엑셀 붙여넣기용)'}
                         </button>
-                        <button className="btn-merge-send" onClick={() => {
+                        {/* <button className="btn-merge-send" onClick={() => {
                           // TO-BE 카피를 MergeTab으로 전달 (localStorage 경유)
                           const toBeLines = diffData.map(d => d.toBe).filter(Boolean)
                           localStorage.setItem('merge_en_copy', toBeLines.join('\n'))
                           alert(`✅ ${toBeLines.length}개 카피를 "카피덱 Merge" 탭으로 보냈습니다.\n탭을 전환하면 자동 로드됩니다.`)
                         }}>
                           🔀 Merge 탭으로 보내기
-                        </button>
+                        </button> */}
                       </div>
                     </div>
                     <DiffTable rows={diffData} />
@@ -380,14 +379,14 @@ export default function ExtractTab() {
                   )}>
                   ⬇ CSV 추출
                 </button>
-                <button className="btn-merge-send" onClick={() => {
+                {/* <button className="btn-merge-send" onClick={() => {
                           // TO-BE 카피를 MergeTab으로 전달 (localStorage 경유)
                           const toBeLines = diffData.map(d => d.toBe).filter(Boolean)
                           localStorage.setItem('merge_en_copy', toBeLines.join('\n'))
                           alert(`✅ ${toBeLines.length}개 카피를 "카피덱 Merge" 탭으로 보냈습니다.\n탭을 전환하면 자동 로드됩니다.`)
                         }}>
                           🔀 Merge 탭으로 보내기
-                        </button>
+                        </button> */}
               </div>
             </div>
             {rowActionMsg && (

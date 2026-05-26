@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../auth.jsx'
-import React from 'react'
+
 // ── 로그인 폼 ─────────────────────────────────────────────────
 function LoginForm({ onSwitch }) {
   const { login } = useAuth()

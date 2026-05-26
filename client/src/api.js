@@ -22,6 +22,7 @@ export const api = window.electronAPI || {
     call('GET', `/api/rows?requestId=${requestId}&diffOnly=${diffOnly}`),
   updateRow:      (id, body) => call('PUT',    `/api/rows/${id}`, body),
   deleteRow:      (id)       => call('DELETE', `/api/rows/${id}`),
+  deleteRequest:  (id)       => call('DELETE', `/api/requests/${id}`),
 
   // 제품 CRUD
   getProducts:      ()         => call('GET',    '/api/products'),
@@ -38,14 +39,15 @@ export const api = window.electronAPI || {
   ccSaveCopies:     (id, body) => call('POST',   `/api/cc/projects/${id}/copies`, body),
   ccUpdateCell:     (body)     => call('PUT',    '/api/cc/copies/cell', body),
 
-  // 국가별 로컬어 변경 이력
-  ccSaveLocalsHistory: (id, body)     => call('POST', `/api/cc/projects/${id}/locals-history`, body),
-  ccGetLocalsHistory:  (id, siteCode) => call('GET',  `/api/cc/projects/${id}/locals-history/${siteCode}`),
-
   // DNT 사전 검증 스냅샷
   ccSaveDNT:   (id, body) => call('POST',   `/api/cc/projects/${id}/dnt`, body),
   ccGetDNT:    (id)       => call('GET',    `/api/cc/projects/${id}/dnt`),
   ccDeleteDNT: (id, snapId) => call('DELETE', `/api/cc/projects/${id}/dnt/${snapId}`),
+
+  // 즉석 검수 국가 목록 (영구 보존)
+  getQuickSites:    ()           => call('GET',    '/api/cc/quick-sites'),
+  addQuickSite:     (siteCode)   => call('POST',   '/api/cc/quick-sites', { siteCode }),
+  removeQuickSite:  (siteCode)   => call('DELETE', `/api/cc/quick-sites/${siteCode}`),
 
   // ── [신규] CopyStatusTracker (상태 및 메모 영구 저장) ──
   
@@ -61,10 +63,12 @@ export const api = window.electronAPI || {
   getFiles:        ({ pageId, siteCode }) =>
     call('GET', `/api/files?pageId=${pageId}${siteCode ? `&siteCode=${siteCode}` : ''}`),
   deleteFile:      (id)       => call('DELETE', `/api/files/${id}`),
+  deleteTrackerStatus: (pageId, siteCode) => call('DELETE', `/api/tracker/status?pageId=${pageId}&siteCode=${siteCode}`),
   
   // [신규] 히스토리 내 개별 파일 메모만 수정
   updateHistoryNote: (id, body) => call('PUT',   `/api/files/${id}/note`, body),
   createTrackerPage: (body)     => call('POST',  '/api/tracker/pages', body),
+  deleteTrackerPage: (id)       => call('DELETE', `/api/tracker/pages/${id}`),
 
   // ── Merge 프로젝트 ──────────────────────────────────────────
   mergeListProjects:   ()         => call('GET',    '/api/merge/projects'),

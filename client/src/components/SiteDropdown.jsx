@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
-import React from 'react'
 
 export default function SiteDropdown({ excludeCodes = [], onAdd, label = '+ 국가 추가', className = '' }) {
   const [open, setOpen]     = useState(false)

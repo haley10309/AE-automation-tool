@@ -3,7 +3,8 @@ import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import { useDB } from '../DBContext.jsx'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
-import React from 'react'
+import * as XLSX from 'xlsx'
+
 
 // ── 상태 정의 (0=미설정, 1~15=단계) ─────────────────────────
 const COPY_STATUSES = [
@@ -147,8 +148,223 @@ function formatDateTime(isoStr) {
   const mi = String(d.getMinutes()).padStart(2, '0')
   return `${yy}-${mm}-${dd} ${hh}:${mi}`
 }
+// ── 국가 순서 (MergeTab과 동일) ──────────────────────────────
+const SITE_CODE_ORDER = [
+  'CA_FR','CA','MX','BR','LATIN','LATIN_EN','CO','AR','PY','UY','CL','PE',
+  'SG','AU','NZ','ID','TH','MM','VN','MY','PH','JP','IN','BD',
+  'AE','AE_AR','IL','PS','SA','SA_EN','TR','IRAN',
+  'LEVANT','LEVANT_AR','IQ_AR','IQ_KU','LB',
+  'PK','EG','N_AFRICA','AFRICA_EN','AFRICA_FR','AFRICA_PT','ZA',
+  'UK','IE','DE','AT','CH','CH_FR','FR','IT','GR','ES','PT',
+  'BE','BE_FR','NL','SE','DK','FI','NO',
+  'PL','RO','BG','HU','CZ','SK',
+  'EE','LV','LT','HR','RS','SI','AL','MK','BA','UA',
+]
 
-const DEFAULT_COUNTRIES = ['KR', 'US', 'JP', 'DE', 'FR', 'UK', 'AU', 'CA', 'CN', 'IN']
+const SITE_CODE_LOCAL = {
+  CA_FR: 'SECA',    CA: 'SECA',
+  MX: 'SEM',        BR: 'SEDA',
+  LATIN: 'SELA',    LATIN_EN: 'SELA',
+  CO: 'SAMCOL',     AR: 'SEAS',     PY: 'SEAS',    UY: 'SEAS',
+  CL: 'SECH',       PE: 'SEPR',
+  SG: 'SAPL',       AU: 'SEAU',     NZ: 'SENZ',
+  ID: 'SEIN',       TH: 'TSE',      MM: 'TSE',
+  VN: 'SAVINA',     MY: 'SME',      PH: 'SEPCO',
+  JP: 'SEJ',        IN: 'SIEL',     BD: 'SIEL',
+  AE: 'SGE',        AE_AR: 'SGE',   IL: 'SEIL',    PS: 'SEIL',
+  SA: 'KSA',        SA_EN: 'KSA',   TR: 'SETK',    IRAN: 'IRAN',
+  LEVANT: 'SELV',   LEVANT_AR: 'SELV', IQ_AR: 'SELV', IQ_KU: 'SELV',
+  LB: 'SELV',       PK: 'SEPAK',    EG: 'SEEG-S',  N_AFRICA: 'SEMAG',
+  AFRICA_EN: 'Africa RHQ', AFRICA_FR: 'Africa RHQ', AFRICA_PT: 'Africa RHQ',
+  ZA: 'SSA',
+  UK: 'SEUK',       IE: 'SEUK',     DE: 'SEG',     AT: 'SEAS',
+  CH: 'SEAS',       CH_FR: 'SEAS',  FR: 'SEF',     IT: 'SEI',
+  GR: 'SEGR',       ES: 'SEIB',     PT: 'SEIB',
+  BE: 'SEBN',       BE_FR: 'SEBN',  NL: 'SEBN',
+  SE: 'SENA',       DK: 'SENA',     FI: 'SENA',    NO: 'SENA',
+  PL: 'SEPOL',      RO: 'SEROM',    BG: 'SEROM',   HU: 'SEH',
+  CZ: 'SECZ',       SK: 'SECZ',
+  EE: 'SEB',        LV: 'SEB',      LT: 'SEB',
+  HR: 'SEAD',       RS: 'SEAD',     SI: 'SEAD',    AL: 'SEAD',
+  MK: 'SEAD',       BA: 'SEAD',     UA: 'SEUC',
+}
+
+const SITE_CODE_LANGUAGE = {
+  CA_FR: 'French',     CA: 'English',
+  MX: 'Spanish',       BR: 'Portuguese',
+  LATIN: 'Spanish',    LATIN_EN: 'English',
+  CO: 'Spanish',       AR: 'Spanish',      PY: 'Spanish',    UY: 'Spanish',
+  CL: 'Spanish',       PE: 'Spanish',
+  SG: 'English',       AU: 'English',      NZ: 'English',
+  ID: 'Indonesian',    TH: 'Thai',         MM: 'English',
+  VN: 'Vietnamese',    MY: 'English',      PH: 'English',
+  JP: 'Japanese',      IN: 'English',      BD: 'English',
+  AE: 'English',       AE_AR: 'Arabic',    IL: 'Hebrew',     PS: 'Arabic',
+  SA: 'Arabic',        SA_EN: 'English',   TR: 'Turkish',    IRAN: 'Persian',
+  LEVANT: 'English',   LEVANT_AR: 'Arabic', IQ_AR: 'Arabic', IQ_KU: 'Kurdish',
+  LB: 'English',       PK: 'English',      EG: 'Arabic',     N_AFRICA: 'French',
+  AFRICA_EN: 'English', AFRICA_FR: 'French', AFRICA_PT: 'Portuguese',
+  ZA: 'English',       UK: 'English',      IE: 'English',
+  DE: 'German',        AT: 'German',       CH: 'German',     CH_FR: 'French',
+  FR: 'French',        IT: 'Italian',      GR: 'Greek',
+  ES: 'Spanish',       PT: 'Portuguese',
+  BE: 'Dutch',         BE_FR: 'French',    NL: 'Dutch',
+  SE: 'Swedish',       DK: 'Danish',       FI: 'Finnish',    NO: 'Norwegian',
+  PL: 'Polish',        RO: 'Romanian',     BG: 'Bulgarian',  HU: 'Hungarian',
+  CZ: 'Czech',         SK: 'Slovakian',
+  EE: 'Estonian',      LV: 'Latvian',      LT: 'Lithuanian',
+  HR: 'Croatian',      RS: 'Serbian',      SI: 'Slovenijan',
+  AL: 'Albanian',      MK: 'Macedonian',   BA: 'Bosnian',    UA: 'Ukrainian',
+}
+
+// ── 고정 순서 + 권역/언어 메타 ────────────────────────────────
+const SITE_ORDER_META = [
+  { local: 'SECA',       code: 'CA_FR',      lang: 'French'      },
+  { local: '',           code: 'CA',          lang: 'English'     },
+  { local: 'SEM',        code: 'MX',          lang: 'Spanish'     },
+  { local: 'SEDA',       code: 'BR',          lang: 'Portuguese'  },
+  { local: 'SELA',       code: 'LATIN',       lang: 'Spanish'     },
+  { local: '',           code: 'LATIN_EN',    lang: 'English'     },
+  { local: 'SAMCOL',     code: 'CO',          lang: 'Spanish'     },
+  { local: 'SEAS',       code: 'AR',          lang: 'Spanish'     },
+  { local: '',           code: 'PY',          lang: 'Spanish'     },
+  { local: '',           code: 'UY',          lang: 'Spanish'     },
+  { local: 'SECH',       code: 'CL',          lang: 'Spanish'     },
+  { local: 'SEPR',       code: 'PE',          lang: 'Spanish'     },
+  { local: 'SAPL',       code: 'SG',          lang: 'English'     },
+  { local: 'SEAU',       code: 'AU',          lang: 'English'     },
+  { local: 'SENZ',       code: 'NZ',          lang: 'English'     },
+  { local: 'SEIN',       code: 'ID',          lang: 'Indonesian'  },
+  { local: 'TSE',        code: 'TH',          lang: 'Thai'        },
+  { local: 'TSE',        code: 'MM',          lang: 'English'     },
+  { local: 'SAVINA',     code: 'VN',          lang: 'Vietnamese'  },
+  { local: 'SME',        code: 'MY',          lang: 'English'     },
+  { local: 'SEPCO',      code: 'PH',          lang: 'English'     },
+  { local: 'SEJ',        code: 'JP',          lang: 'Japanese'    },
+  { local: 'SIEL',       code: 'IN',          lang: 'English'     },
+  { local: '',           code: 'BD',          lang: 'English'     },
+  { local: 'SGE',        code: 'AE',          lang: 'English'     },
+  { local: 'SGE',        code: 'AE_AR',       lang: 'Arabic'      },
+  { local: 'SEIL',       code: 'IL',          lang: 'Hebrew'      },
+  { local: 'SEIL',       code: 'PS',          lang: 'Arabic'      },
+  { local: 'KSA',        code: 'SA',          lang: 'Arabic'      },
+  { local: '',           code: 'SA_EN',       lang: 'English'     },
+  { local: 'SETK',       code: 'TR',          lang: 'Turkish'     },
+  { local: 'IRAN',       code: 'IRAN',        lang: 'Persian'     },
+  { local: 'SELV',       code: 'LEVANT',      lang: 'English'     },
+  { local: '',           code: 'LEVANT_AR',   lang: 'Arabic'      },
+  { local: '',           code: 'IQ_AR',       lang: 'Arabic'      },
+  { local: '',           code: 'IQ_KU',       lang: 'Kurdish'     },
+  { local: '',           code: 'LB',          lang: 'English'     },
+  { local: 'SEPAK',      code: 'PK',          lang: 'English'     },
+  { local: 'SEEG-S',     code: 'EG',          lang: 'Arabic'      },
+  { local: 'SEMAG',      code: 'N_AFRICA',    lang: 'French'      },
+  { local: 'Africa RHQ', code: 'AFRICA_EN',   lang: 'English'     },
+  { local: '',           code: 'AFRICA_FR',   lang: 'French'      },
+  { local: '',           code: 'AFRICA_PT',   lang: 'Portuguese'  },
+  { local: 'SSA',        code: 'ZA',          lang: 'English'     },
+  { local: 'SEUK',       code: 'UK',          lang: 'English'     },
+  { local: '',           code: 'IE',          lang: 'English'     },
+  { local: 'SEG',        code: 'DE',          lang: 'German'      },
+  { local: 'SEAS',       code: 'AT',          lang: 'German'      },
+  { local: '',           code: 'CH',          lang: 'German'      },
+  { local: '',           code: 'CH_FR',       lang: 'French'      },
+  { local: 'SEF',        code: 'FR',          lang: 'French'      },
+  { local: 'SEI',        code: 'IT',          lang: 'Italian'     },
+  { local: 'SEGR',       code: 'GR',          lang: 'Greek'       },
+  { local: 'SEIB',       code: 'ES',          lang: 'Spanish'     },
+  { local: '',           code: 'PT',          lang: 'Portuguese'  },
+  { local: 'SEBN',       code: 'BE',          lang: 'Dutch'       },
+  { local: '',           code: 'BE_FR',       lang: 'French'      },
+  { local: '',           code: 'NL',          lang: 'Dutch'       },
+  { local: 'SENA',       code: 'SE',          lang: 'Swedish'     },
+  { local: '',           code: 'DK',          lang: 'Danish'      },
+  { local: '',           code: 'FI',          lang: 'Finnish'     },
+  { local: '',           code: 'NO',          lang: 'Norwegian'   },
+  { local: 'SEPOL',      code: 'PL',          lang: 'Polish'      },
+  { local: 'SEROM',      code: 'RO',          lang: 'Romanian'    },
+  { local: '',           code: 'BG',          lang: 'Bulgarian'   },
+  { local: 'SEH',        code: 'HU',          lang: 'Hungarian'   },
+  { local: 'SECZ',       code: 'CZ',          lang: 'Czech'       },
+  { local: '',           code: 'SK',          lang: 'Slovakian'   },
+  { local: 'SEB',        code: 'EE',          lang: 'Estonian'    },
+  { local: '',           code: 'LV',          lang: 'Latvian'     },
+  { local: '',           code: 'LT',          lang: 'Lithuanian'  },
+  { local: 'SEAD',       code: 'HR',          lang: 'Croatian'    },
+  { local: '',           code: 'RS',          lang: 'Serbian'     },
+  { local: '',           code: 'SI',          lang: 'Slovenijan'  },
+  { local: '',           code: 'AL',          lang: 'Albanian'    },
+  { local: '',           code: 'MK',          lang: 'Macedonian'  },
+  { local: '',           code: 'BA',          lang: 'Bosnian'     },
+  { local: 'SEUC',       code: 'UA',          lang: 'Ukrainian'   },
+]
+
+function exportStatusXLSX(page) {
+  const statusMap = {}
+  page.countries.forEach(c => { statusMap[c.code] = c })
+
+  // 헤더 행 (row index 0)
+  const aoa = [['Local', 'Site Code', 'Language', 'Status', 'Note']]
+
+  // 데이터 행: 페이지에 있는 국가만, SITE_ORDER_META 순서로
+  const dataRows = SITE_ORDER_META.filter(m => statusMap[m.code])
+  dataRows.forEach(m => {
+    const c = statusMap[m.code]
+    const statusLabel = COPY_STATUSES.find(s => s.value === c.status)?.label || '미설정'
+    aoa.push([m.local, m.code, m.lang, statusLabel, c.note || ''])
+  })
+
+  // 페이지에 있지만 SITE_ORDER_META에 없는 국가는 맨 뒤에 추가
+  const orderedCodes = new Set(dataRows.map(m => m.code))
+  page.countries
+    .filter(c => !orderedCodes.has(c.code))
+    .forEach(c => {
+      const statusLabel = COPY_STATUSES.find(s => s.value === c.status)?.label || '미설정'
+      aoa.push(['', c.code, '', statusLabel, c.note || ''])
+    })
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa)
+
+ // ── A열 셀 병합: 첫 행에 local 값이 있고 뒤따르는 ''행들을 그룹으로 묶음
+const merges = []
+let i = 1  // 헤더(0행) 제외
+while (i < aoa.length) {
+  const localVal = aoa[i][0]
+  if (!localVal) { i++; continue }  // 빈 행은 앞 그룹에 속하므로 스킵
+
+  // 이 local을 가진 그룹의 끝 행 탐색 (다음 비어있는 행들을 모두 포함)
+  let groupEnd = i
+  while (groupEnd + 1 < aoa.length && aoa[groupEnd + 1][0] === '') {
+    groupEnd++
+  }
+
+  // 2행 이상일 때만 병합
+  if (groupEnd > i) {
+    merges.push({ s: { r: i, c: 0 }, e: { r: groupEnd, c: 0 } })
+  }
+
+  i = groupEnd + 1
+}
+if (merges.length) ws['!merges'] = merges
+
+  // ── 열 너비 ──────────────────────────────────────────────────
+  ws['!cols'] = [
+    { wch: 12 },  // Local
+    { wch: 12 },  // Site Code
+    { wch: 12 },  // Language
+    { wch: 22 },  // Status
+    { wch: 30 },  // Note
+  ]
+
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Status')
+
+  const ds = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  const safeName = page.name.replace(/[\\/:*?"<>|]/g, '_')
+  XLSX.writeFile(wb, `status_${safeName}_${ds}.xlsx`)
+}
+
+const DEFAULT_COUNTRIES = ['']
 
 // ── 상태 셀 ───────────────────────────────────────────────────
 function CountryStatusCell({ siteCode, entry, onStatusChange }) {
@@ -272,7 +488,7 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
   )
 }
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, removeCountry }) => {
+const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, removeCountry, isRegular }) => {
   return (
     <tr className="cst-row">
       <td className="cst-td">
@@ -302,7 +518,9 @@ const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, han
         />
       </td>
       <td className="cst-td">
-        <button className="act-btn act-delete" onClick={() => removeCountry(site.code)}>✕</button>
+        {isRegular && (
+          <button className="act-btn act-delete" onClick={() => removeCountry(site.code)}>✕</button>
+        )}
       </td>
     </tr>
   )
@@ -392,6 +610,19 @@ function PageDetail({ page, onBack, onUpdate }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page.id])
 
+  //드롭 다운 클릭 x
+  useEffect(() => {
+  function handleClickOutside(e) {
+    if (dropRef.current && !dropRef.current.contains(e.target)) {
+      setShowAddCountry(false)
+    }
+  }
+  if (showAddCountry) {
+    document.addEventListener('mousedown', handleClickOutside)
+  }
+  return () => document.removeEventListener('mousedown', handleClickOutside)
+}, [showAddCountry])
+
   const activeSiteCodes = (page.countries || []).map(c => c.code)
   const activeSites = ALL_SITES.filter(s => activeSiteCodes.includes(s.code))
   const filtered = activeSites.filter(s => regionFilter === 'ALL' || s.region === regionFilter)
@@ -475,20 +706,39 @@ function PageDetail({ page, onBack, onUpdate }) {
     }
   }, [page, onUpdate])
 
-  const addCountry = (site) => {
+  const addCountry = async (site) => {
     const updated = { ...page }
     if (!updated.countries.find(c => c.code === site.code)) {
       updated.countries = [...updated.countries, { code: site.code, status: '', note: '', file: null, fileHistory: [] }]
     }
-    onUpdate(updated)
+    onUpdate(updated, true)
     setSearch('')
+
+    // ✅ DB에 빈 상태로 등록 (없으면 새로고침 시 사라짐)
+    try {
+      await api.updateTrackerStatus({
+        pageId: page.id,
+        siteCode: site.code,
+        status: '',
+        note: '',
+      })
+    } catch (e) { console.warn('국가 추가 DB 저장 실패', e) }
   }
 
-  const removeCountry = (code) => {
+  const removeCountry = async (code) => {
+    if (user?.position !== 'regular') {
+      alert('정규직만 국가를 제거할 수 있습니다.')
+      return
+    }
     if (!window.confirm(`${code} 국가를 이 페이지에서 제거하시겠습니까?`)) return
+
+    // DB에서 삭제
+    try {
+      await api.deleteTrackerStatus(page.id, code)
+    } catch (e) { console.warn('국가 상태 DB 삭제 실패', e) }
+
     onUpdate({ ...page, countries: page.countries.filter(c => c.code !== code) }, true)
   }
-
   // ── 통계 계산 ──────────────────────────────────────────────
   const totalCountries = page.countries.length
   const statusCounts = {}
@@ -510,9 +760,15 @@ function PageDetail({ page, onBack, onUpdate }) {
     <div className="cst-page-detail">
       <div className="cst-detail-header">
         <button className="cst-back-btn" onClick={onBack}>← 페이지 목록</button>
+        
         <div className="cst-detail-title-row">
           <h2 className="cst-detail-title">{page.name}</h2>
+          
           <span className="cst-detail-date">생성: {page.createdAt?.slice(0, 10)}</span>
+          <button className="btn-export" onClick={() => exportStatusXLSX(page)}
+          style={{ marginLeft: 'auto', display: 'block' }}>
+          ⬇ 엑셀 추출
+        </button>
         </div>
 
         <div className="cst-status-summary">
@@ -605,6 +861,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 handleFileUpload={handleFileUpload}
                 handleHistoryNoteUpdate={handleHistoryNoteUpdate}
                 removeCountry={removeCountry}
+                isRegular={user?.position === 'regular'}
               />
             )
           })}
@@ -618,6 +875,7 @@ function PageDetail({ page, onBack, onUpdate }) {
 
 export default function StatusTab() {
   const { dbReady } = useDB()
+  const { user } = useAuth()
   const [pages, setPages] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedPageId, setSelectedPageId] = useState(null)
@@ -715,6 +973,28 @@ export default function StatusTab() {
     setNewPageName(''); setShowNewPage(false); setSelectedPageId(newPage.id)
   }
 
+  const deletePage = useCallback(async (page, e) => {
+    e.stopPropagation()
+    if (user?.position !== 'regular') { alert('정규직만 페이지를 삭제할 수 있습니다.'); return }
+    if (!window.confirm(`"${page.name}" 페이지를 삭제하시겠습니까?\n페이지 내 모든 상태·파일 데이터가 영구 삭제됩니다.`)) return
+    try {
+      const res = await api.deleteTrackerPage(page.id)
+      if (!res?.ok) {
+        alert('삭제에 실패했습니다: ' + (res?.message || '서버 오류'))
+        return
+      }
+    } catch (err) {
+      alert('삭제 중 오류가 발생했습니다: ' + (err?.message || err))
+      return
+    }
+    setPages(prev => {
+      const next = prev.filter(p => p.id !== page.id)
+      saveToStorage({ pages: next })
+      return next
+    })
+    if (selectedPageId === page.id) setSelectedPageId(null)
+  }, [selectedPageId, user])
+
   const updatePage = useCallback((updated, persistToStorage = false) => {
     setPages(prev => {
       const next = prev.map(p => p.id == updated.id ? updated : p)
@@ -769,7 +1049,22 @@ export default function StatusTab() {
             <div key={page.id} className="cst-page-card" onClick={() => setSelectedPageId(page.id)}>
               <div className="cst-page-card-header">
                 <h3 className="cst-page-card-name">{page.name}</h3>
-                <span className="cst-page-card-total">{total}개국</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="cst-page-card-total">{total}개국</span>
+                  {user?.position === 'regular' && <button
+                    title="페이지 삭제"
+                    onClick={(e) => deletePage(page, e)}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      fontSize: 14, color: '#9ca3af', padding: '2px 4px', lineHeight: 1,
+                      borderRadius: 4, transition: 'color 0.15s',
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.color = '#ef4444'}
+                    onMouseLeave={e => e.currentTarget.style.color = '#9ca3af'}
+                  >
+                    🗑️
+                  </button>}
+                </div>
               </div>
 
               {/* 단계별 컬러 스트립 */}

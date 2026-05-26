@@ -1,7 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { api } from './api.js'
-import React from 'react'
-
 
 const DBContext = createContext({
   dbStatus: 'disconnected',
@@ -26,9 +24,7 @@ export function DBProvider({ children }) {
         if (init.ok) {
           setDbStatus('connected')
           setDbMessage('연결 및 테이블 초기화 완료')
-          // password는 저장하지 않음 — 서버 .env의 DB_PASSWORD로 관리
-          const { password: _omit, ...safeConfig } = config
-          localStorage.setItem('db_config', JSON.stringify(safeConfig))
+          localStorage.setItem('db_config', JSON.stringify(config))
         } else {
           setDbStatus('error')
           setDbMessage('테이블 생성 실패: ' + init.message)
@@ -44,13 +40,12 @@ export function DBProvider({ children }) {
   }, [])
 
   // 앱 시작 시 저장된 설정으로 자동 연결
-  // password는 저장하지 않으므로 빈 값으로 넘김 → 서버가 .env의 DB_PASSWORD 사용
   useEffect(() => {
     const saved = localStorage.getItem('db_config')
     const config = saved ? JSON.parse(saved) : {
-      host: 'localhost', port: '3306', user: 'root', database: 'copy_diff_db',
+      host: 'localhost', port: '3306', user: 'root', password: '0000', database: 'copy_diff_db',
     }
-    connect({ ...config, password: '' })
+    connect(config)
   }, []) // eslint-disable-line
 
   return (

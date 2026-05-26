@@ -1,6 +1,6 @@
 import { memo, useState, useEffect, useRef } from 'react'
 import { computeWordDiff } from '../utils.js'
-import React from 'react'
+
 // requestIdleCallback 폴리필 (Safari 등 미지원 브라우저 대비)
 const rIC = typeof requestIdleCallback !== 'undefined'
   ? requestIdleCallback
