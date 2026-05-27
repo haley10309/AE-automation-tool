@@ -1,0 +1,10 @@
+[0522/211454.425:ERROR:resource_bundle.cc(1024)] Failed to load C:\Program Files\AE Automation Tool\chrome_100_percent.pak
+Some features may not be available.
+[0522/211454.432:WARNING:resource_bundle.cc(464)] locale_file_path.empty() for locale 
+[0522/211454.432:ERROR:resource_bundle.cc(1024)] Failed to load C:\Program Files\AE Automation Tool\resources.pak
+Some features may not be available.
+[0522/211847.383:ERROR:resource_bundle.cc(1024)] Failed to load C:\Program Files\AE Automation Tool\chrome_100_percent.pak
+Some features may not be available.
+[0522/211847.420:WARNING:resource_bundle.cc(464)] locale_file_path.empty() for locale 
+[0522/211847.421:ERROR:resource_bundle.cc(1024)] Failed to load C:\Program Files\AE Automation Tool\resources.pak
+Some features may not be available.

@@ -1,13 +1,35 @@
+process.on('uncaughtException', (err) => {
+  const fs = require('fs');
+  const path = require('path');
+  fs.appendFileSync(
+    path.join(__dirname, 'server-error.log'),
+    `[${new Date().toISOString()}] ${err.stack}\n`
+  );
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  require('fs').appendFileSync(
+    require('path').join(__dirname, 'server-error.log'),
+    `[${new Date().toISOString()}] UnhandledRejection: ${reason?.stack || reason}\n`
+  );
+  process.exit(1);
+});
+
+require('fs').appendFileSync(
+  require('path').join(__dirname, 'server-error.log'),
+  `[${new Date().toISOString()}] 서버 시작 시도\n`
+);
 require('dotenv').config();
- 
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const app = express();
-const PORT = process.env.PORT || 4000;;
+const PORT = process.env.PORT || 4000;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
@@ -22,6 +44,28 @@ pool = mysql.createPool({
   connectionLimit: 10,
   queueLimit: 0
 });
+
+process.on('uncaughtException', (err) => {
+  require('fs').appendFileSync(
+    require('path').join(__dirname, 'server-error.log'),
+    `[${new Date().toISOString()}] ${err.stack}\n`
+  );
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  require('fs').appendFileSync(
+    require('path').join(__dirname, 'server-error.log'),
+    `[${new Date().toISOString()}] UnhandledRejection: ${reason?.stack || reason}\n`
+  );
+  process.exit(1);
+});
+
+require('fs').appendFileSync(
+  require('path').join(__dirname, 'server-error.log'),
+  `[${new Date().toISOString()}] 서버 시작 시도\n`
+);
+
 // ── 환경 변수 및 설정 ───────────────────────────────────────────────
 const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_key_for_copy_diff';
 const JWT_EXPIRES = '24h';
@@ -86,16 +130,52 @@ const authMiddleware = (req, res, next) => {
 const dbRouter = express.Router();
 
 dbRouter.post('/connect', async (req, res) => {
+  console.log('🔥 /api/connect 호출됨');
+
   try {
     const { host, port, user, password, database } = req.body;
-    pool = mysql.createPool({ host, port: Number(port), user, password, database, waitForConnections: true, connectionLimit: 10 });
+
+    console.log({
+      host,
+      port,
+      user,
+      database
+    });
+
+    console.log('🔑 password source:', password ? 'from UI' : 'from .env', '/ DB_PASSWORD set:', !!process.env.DB_PASSWORD)
+
+    pool = mysql.createPool({
+      host,
+      port: Number(port),
+      user,
+      password: password || process.env.DB_PASSWORD,
+      database,
+      waitForConnections: true,
+      connectionLimit: 10
+    });
+
     const conn = await pool.getConnection();
+
+    console.log('✅ getConnection 성공');
+
     await conn.ping();
+
+    console.log('✅ ping 성공');
+
     conn.release();
+
     res.json({ ok: true });
+
   } catch (err) { 
+
+    console.error('❌ connect 실패:', err);
+
     pool = null; 
-    res.json({ ok: false, message: err.message }); 
+
+    res.json({
+      ok: false,
+      message: err.message
+    });
   }
 });
 
@@ -123,16 +203,15 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
   `)
    // (server.js의 /api/init 내부)
     await pool.execute(`CREATE TABLE IF NOT EXISTS merge_countries (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      project_id INT NOT NULL,
-      label VARCHAR(100) NOT NULL,
-      raw_paste TEXT,
-      mapped_json JSON,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      -- 💡 [여기에 추가] 프로젝트 내 동일 국가 중복 방지
-      UNIQUE KEY idx_proj_label (project_id, label)
-    )`);
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  project_id INT NOT NULL,
+  label VARCHAR(100) NOT NULL,
+  raw_paste TEXT,
+  mapped_json JSON,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY idx_proj_label (project_id, label)
+)`);
 
     // 기존 merge_countries 테이블에 updated_at 컬럼이 없으면 추가
     try {
@@ -197,6 +276,7 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       PRIMARY KEY (page_id, site_code),
       FOREIGN KEY (page_id) REFERENCES tracker_pages(id) ON DELETE CASCADE)`);
+
     await pool.execute(`CREATE TABLE IF NOT EXISTS page_files (
       id INT AUTO_INCREMENT PRIMARY KEY, page_id VARCHAR(100) NOT NULL,
       site_code VARCHAR(50) NOT NULL, name VARCHAR(500) NOT NULL,
@@ -281,8 +361,7 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       `ALTER TABLE merge_countries     ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
     ]) {
       try { await pool.execute(ddl) } catch (_) { /* 이미 존재하면 무시 */ }
-    }
-    res.json({ ok: true });
+    }    res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
@@ -541,7 +620,6 @@ countryRouter.get('/projects', async (req, res) => {
     res.json({ ok: true, data });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
-
 
 countryRouter.post('/projects', async (req, res) => {
   try {
@@ -1056,4 +1134,11 @@ app.use('/api/merge', mergeRouter)
 app.use('/api', statusRouter);
 
 // ── 서버 실행 ───────────────────────────────────────────────────────────
+// ── 정적 파일 서빙 & SPA fallback (API 라우터 등록 후 마지막에 위치) ──
+const clientDist = process.env.CLIENT_DIST_PATH || path.join(__dirname, '../client/dist');
+app.use(express.static(clientDist));
+app.get('*', (req, res) => {
+  res.sendFile(path.join(clientDist, 'index.html'));
+});
+
 app.listen(PORT, () => console.log('✅ 서버 실행 중: http://localhost:' + PORT));

@@ -26,8 +26,9 @@ const DB_BADGE = {
 
 // ── 실제 앱 (로그인 후) ───────────────────────────────────────
 function AppContent() {
+  const { dbStatus, dbMessage, connect, dbConfig, setDbConfig } = useDB()  // ← Context에서 가져오기
   const { user, logout } = useAuth()
-  const { dbStatus, dbMessage, connect } = useDB()
+
   const [tab, setTab] = useState(
     () => localStorage.getItem('ae_tool_tab') || TABS.EXTRACT
   )
@@ -38,21 +39,16 @@ function AppContent() {
     setTab(key)
   }
 
-  const [dbConfig, setDbConfig] = useState(() => {
-    const saved = localStorage.getItem('db_config')
-    return saved ? JSON.parse(saved) : {
-      host: 'localhost', port: '3306', user: 'root', password: '0000', database: 'copy_diff_db',
-    }
-  })
+ 
 
   return (
     <div className="app">
       {/* ── HEADER ── */}
       <header className="app-header">
         <div className="header-left">
-          <img src="/app-icon.png" alt="logo" style={{ width: 40, height: 40, borderRadius: 10, objectFit: "cover" }} />
+          <img src="./app-icon.png" alt="logo" style={{ width: 40, height: 40, borderRadius: 10, objectFit: "cover" }} />
           <div>
-            <h1>AE Magnifier</h1>
+            <h1>AE Plus</h1>
             <p>AS-WAS / TO-BE 비교 &amp; 히스토리 관리</p>
           </div>
         </div>
