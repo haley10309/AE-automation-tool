@@ -54,6 +54,78 @@ function mapLocals(baseEnLines, confirmedPairs) {
     return { en, local, missing: false }
   })
 }
+/**
+ * 모달이 필요한 두 가지 케이스를 감지
+ *
+ * ── 케이스 A : EN이 baseEnLines에 N행(N>1) 존재 + paste local이 그보다 적게 들어온 경우
+ *   예) baseEnLines에 Performance가 3행·9행 두 번 있는데
+ *       paste에는 "Performance → apple" 하나만 → 어느 행에 적용할지 사용자 선택 필요
+ *   → caseType: 'A'
+ *
+ * ── 케이스 B : 동일 EN에 서로 다른 local이 paste에 여러 개 들어왔는데
+ *              그 개수가 baseEnLines 등장 횟수와 맞지 않는 경우
+ *   예) baseEnLines에 Performance가 1행 뿐인데
+ *       paste에 "Performance → apple", "Performance → 바나나" 두 가지 → 뭘 쓸지 선택 필요
+ *   → caseType: 'B'
+ *
+ * ── 자동 처리 (모달 불필요) :
+ *   paste 개수 === baseEnLines 등장 횟수이고 순서대로 1:1 대응이 명확한 경우
+ *   예) baseEnLines에 Performance 2번, paste에도 Performance 2번(순서대로) → 그냥 순서 매핑
+ *
+ * 반환: [{ enKey, positions, candidates, uniqueCandidates, caseType }]
+ */
+function detectDuplicates(baseEnLines, confirmedPairs) {
+  // EN별 local 후보 목록 (paste 순서 그대로)
+  const pasteQueue = {}
+  confirmedPairs.forEach(({ en, local }) => {
+    const key = en.trim()
+    if (!pasteQueue[key]) pasteQueue[key] = []
+    pasteQueue[key].push(local)
+  })
+
+  // baseEnLines에서 동일 EN이 등장하는 행 인덱스 목록
+  const linesByKey = {}
+  baseEnLines.forEach((en, i) => {
+    const key = en.trim()
+    if (!linesByKey[key]) linesByKey[key] = []
+    linesByKey[key].push(i)
+  })
+
+  const duplicates = []
+
+  for (const key of Object.keys(pasteQueue)) {
+    const candidates = pasteQueue[key]            // paste에서 이 EN에 대응하는 local 목록
+    const positions  = linesByKey[key] || []      // baseEnLines에서 이 EN의 행 인덱스 목록
+    const unique     = [...new Set(candidates)]
+
+    // paste에도 1개, base에도 1개 → 완전 1:1, 모달 불필요
+    if (candidates.length === 1 && positions.length === 1) continue
+
+    // paste 개수 === base 개수이고, 모든 candidates가 동일값 → 자동 처리 가능
+    // (예: base 2번, paste 2번인데 둘 다 같은 값 → 순서대로)
+    if (candidates.length === positions.length && unique.length === 1) continue
+
+    // paste 개수 === base 개수이고, 순서대로 1:1 매핑이 자명한 경우 → 자동 처리
+    // (예: base에 Performance 2번, paste에도 Performance 2번 각각 다른 값 → 순서 매핑)
+    if (candidates.length === positions.length && candidates.length > 1) continue
+
+    // ── 케이스 A: base에 여러 행 있는데 paste는 더 적게 들어온 경우
+    //   "이 local을 어느 행(들)에 적용할 건지?" 선택
+    if (positions.length > 1 && candidates.length < positions.length) {
+      duplicates.push({ enKey: key, positions, candidates, uniqueCandidates: unique, caseType: 'A' })
+      continue
+    }
+
+    // ── 케이스 B: paste에 서로 다른 local이 여러 개인데 base 개수와 불일치
+    //   "이 중에 어떤 걸 쓸 건지?" 선택
+    if (unique.length > 1) {
+      duplicates.push({ enKey: key, positions, candidates, uniqueCandidates: unique, caseType: 'B' })
+    }
+  }
+
+  return duplicates
+}
+
 function checkDNT(en, local, products) {
   const issues = []
   for (const p of products) {
@@ -214,6 +286,247 @@ function exportCSV(baseEnLines, countries, projectTitle) {
   const a = document.createElement('a')
   a.href = url; a.download = `merge_${safeName}_${ds}.csv`; a.click()
   URL.revokeObjectURL(url)
+}
+
+// ════════════════════════════════════════════════════════════════
+// 중복 카피 선택 모달
+// ════════════════════════════════════════════════════════════════
+/**
+ * duplicates: detectDuplicates()의 반환값
+ *   caseType 'A' — base에 N행 있는데 paste local이 부족 → 어느 행에 적용할지
+ *   caseType 'B' — paste에 서로 다른 local 여러 개 → 어떤 값을 쓸지
+ *
+ * onResolve(resolvedMap) — { [enKey]: string[] }  각 position에 대응하는 최종 local 배열
+ * onCancel()
+ */
+function DuplicateResolveModal({ duplicates, countryLabel, onResolve, onCancel }) {
+  /**
+   * selections 구조
+   * 케이스 A: { [`${enKey}__${lineIdx}`]: boolean }  — 이 행에 적용할지 여부
+   * 케이스 B: { [`${enKey}__${lineIdx}`]: string }   — 이 행에 쓸 local 값
+   */
+  const initSelections = () => {
+    const sel = {}
+    duplicates.forEach(d => {
+      if (d.caseType === 'A') {
+        // 기본값: 모든 행에 적용(true)
+        d.positions.forEach(lineIdx => {
+          sel[`${d.enKey}__${lineIdx}`] = true
+        })
+      } else {
+        // 케이스 B: 각 행에 첫 번째 후보 선택
+        d.positions.forEach((lineIdx, pi) => {
+          sel[`${d.enKey}__${lineIdx}`] = d.candidates[pi] ?? d.candidates[0]
+        })
+      }
+    })
+    return sel
+  }
+  const [selections, setSelections] = useState(initSelections)
+
+  const toggle = (enKey, lineIdx, value) =>
+    setSelections(prev => ({ ...prev, [`${enKey}__${lineIdx}`]: value }))
+
+  const handleConfirm = () => {
+    const resolvedMap = {}
+    duplicates.forEach(d => {
+      if (d.caseType === 'A') {
+        // 선택된 행에만 candidates[0] 적용, 미선택 행은 빈 값(missing)
+        resolvedMap[d.enKey] = d.positions.map(lineIdx =>
+          selections[`${d.enKey}__${lineIdx}`] ? (d.candidates[0] ?? '') : '__SKIP__'
+        )
+      } else {
+        // 각 행에 선택된 local 값
+        resolvedMap[d.enKey] = d.positions.map(lineIdx =>
+          selections[`${d.enKey}__${lineIdx}`] ?? d.candidates[0]
+        )
+      }
+    })
+    onResolve(resolvedMap)
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 9999,
+      background: 'rgba(0,0,0,0.55)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: 24,
+    }}>
+      <div style={{
+        background: '#fff', borderRadius: 14,
+        width: '100%', maxWidth: 780,
+        maxHeight: '88vh', display: 'flex', flexDirection: 'column',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+        overflow: 'hidden',
+      }}>
+        {/* 헤더 */}
+        <div style={{
+          padding: '18px 24px 14px', borderBottom: '1px solid #e5e7eb',
+          display: 'flex', alignItems: 'flex-start', gap: 12,
+        }}>
+          <span style={{ fontSize: 24 }}>⚠️</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: '#111827' }}>
+              [{countryLabel}] 중복 카피 확인 필요
+            </div>
+            <div style={{ fontSize: 13, color: '#6b7280', marginTop: 4 }}>
+              동일한 EN 텍스트에 대해 적용 방식을 선택해주세요.
+            </div>
+          </div>
+          <button onClick={onCancel} style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            fontSize: 20, color: '#9ca3af', lineHeight: 1, padding: 0,
+          }}>✕</button>
+        </div>
+
+        {/* 본문 */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {duplicates.map((d, di) => (
+            <div key={di} style={{
+              borderRadius: 10, border: '1.5px solid #e5e7eb', overflow: 'hidden',
+            }}>
+              {/* EN 헤더 + 케이스 배지 */}
+              <div style={{
+                background: d.caseType === 'A' ? '#fffbeb' : '#f0f9ff',
+                padding: '10px 14px', borderBottom: '1px solid #e5e7eb',
+                display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+              }}>
+                <span style={{
+                  background: d.caseType === 'A' ? '#f59e0b' : '#6366f1',
+                  color: '#fff', borderRadius: 4, fontSize: 10, fontWeight: 700, padding: '2px 7px',
+                }}>EN</span>
+                <span style={{ fontSize: 13, color: '#111827', fontWeight: 600, wordBreak: 'break-all', flex: 1 }}>
+                  {d.enKey}
+                </span>
+                {d.caseType === 'A' ? (
+                  <span style={{
+                    fontSize: 11, color: '#92400e', background: '#fef3c7',
+                    border: '1px solid #fcd34d', borderRadius: 4, padding: '2px 8px', whiteSpace: 'nowrap',
+                  }}>
+                    📌 EN {d.positions.length}개 행 · 로컬 1개 → 적용할 행 선택
+                  </span>
+                ) : (
+                  <span style={{
+                    fontSize: 11, color: '#3730a3', background: '#e0e7ff',
+                    border: '1px solid #c7d2fe', borderRadius: 4, padding: '2px 8px', whiteSpace: 'nowrap',
+                  }}>
+                    🔀 후보 {d.uniqueCandidates.length}가지 → 각 행에 적용할 값 선택
+                  </span>
+                )}
+              </div>
+
+              {/* 케이스 A: 체크박스로 행 선택 */}
+              {d.caseType === 'A' && (
+                <div>
+                  <div style={{ padding: '8px 14px 4px', fontSize: 12, color: '#6b7280', background: '#fafafa', borderBottom: '1px solid #f3f4f6' }}>
+                    적용할 로컬 카피: <strong style={{ color: '#111827' }}>{d.candidates[0]}</strong>
+                  </div>
+                  {d.positions.map((lineIdx, pi) => {
+                    const checked = selections[`${d.enKey}__${lineIdx}`] ?? true
+                    return (
+                      <div key={pi} style={{
+                        display: 'flex', alignItems: 'center', gap: 12,
+                        padding: '9px 14px',
+                        borderBottom: pi < d.positions.length - 1 ? '1px solid #f3f4f6' : 'none',
+                        background: checked ? '#f0fdf4' : '#fafafa',
+                        cursor: 'pointer',
+                      }} onClick={() => toggle(d.enKey, lineIdx, !checked)}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggle(d.enKey, lineIdx, !checked)}
+                          style={{ width: 16, height: 16, cursor: 'pointer', accentColor: '#10b981' }}
+                        />
+                        <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 700, minWidth: 36 }}>
+                          {lineIdx + 1}행
+                        </span>
+                        <span style={{ fontSize: 13, color: '#374151', wordBreak: 'break-all' }}>
+                          {d.enKey}
+                        </span>
+                        <span style={{
+                          marginLeft: 'auto', fontSize: 11, whiteSpace: 'nowrap',
+                          color: checked ? '#059669' : '#9ca3af', fontWeight: 600,
+                        }}>
+                          {checked ? '✓ 적용' : '건너뜀'}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              {/* 케이스 B: 행별로 후보 버튼 선택 */}
+              {d.caseType === 'B' && (
+                <div>
+                  {d.positions.map((lineIdx, pi) => {
+                    const currentVal = selections[`${d.enKey}__${lineIdx}`]
+                    return (
+                      <div key={pi} style={{
+                        padding: '10px 14px',
+                        borderBottom: pi < d.positions.length - 1 ? '1px solid #f3f4f6' : 'none',
+                        background: pi % 2 === 0 ? '#fff' : '#fafafa',
+                        display: 'flex', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap',
+                      }}>
+                        <span style={{
+                          minWidth: 36, textAlign: 'center', fontSize: 11,
+                          color: '#9ca3af', fontWeight: 700, paddingTop: 6,
+                        }}>
+                          {lineIdx + 1}행
+                        </span>
+                        <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {d.uniqueCandidates.map((cand, ci) => {
+                            const selected = currentVal === cand
+                            return (
+                              <button key={ci} onClick={() => toggle(d.enKey, lineIdx, cand)} style={{
+                                padding: '5px 14px', borderRadius: 6, cursor: 'pointer',
+                                border: selected ? '2px solid #6366f1' : '1.5px solid #d1d5db',
+                                background: selected ? '#eef2ff' : '#fff',
+                                color: selected ? '#4338ca' : '#374151',
+                                fontSize: 13, fontWeight: selected ? 700 : 400,
+                                wordBreak: 'break-all', textAlign: 'left',
+                                transition: 'all 0.12s',
+                              }}>
+                                {cand || <em style={{ color: '#d1d5db' }}>빈 값</em>}
+                              </button>
+                            )
+                          })}
+                        </div>
+                        {/* 직접 입력 */}
+                        <input
+                          value={currentVal ?? ''}
+                          onChange={e => toggle(d.enKey, lineIdx, e.target.value)}
+                          placeholder="직접 입력"
+                          style={{
+                            border: '1px solid #d1d5db', borderRadius: 6,
+                            padding: '5px 9px', fontSize: 12, width: 160, color: '#111827',
+                          }}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* 푸터 */}
+        <div style={{
+          padding: '14px 24px', borderTop: '1px solid #e5e7eb',
+          display: 'flex', justifyContent: 'flex-end', gap: 10, background: '#f9fafb',
+        }}>
+          <button onClick={onCancel} style={{
+            padding: '8px 20px', borderRadius: 8, border: '1.5px solid #d1d5db',
+            background: '#fff', color: '#374151', fontSize: 14, cursor: 'pointer', fontWeight: 500,
+          }}>취소</button>
+          <button onClick={handleConfirm} style={{
+            padding: '8px 24px', borderRadius: 8, border: 'none',
+            background: '#6366f1', color: '#fff', fontSize: 14, cursor: 'pointer', fontWeight: 700,
+          }}>✅ 선택 완료 — Merge 진행</button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -817,6 +1130,15 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
   const [patchSaving, setPatchSaving]       = useState(false)
   const patchPasteRef = useRef({})
 
+  // ── 중복 카피 해결 모달 상태 ────────────────────────────────
+  const [dupModal, setDupModal] = useState(null)
+  // dupModal = { duplicates, pendingActiveCountries, pendingMatrix, pendingDntIssues }
+  // 모달에서 선택 완료 시 pendingMatrix를 확정하고 저장 진행
+
+  // ── 추가 카피 중복 모달 상태 ─────────────────────────────────
+  const [patchDupModal, setPatchDupModal] = useState(null)
+  // patchDupModal = { queue, queueIdx, pendingMatrix, pendingPatched }
+
   // 상세 로드 — 저장된 결과가 있으면 바로 테이블 표시
   const load = useCallback(async () => {
     setLoading(true)
@@ -898,40 +1220,9 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
     setEditTitle(false); onUpdated()
   }
 
-  // ── Merge 실행 ──────────────────────────────────────────────
-  const runMerge = useCallback(async () => {
-    setError(''); setMergeResult(null)
-    const baseEnLines = parseEnLines(enInput)
-    if (baseEnLines.length === 0) { setError('기준 영문 카피를 입력해주세요.'); return }
-    if (countries.length === 0)   { setError('국가를 하나 이상 추가해주세요.'); return }
-
-    const activeCountries = countries.map(c => ({
-      ...c,
-      // 저장된 국가는 textarea가 readOnly이므로 항상 state의 rawPaste 사용
-      // 신규 국가만 pasteRef(DOM 값)에서 읽음
-      rawPaste: c.isSaved
-        ? c.rawPaste
-        : (pasteRef.current[c.id]?.value ?? c.rawPaste),
-    }))
-
-    const matrix = {}, dntIssues = []
-
-    for (const c of activeCountries) {
-      const pairs = parseConfirmedPaste(c.rawPaste)
-      if (pairs.length === 0) {
-        matrix[c.id] = baseEnLines.map(en => ({ en, local: '', missing: true }))
-        continue
-      }
-      const mapped = mapLocals(baseEnLines, pairs)
-      matrix[c.id] = mapped
-      mapped.forEach((m, i) => {
-        if (!m.local || m.missing) return
-        const issues = checkDNT(m.en, m.local, products)
-        if (issues.length) dntIssues.push({ countryLabel: c.label, row: i + 1, enText: m.en, issues })
-      })
-    }
-
-    setMergeResult({ matrix, dntIssues, missingWarns: [], baseEnLines, activeCountries })
+  // ── Merge 저장 (중복 해결 후 실제 저장) ───────────────────
+  const commitMerge = useCallback(async (matrix, dntIssues, activeCountries) => {
+    setMergeResult({ matrix, dntIssues, missingWarns: [], baseEnLines: parseEnLines(enInput), activeCountries })
 
     if (dntIssues.length) {
       const msgs = dntIssues.slice(0, 5).map(d =>
@@ -951,25 +1242,242 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
         if (res.ok) {
           setCountries(prev => prev.map(x =>
             x.id === c.id
-              ? {
-                  ...x,
-                  // id를 절대 바꾸지 않음 — id가 바뀌면 CountryCard가
-                  // 언마운트·재마운트되어 textarea 내용이 초기화됨
-                  dbId:     res.id ?? x.dbId,
-                  isSaved:  true,
-                  mappedJson,
-                  rawPaste: c.rawPaste, // 실제 사용된 rawPaste 명시적 보존
-                }
+              ? { ...x, dbId: res.id ?? x.dbId, isSaved: true, mappedJson, rawPaste: c.rawPaste }
               : x
           ))
         }
       }
       onUpdated()
-      // DB에 저장된 id(db_${c.id}) 기준으로 mergeResult를 재구성해야
-      // 다음 번 진입 시에도 matrix 키가 일치함
       await load()
     } finally { setSaving(false) }
-  }, [enInput, countries, products, project.id, onUpdated, load])
+  }, [enInput, project.id, onUpdated, load])
+
+  // ── Merge 실행 ──────────────────────────────────────────────
+  const runMerge = useCallback(async () => {
+    setError(''); setMergeResult(null)
+    const baseEnLines = parseEnLines(enInput)
+    if (baseEnLines.length === 0) { setError('기준 영문 카피를 입력해주세요.'); return }
+    if (countries.length === 0)   { setError('국가를 하나 이상 추가해주세요.'); return }
+
+    const activeCountries = countries.map(c => ({
+      ...c,
+      rawPaste: c.isSaved
+        ? c.rawPaste
+        : (pasteRef.current[c.id]?.value ?? c.rawPaste),
+    }))
+
+    const matrix = {}, dntIssues = []
+    // 중복이 발견된 국가 목록 수집
+    const dupEntries = [] // [{ country, duplicates }]
+
+    for (const c of activeCountries) {
+      const pairs = parseConfirmedPaste(c.rawPaste)
+      if (pairs.length === 0) {
+        matrix[c.id] = baseEnLines.map(en => ({ en, local: '', missing: true }))
+        continue
+      }
+
+      // 중복 감지
+      const dups = detectDuplicates(baseEnLines, pairs)
+      if (dups.length > 0) {
+        dupEntries.push({ country: c, duplicates: dups, pairs })
+      } else {
+        const mapped = mapLocals(baseEnLines, pairs)
+        matrix[c.id] = mapped
+        mapped.forEach((m, i) => {
+          if (!m.local || m.missing) return
+          const issues = checkDNT(m.en, m.local, products)
+          if (issues.length) dntIssues.push({ countryLabel: c.label, row: i + 1, enText: m.en, issues })
+        })
+      }
+    }
+
+    if (dupEntries.length > 0) {
+      // 중복이 있는 국가가 하나 이상 — 첫 번째 국가부터 순서대로 모달 표시
+      // 모달 상태에 전체 대기 목록 보관
+      setDupModal({
+        queue: dupEntries,          // 아직 처리 안 된 중복 국가 목록
+        queueIdx: 0,                // 현재 처리 중인 인덱스
+        resolvedMap: {},            // { countryId: resolvedLocalsMap }
+        pendingMatrix: matrix,      // 중복 없는 국가는 이미 계산된 상태
+        pendingDntIssues: dntIssues,
+        activeCountries,
+        baseEnLines,
+      })
+      return  // 저장은 모달 완료 후 commitMerge()로
+    }
+
+    // 중복 없음 — 바로 저장
+    await commitMerge(matrix, dntIssues, activeCountries)
+  }, [enInput, countries, products, commitMerge])
+
+  // ── 중복 모달 — 선택 완료 핸들러 ────────────────────────────
+  const handleDupResolve = useCallback(async (resolvedLocalsMap) => {
+    if (!dupModal) return
+    const { queue, queueIdx, pendingMatrix, pendingDntIssues, activeCountries, baseEnLines } = dupModal
+
+    // resolvedLocalsMap: { [enKey]: [local_for_pos0, local_for_pos1, ...] }
+    // 현재 처리 중인 국가의 matrix를 resolvedLocalsMap으로 확정
+    const entry = queue[queueIdx]
+    const c = entry.country
+
+    // mapLocals를 resolvedLocalsMap 기반으로 재구성
+    const resolvedCursor = {}
+    const mapped = baseEnLines.map(en => {
+      const key = en.trim()
+      if (!resolvedLocalsMap[key]) {
+        // 중복 없는 키 → 원래 pairs 기반 처리
+        const origPairs = entry.pairs
+        const origQueue = {}
+        origPairs.forEach(({ en: e, local }) => {
+          const k = e.trim()
+          if (!origQueue[k]) origQueue[k] = []
+          origQueue[k].push(local)
+        })
+        if (!origQueue[key] || origQueue[key].length === 0) return { en, local: '', missing: true }
+        const idx = resolvedCursor[key] ?? 0
+        const local = origQueue[key][idx] ?? origQueue[key][origQueue[key].length - 1]
+        resolvedCursor[key] = idx + 1
+        return { en, local, missing: !local }
+      }
+      // 중복 해결된 키 → resolvedLocalsMap에서 순서대로
+      const idx = resolvedCursor[key] ?? 0
+      const local = resolvedLocalsMap[key][idx] ?? resolvedLocalsMap[key][resolvedLocalsMap[key].length - 1]
+      resolvedCursor[key] = idx + 1
+      // 케이스 A에서 체크 해제된 행(__SKIP__)은 missing 처리
+      if (local === '__SKIP__') return { en, local: '', missing: true }
+      return { en, local, missing: !local }
+    })
+
+    const newMatrix = { ...pendingMatrix, [c.id]: mapped }
+    const newDntIssues = [...pendingDntIssues]
+    mapped.forEach((m, i) => {
+      if (!m.local || m.missing) return
+      const issues = checkDNT(m.en, m.local, products)
+      if (issues.length) newDntIssues.push({ countryLabel: c.label, row: i + 1, enText: m.en, issues })
+    })
+
+    const nextIdx = queueIdx + 1
+    if (nextIdx < queue.length) {
+      // 다음 중복 국가 처리
+      setDupModal(prev => ({
+        ...prev,
+        queueIdx: nextIdx,
+        pendingMatrix: newMatrix,
+        pendingDntIssues: newDntIssues,
+      }))
+    } else {
+      // 모든 중복 처리 완료 → 저장
+      setDupModal(null)
+      await commitMerge(newMatrix, newDntIssues, activeCountries)
+    }
+  }, [dupModal, products, commitMerge])
+
+  const handleDupCancel = useCallback(() => {
+    setDupModal(null)
+    setError('중복 카피 선택이 취소되었습니다. Merge가 실행되지 않았습니다.')
+  }, [])
+
+  // ── 추가 카피 실제 저장 (중복 해결 후 호출) ──────────────
+  const commitPatch = useCallback(async (newMatrix, patchedCountries) => {
+    setPatchSaving(true)
+    try {
+      for (const { matched, updated } of patchedCountries) {
+        const newRawPaste = updated.map(row => `${row.en}\t${row.local}`).join('\n')
+        const mappedJson  = JSON.stringify(updated)
+
+        const res = await api.mergeUpsertCountry(project.id, {
+          countryId: matched.dbId || null,
+          label: matched.label,
+          rawPaste: newRawPaste,
+          mappedJson,
+        })
+
+        if (res.ok) {
+          setCountries(prev => prev.map(c =>
+            c.id === matched.id
+              ? { ...c, rawPaste: newRawPaste, mappedJson, isSaved: true }
+              : c
+          ))
+          if (pasteRef.current[matched.id]) {
+            pasteRef.current[matched.id].value = newRawPaste
+          }
+        }
+      }
+
+      setMergeResult(prev => ({ ...prev, matrix: newMatrix }))
+      setPatchCountries([])
+      patchPasteRef.current = {}
+      onUpdated()
+    } catch (e) {
+      console.error(e)
+      setPatchError('저장 중 오류가 발생했습니다.')
+    } finally {
+      setPatchSaving(false)
+    }
+  }, [project.id, onUpdated])
+
+  // ── 추가 카피 중복 모달 핸들러 ───────────────────────────────
+  const handlePatchDupResolve = useCallback(async (resolvedLocalsMap) => {
+    if (!patchDupModal) return
+    const { queue, queueIdx, pendingMatrix, pendingPatched } = patchDupModal
+    const entry = queue[queueIdx]
+    const { matched, existing, baseEnLines, patchPairs } = entry
+
+    // resolvedLocalsMap 기반으로 기존 mapped 배열 덮어쓰기
+    const resolvedCursor = {}
+    // 중복 없는 키는 원래 patchPairs 큐로 처리
+    const origQueue = {}
+    patchPairs.forEach(({ en, local }) => {
+      const key = en.trim()
+      if (!origQueue[key]) origQueue[key] = []
+      origQueue[key].push(local)
+    })
+    const origCursor = {}
+
+    const updated = existing.map(row => {
+      const key = row.en.trim()
+      if (resolvedLocalsMap[key] !== undefined) {
+        // 중복 해결된 키
+        const idx = resolvedCursor[key] ?? 0
+        const local = resolvedLocalsMap[key][idx] ?? resolvedLocalsMap[key][resolvedLocalsMap[key].length - 1]
+        resolvedCursor[key] = idx + 1
+        if (local === '__SKIP__') return row  // 케이스 A 건너뜀 → 기존 값 유지
+        return { ...row, local, missing: !local }
+      }
+      if (origQueue[key]) {
+        // 중복 없는 키 → 원래 순서 매핑
+        const idx = origCursor[key] ?? 0
+        const local = origQueue[key][idx] ?? origQueue[key][origQueue[key].length - 1]
+        origCursor[key] = idx + 1
+        return { ...row, local, missing: !local }
+      }
+      return row  // paste에 없는 키 → 기존 값 유지
+    })
+
+    const newMatrix = { ...pendingMatrix, [matched.id]: updated }
+    const newPatched = [...pendingPatched, { matched, updated }]
+
+    const nextIdx = queueIdx + 1
+    if (nextIdx < queue.length) {
+      // 다음 중복 국가 처리
+      setPatchDupModal(prev => ({
+        ...prev,
+        queueIdx: nextIdx,
+        pendingMatrix: newMatrix,
+        pendingPatched: newPatched,
+      }))
+    } else {
+      // 모두 완료 → 저장
+      setPatchDupModal(null)
+      await commitPatch(newMatrix, newPatched)
+    }
+  }, [patchDupModal, commitPatch])
+
+  const handlePatchDupCancel = useCallback(() => {
+    setPatchDupModal(null)
+    setPatchError('중복 카피 선택이 취소되었습니다. 추가 카피가 적용되지 않았습니다.')
+  }, [])
 
   // ── 추가 카피 덮어쓰기 저장 ────────────────────────────────
   const runPatch = useCallback(async () => {
@@ -986,32 +1494,39 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
     }
 
     const newMatrix = { ...mergeResult.matrix }
+    const patchedCountries = []   // 중복 없이 바로 처리 완료된 국가들
+    const dupPatchEntries  = []   // 중복 감지돼서 모달 필요한 국가들
 
-    setPatchSaving(true)
-    try {
-      for (const patch of activePatch) {
-        // 기존 국가 매칭 (label 기준)
-        const matched = countries.find(c =>
-          c.label.trim().toLowerCase() === patch.label.trim().toLowerCase()
-        )
-        if (!matched) {
-          alert(`"${patch.label}" 국가를 찾을 수 없습니다.\n국가별 컨펌 카피에 등록된 국가명과 동일하게 선택해주세요.`)
-          continue
-        }
+    for (const patch of activePatch) {
+      const matched = countries.find(c =>
+        c.label.trim().toLowerCase() === patch.label.trim().toLowerCase()
+      )
+      if (!matched) {
+        alert(`"${patch.label}" 국가를 찾을 수 없습니다.\n국가별 컨펌 카피에 등록된 국가명과 동일하게 선택해주세요.`)
+        continue
+      }
 
-        const patchPairs = parseConfirmedPaste(patch.rawPaste)
-        if (patchPairs.length === 0) continue
+      const patchPairs = parseConfirmedPaste(patch.rawPaste)
+      if (patchPairs.length === 0) continue
 
-        // 중복 EN 키를 순서대로 처리하는 큐 빌드
+      // 기존 merge된 EN 행 목록을 base로 사용
+      const existing = [...(newMatrix[matched.id] || [])]
+      const baseEnLines = existing.map(row => row.en)
+
+      // 중복 감지
+      const dups = detectDuplicates(baseEnLines, patchPairs)
+
+      if (dups.length > 0) {
+        // 모달 필요 — 대기 목록에 추가
+        dupPatchEntries.push({ patch, matched, patchPairs, existing, baseEnLines, duplicates: dups })
+      } else {
+        // 중복 없음 — 바로 덮어쓰기
         const patchQueue = {}
         patchPairs.forEach(({ en, local }) => {
           const key = en.trim()
           if (!patchQueue[key]) patchQueue[key] = []
           patchQueue[key].push(local)
         })
-
-        // 기존 mapped 배열에서 매칭되는 행만 덮어쓰기
-        const existing = [...(newMatrix[matched.id] || [])]
         const cursor = {}
         const updated = existing.map(row => {
           const key = row.en.trim()
@@ -1021,50 +1536,25 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
           cursor[key] = idx + 1
           return { ...row, local, missing: !local }
         })
-
         newMatrix[matched.id] = updated
-
-        // 업데이트된 mapped 기준으로 rawPaste 재구성 (컨펌 카피 동기화)
-        const newRawPaste = updated.map(row => `${row.en}\t${row.local}`).join('\n')
-        const mappedJson  = JSON.stringify(updated)
-
-        // DB 저장
-        const res = await api.mergeUpsertCountry(project.id, {
-          countryId: matched.dbId || null,
-          label: matched.label,
-          rawPaste: newRawPaste,
-          mappedJson,
-        })
-
-        if (res.ok) {
-          // countries 상태 업데이트 (컨펌 카피 섹션 반영)
-          setCountries(prev => prev.map(c =>
-            c.id === matched.id
-              ? { ...c, rawPaste: newRawPaste, mappedJson, isSaved: true }
-              : c
-          ))
-          // CountryCard textarea 값도 즉시 반영
-          if (pasteRef.current[matched.id]) {
-            pasteRef.current[matched.id].value = newRawPaste
-          }
-        }
+        patchedCountries.push({ matched, updated })
       }
-
-      // Merge 결과 테이블 갱신
-      setMergeResult(prev => ({ ...prev, matrix: newMatrix }))
-
-      // 추가 카피 영역 초기화
-      setPatchCountries([])
-      patchPasteRef.current = {}
-
-      onUpdated()
-    } catch (e) {
-      console.error(e)
-      setPatchError('저장 중 오류가 발생했습니다.')
-    } finally {
-      setPatchSaving(false)
     }
-  }, [mergeResult, patchCountries, countries, project.id, onUpdated])
+
+    if (dupPatchEntries.length > 0) {
+      // 중복 있는 국가가 하나 이상 → 모달 진입
+      setPatchDupModal({
+        queue: dupPatchEntries,
+        queueIdx: 0,
+        pendingMatrix: newMatrix,
+        pendingPatched: patchedCountries,  // 중복 없이 처리된 국가들
+      })
+      return
+    }
+
+    // 중복 없음 → 바로 저장
+    await commitPatch(newMatrix, patchedCountries)
+  }, [mergeResult, patchCountries, countries, commitPatch])
 
   const handleExport = () => {
     if (!mergeResult) return
@@ -1079,6 +1569,34 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
 
   return (
     <div className="mg-detail-view">
+      {/* ── 중복 카피 선택 모달 ── */}
+      {dupModal && (() => {
+        const entry = dupModal.queue[dupModal.queueIdx]
+        return (
+          <DuplicateResolveModal
+            key={`dup_${entry.country.id}_${dupModal.queueIdx}`}
+            duplicates={entry.duplicates}
+            countryLabel={entry.country.label}
+            onResolve={handleDupResolve}
+            onCancel={handleDupCancel}
+          />
+        )
+      })()}
+
+      {/* ── 추가 카피 중복 선택 모달 ── */}
+      {patchDupModal && (() => {
+        const entry = patchDupModal.queue[patchDupModal.queueIdx]
+        return (
+          <DuplicateResolveModal
+            key={`patchdup_${entry.matched.id}_${patchDupModal.queueIdx}`}
+            duplicates={entry.duplicates}
+            countryLabel={entry.matched.label}
+            onResolve={handlePatchDupResolve}
+            onCancel={handlePatchDupCancel}
+          />
+        )
+      })()}
+
       {/* 헤더 */}
       <div className="mg-detail-header">
         <button className="pj-back-btn" onClick={onBack}>← 프로젝트 목록</button>
