@@ -50,7 +50,14 @@ export const api = window.electronAPI || {
   removeQuickSite:  (siteCode)   => call('DELETE', `/api/cc/quick-sites/${siteCode}`),
 
   // ── [신규] CopyStatusTracker (상태 및 메모 영구 저장) ──
-  
+
+  // 폴더 CRUD
+  getTrackerFolders:    ()           => call('GET',    '/api/tracker/folders'),
+  createTrackerFolder:  (body)       => call('POST',   '/api/tracker/folders', body),
+  updateTrackerFolder:  (id, body)   => call('PUT',    `/api/tracker/folders/${id}`, body),
+  deleteTrackerFolder:  (id)         => call('DELETE', `/api/tracker/folders/${id}`),
+  movePageToFolder:     (id, body)   => call('PUT',    `/api/tracker/pages/${id}/folder`, body),
+
   // 페이지(프로젝트) 목록 및 상세 데이터 조회
   getTrackerPages:  ()         => call('GET',    '/api/tracker/pages'),
   getTrackerDetail: (id)       => call('GET',    `/api/tracker/pages/${id}`),
@@ -68,6 +75,7 @@ export const api = window.electronAPI || {
   // [신규] 히스토리 내 개별 파일 메모만 수정
   updateHistoryNote: (id, body) => call('PUT',   `/api/files/${id}/note`, body),
   createTrackerPage: (body)     => call('POST',  '/api/tracker/pages', body),
+  updateTrackerPage: (id, body) => call('PUT',   `/api/tracker/pages/${id}`, body),
   deleteTrackerPage: (id)       => call('DELETE', `/api/tracker/pages/${id}`),
 
   // ── Merge 프로젝트 ──────────────────────────────────────────

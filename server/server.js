@@ -166,11 +166,11 @@ dbRouter.post('/connect', async (req, res) => {
 
     res.json({ ok: true });
 
-  } catch (err) {
+  } catch (err) { 
 
     console.error('❌ connect 실패:', err);
 
-    pool = null;
+    pool = null; 
 
     res.json({
       ok: false,
@@ -203,15 +203,15 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
   `)
    // (server.js의 /api/init 내부)
     await pool.execute(`CREATE TABLE IF NOT EXISTS merge_countries (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      project_id INT NOT NULL,
-      label VARCHAR(100) NOT NULL,
-      raw_paste TEXT,
-      mapped_json JSON,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      UNIQUE KEY idx_proj_label (project_id, label)
-    )`);
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  project_id INT NOT NULL,
+  label VARCHAR(100) NOT NULL,
+  raw_paste TEXT,
+  mapped_json JSON,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY idx_proj_label (project_id, label)
+)`);
 
     // 기존 merge_countries 테이블에 updated_at 컬럼이 없으면 추가
     try {
@@ -261,11 +261,24 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       aliases JSON NOT NULL DEFAULT ('[]'), excluded_countries JSON NOT NULL DEFAULT ('[]'),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)`);
 
+    await pool.execute(`CREATE TABLE IF NOT EXISTS tracker_folders (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      deleted TINYINT(1) NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) COMMENT='StatusTab 폴더 (depth 1)'`);
+
     await pool.execute(`CREATE TABLE IF NOT EXISTS tracker_pages (
       id VARCHAR(100) PRIMARY KEY,
       title VARCHAR(255) NOT NULL,
+      folder_id INT DEFAULT NULL COMMENT '소속 폴더 (NULL이면 최상위)',
       deleted TINYINT(1) NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+
+    // 기존 테이블에 folder_id 컬럼이 없으면 추가
+    try {
+      await pool.execute(`ALTER TABLE tracker_pages ADD COLUMN folder_id INT DEFAULT NULL COMMENT '소속 폴더' AFTER title`);
+    } catch (_) { /* 이미 존재하면 무시 */ }
 
     await pool.execute(`CREATE TABLE IF NOT EXISTS tracker_site_status (
       page_id VARCHAR(100) NOT NULL,
@@ -327,13 +340,15 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       saved_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (project_id) REFERENCES cc_projects(id) ON DELETE CASCADE
     ) COMMENT='DNT 사전 검증 스냅샷'`);
-// 즉석 검수 국가 목록 (영구 보존)
+
+    // 즉석 검수 국가 목록 (영구 보존)
     await pool.execute(`CREATE TABLE IF NOT EXISTS quick_check_sites (
       id         INT AUTO_INCREMENT PRIMARY KEY,
       site_code  VARCHAR(20) NOT NULL UNIQUE COMMENT '국가 코드',
       sort_order INT NOT NULL DEFAULT 0      COMMENT '표시 순서',
       added_at   DATETIME DEFAULT CURRENT_TIMESTAMP
     ) COMMENT='즉석 검수 선택 국가 영구 목록'`);
+
     // 국가별 로컬어 변경 이력
     await pool.execute(`CREATE TABLE IF NOT EXISTS cc_locals_history (
       id           INT AUTO_INCREMENT PRIMARY KEY,
@@ -346,7 +361,7 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       saved_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (project_id) REFERENCES cc_projects(id) ON DELETE CASCADE
     ) COMMENT='국가별 로컬어 변경 이력'`);
- // ── soft delete 컬럼 추가 (기존 테이블 호환) ──
+    // ── soft delete 컬럼 추가 (기존 테이블 호환) ──
     for (const ddl of [
       `ALTER TABLE page_files          ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
       `ALTER TABLE samsung_products    ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
@@ -814,6 +829,60 @@ app.use('/api/cc', countryRouter);
 const statusRouter = express.Router();
 statusRouter.use(checkDbConnection);
 
+// ── 폴더 CRUD ──────────────────────────────────────────────────
+statusRouter.get('/tracker/folders', async (req, res) => {
+  try {
+    const [folders] = await pool.execute(
+      `SELECT id, name, created_at FROM tracker_folders WHERE deleted = 0 ORDER BY created_at ASC`
+    );
+    res.json({ ok: true, data: folders });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+statusRouter.post('/tracker/folders', async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name?.trim()) return res.json({ ok: false, message: '폴더 이름을 입력하세요.' });
+    const [result] = await pool.execute(
+      `INSERT INTO tracker_folders (name) VALUES (?)`, [name.trim()]
+    );
+    res.json({ ok: true, id: result.insertId });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+statusRouter.put('/tracker/folders/:id', async (req, res) => {
+  try {
+    const { name } = req.body;
+    await pool.execute(
+      `UPDATE tracker_folders SET name = ? WHERE id = ?`, [name, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+statusRouter.delete('/tracker/folders/:id', async (req, res) => {
+  try {
+    // 폴더 삭제 시 소속 페이지를 최상위(folder_id=NULL)로 올림
+    await pool.execute(
+      `UPDATE tracker_pages SET folder_id = NULL WHERE folder_id = ?`, [req.params.id]
+    );
+    await pool.execute(`UPDATE tracker_folders SET deleted = 1 WHERE id = ?`, [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// 페이지를 폴더에 이동/최상위로 이동
+statusRouter.put('/tracker/pages/:id/folder', async (req, res) => {
+  try {
+    const { folderId } = req.body; // null이면 최상위
+    await pool.execute(
+      `UPDATE tracker_pages SET folder_id = ? WHERE id = ?`,
+      [folderId ?? null, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
 statusRouter.post('/tracker/pages', async (req, res) => {
   try {
     const { id, title } = req.body;
@@ -829,9 +898,12 @@ statusRouter.post('/tracker/pages', async (req, res) => {
 statusRouter.get('/tracker/pages', async (req, res) => {
   if (!pool) return res.json({ ok: false });
   try {
-    const [pages] = await pool.execute(`SELECT * FROM tracker_pages WHERE deleted = 0 ORDER BY created_at DESC`);
+    const [pages] = await pool.execute(`SELECT id, title, folder_id, created_at FROM tracker_pages WHERE deleted = 0 ORDER BY created_at DESC`);
     const [statuses] = await pool.execute(`SELECT page_id, site_code, status FROM tracker_site_status WHERE deleted = 0`);
-    res.json({ ok: true, data: pages, statuses });
+    const [folders] = await pool.execute(
+      `SELECT id, name, created_at FROM tracker_folders WHERE deleted = 0 ORDER BY created_at ASC`
+    );
+    res.json({ ok: true, data: pages, statuses, folders });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
@@ -846,6 +918,15 @@ statusRouter.get('/tracker/pages/:id', async (req, res) => {
        FROM page_files WHERE page_id = ? ORDER BY uploaded_at ASC`, [pageId]
     );
     res.json({ ok: true, statuses, files });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+statusRouter.put('/tracker/pages/:id', async (req, res) => {
+  try {
+    const { title } = req.body;
+    if (!title?.trim()) return res.json({ ok: false, message: '제목을 입력하세요.' });
+    await pool.execute(`UPDATE tracker_pages SET title = ? WHERE id = ?`, [title.trim(), req.params.id]);
+    res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 

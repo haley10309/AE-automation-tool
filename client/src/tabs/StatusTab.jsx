@@ -873,16 +873,282 @@ function PageDetail({ page, onBack, onUpdate }) {
   )
 }
 
+// ── 페이지 카드 (폴더뷰/플랫뷰 공용) ─────────────────────────────
+// ── 공용 점 세 개 컨텍스트 메뉴 ─────────────────────────────────
+function DotsMenu({ items }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    function handle(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    if (open) document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [open])
+  return (
+    <div ref={ref} style={{ position: 'relative' }} onClick={e => e.stopPropagation()}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer',
+          padding: '3px 5px', borderRadius: 5, lineHeight: 1,
+          color: '#9ca3af', fontSize: 16, fontWeight: 700, letterSpacing: 1,
+          transition: 'background 0.15s, color 0.15s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = '#f1f5f9'; e.currentTarget.style.color = '#374151' }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#9ca3af' }}
+        title="옵션"
+      >⋯</button>
+      {open && (
+        <div style={{
+          position: 'absolute', right: 0, top: 'calc(100% + 4px)', zIndex: 200,
+          background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
+          boxShadow: '0 8px 24px rgba(0,0,0,0.13)', minWidth: 170, padding: '4px 0',
+        }}>
+          {items.map((item, i) => item === 'divider' ? (
+            <div key={i} style={{ height: 1, background: '#f1f5f9', margin: '3px 0' }} />
+          ) : (
+            <div
+              key={i}
+              onClick={() => { item.action(); setOpen(false) }}
+              style={{
+                padding: '8px 14px', cursor: 'pointer', fontSize: 13,
+                color: item.danger ? '#ef4444' : '#374151',
+                display: 'flex', alignItems: 'center', gap: 8,
+                transition: 'background 0.1s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = item.danger ? '#fef2f2' : '#f8fafc'}
+              onMouseLeave={e => e.currentTarget.style.background = ''}
+            >
+              <span style={{ fontSize: 14, width: 18, textAlign: 'center' }}>{item.icon}</span>
+              <span>{item.label}</span>
+              {item.sub && <span style={{ marginLeft: 'auto', fontSize: 11, color: '#94a3b8' }}>{item.sub}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── 인라인 이름 수정 Input ──────────────────────────────────────
+function InlineRename({ value, onSave, onCancel }) {
+  const [val, setVal] = useState(value)
+  const inputRef = useRef(null)
+  useEffect(() => { inputRef.current?.focus(); inputRef.current?.select() }, [])
+  return (
+    <input
+      ref={inputRef}
+      value={val}
+      onChange={e => setVal(e.target.value)}
+      onBlur={() => { if (val.trim() && val !== value) onSave(val.trim()); else onCancel() }}
+      onKeyDown={e => {
+        e.stopPropagation()
+        if (e.key === 'Enter') { if (val.trim() && val !== value) onSave(val.trim()); else onCancel() }
+        if (e.key === 'Escape') onCancel()
+      }}
+      onClick={e => e.stopPropagation()}
+      style={{ fontSize: 14, fontWeight: 600, border: '1.5px solid #6366f1', borderRadius: 5, padding: '2px 7px', flex: 1, outline: 'none', minWidth: 0 }}
+    />
+  )
+}
+
+function PageCard({ page, onSelect, onDelete, onRename, user, folders, onMoveToFolder }) {
+  const [renaming, setRenaming] = useState(false)
+
+  const total = page.countries.length
+  const stepSum = page.countries.reduce((sum, c) => {
+    return sum + (COPY_STATUSES.find(s => s.value === c.status)?.step || 0)
+  }, 0)
+  const pct = total > 0 ? Math.round((stepSum / (total * TOTAL_STEPS)) * 100) : 0
+  const avgS = total > 0 ? stepSum / total : 0
+  const cardStatus = COPY_STATUSES.find(s => s.step === Math.round(avgS)) || COPY_STATUSES[0]
+  const statusCounts = {}
+  COPY_STATUSES.forEach(s => {
+    if (s.value) statusCounts[s.value] = page.countries.filter(c => c.status === s.value).length
+  })
+  const unset = page.countries.filter(c => !c.status).length
+  const currentFolder = folders.find(f => f.id === page.folder_id)
+
+  const menuItems = user?.position === 'regular' ? [
+    {
+      icon: '✏️', label: '이름 바꾸기',
+      action: () => setRenaming(true),
+    },
+    'divider',
+    {
+      icon: '📋', label: '최상위로 이동',
+      sub: page.folder_id ? '' : '✓ 현재',
+      action: () => onMoveToFolder(page.id, null),
+    },
+    ...folders.map(f => ({
+      icon: '📂', label: f.name,
+      sub: page.folder_id === f.id ? '✓ 현재' : '',
+      action: () => onMoveToFolder(page.id, f.id),
+    })),
+    'divider',
+    {
+      icon: '🗑️', label: '삭제', danger: true,
+      action: (e) => onDelete(page, { stopPropagation: () => {} }),
+    },
+  ] : []
+
+  return (
+    <div className="cst-page-card" onClick={() => !renaming && onSelect(page.id)} style={{ position: 'relative' }}>
+      <div className="cst-page-card-header">
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+          {renaming ? (
+            <InlineRename
+              value={page.name}
+              onSave={(newName) => { onRename(page.id, newName); setRenaming(false) }}
+              onCancel={() => setRenaming(false)}
+            />
+          ) : (
+            <h3 className="cst-page-card-name" style={{ margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{page.name}</h3>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+          <span className="cst-page-card-total">{total}개국</span>
+          {menuItems.length > 0 && <DotsMenu items={menuItems} />}
+        </div>
+      </div>
+
+      {currentFolder && (
+        <div style={{ fontSize: 10, color: '#6366f1', marginBottom: 4 }}>📂 {currentFolder.name}</div>
+      )}
+
+      <div style={{ display: 'flex', gap: 2, margin: '8px 0 4px' }}>
+        {COPY_STATUSES.filter(s => s.value).map(s => (
+          <div key={s.value} title={`${s.label}: ${statusCounts[s.value] || 0}개국`} style={{
+            flex: 1, height: 6, borderRadius: 3,
+            background: s.step <= Math.round(avgS) && Math.round(avgS) > 0 ? s.color : '#e5e7eb',
+            transition: 'background 0.3s',
+          }} />
+        ))}
+      </div>
+
+      <div className="cst-mini-progress">
+        <div className="cst-mini-progress-bar">
+          <div className="cst-progress-fill" style={{ width: `${pct}%`, background: cardStatus.color }} />
+        </div>
+        <span className="cst-mini-pct" style={{ color: cardStatus.color }}>
+          {pct}% · {cardStatus.label}
+        </span>
+      </div>
+
+      <div className="cst-page-card-badges">
+        {COPY_STATUSES.filter(s => s.value && statusCounts[s.value] > 0).map(s => (
+          <span key={s.value} className="cst-mini-badge"
+            style={{ background: s.bg, color: s.color, border: `1px solid ${s.color}` }}>
+            {s.label} <strong>{statusCounts[s.value]}</strong>
+          </span>
+        ))}
+        {unset > 0 && (
+          <span className="cst-mini-badge"
+            style={{ background: '#f3f4f6', color: '#6b7280', border: '1px solid #d1d5db' }}>
+            미설정 <strong>{unset}</strong>
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── 폴더 컴포넌트 ─────────────────────────────────────────────
+function FolderBlock({ folder, pages, onSelect, onDelete, onRename, user, folders, onMoveToFolder, onRenameFolder, onDeleteFolder, isRegular }) {
+  const [isOpen, setIsOpen] = useState(true)
+  const [renaming, setRenaming] = useState(false)
+
+  const menuItems = isRegular ? [
+    {
+      icon: '✏️', label: '이름 바꾸기',
+      action: () => setRenaming(true),
+    },
+    'divider',
+    {
+      icon: '🗑️', label: '폴더 삭제', danger: true,
+      action: () => onDeleteFolder(folder),
+    },
+  ] : []
+
+  return (
+    <div style={{
+      marginBottom: 16,
+      border: '1px solid #e2e8f0',
+      borderRadius: 12,
+      overflow: 'hidden',
+      background: '#f1f5f9',
+      boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+    }}>
+      {/* 폴더 헤더 */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px',
+        background: '#f1f5f9', userSelect: 'none',
+        borderBottom: isOpen ? '1px solid #e2e8f0' : 'none',
+      }}>
+        <span
+          onClick={() => setIsOpen(v => !v)}
+          style={{ fontSize: 13, transition: 'transform 0.2s', display: 'inline-block', transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)', cursor: 'pointer', color: '#64748b' }}
+        >▶</span>
+        <span onClick={() => setIsOpen(v => !v)} style={{ fontSize: 16, cursor: 'pointer' }}>📂</span>
+        {renaming ? (
+          <InlineRename
+            value={folder.name}
+            onSave={(newName) => { onRenameFolder(folder.id, newName); setRenaming(false) }}
+            onCancel={() => setRenaming(false)}
+          />
+        ) : (
+          <span onClick={() => setIsOpen(v => !v)} style={{ fontWeight: 600, fontSize: 14, color: '#1e293b', flex: 1, cursor: 'pointer' }}>{folder.name}</span>
+        )}
+        <span style={{ fontSize: 12, color: '#94a3b8', flexShrink: 0 }}>{pages.length}개 페이지</span>
+        {menuItems.length > 0 && (
+          <div onClick={e => e.stopPropagation()}>
+            <DotsMenu items={menuItems} />
+          </div>
+        )}
+      </div>
+
+      {/* 폴더 내용 — 헤더 안쪽에 자연스럽게 */}
+      {isOpen && (
+        <div style={{ padding: 16 }}>
+          {pages.length === 0 ? (
+            <div style={{ fontSize: 12, color: '#9ca3af', padding: '8px 4px', textAlign: 'center' }}>빈 폴더입니다.</div>
+          ) : (
+            <div className="cst-page-grid">
+              {pages.map(page => (
+                <PageCard
+                  key={page.id}
+                  page={page}
+                  onSelect={onSelect}
+                  onDelete={onDelete}
+                  onRename={onRename}
+                  user={user}
+                  folders={folders}
+                  onMoveToFolder={onMoveToFolder}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function StatusTab() {
   const { dbReady } = useDB()
   const { user } = useAuth()
   const [pages, setPages] = useState([])
+  const [folders, setFolders] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedPageId, setSelectedPageId] = useState(null)
   const [showNewPage, setShowNewPage] = useState(false)
   const [newPageName, setNewPageName] = useState('')
+  const [newPageFolderId, setNewPageFolderId] = useState(null)  // 새 페이지 생성 시 폴더 선택
   const [newPageMsg, setNewPageMsg] = useState('')
   const [searchPages, setSearchPages] = useState('')
+  // 폴더 관리 상태
+  const [viewMode, setViewMode] = useState('folder') // 'folder' | 'flat'
+  const [showNewFolder, setShowNewFolder] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
 
   // ── 초기 로드: DB 우선, 실패 시 localStorage fallback ──────
   // ── 초기 로드: 목록 화면에서도 전체 상태(Status)를 한 번에 파악 ──────
@@ -929,6 +1195,7 @@ export default function StatusTab() {
             return {
               id: pageId,
               name: p.title,
+              folder_id: p.folder_id ?? null,
               createdAt: p.created_at,
               countries: baseCountries,
               _loadedFromDB: true,
@@ -936,6 +1203,7 @@ export default function StatusTab() {
           })
           
           setPages(dbPages)
+          setFolders(res.folders || [])
           saveToStorage({ pages: dbPages }) // DB 데이터를 로컬스토리지에 동기화
         } else {
           // DB 연결 실패 또는 데이터가 없을 시 localStorage fallback
@@ -959,19 +1227,66 @@ export default function StatusTab() {
     const newPage = {
       id: String(Date.now()),
       name: newPageName.trim(),
+      folder_id: newPageFolderId,
       createdAt: new Date().toISOString(),
       countries: ALL_SITES
         .filter(s => DEFAULT_COUNTRIES.includes(s.code))
         .map(s => ({ code: s.code, status: '', note: '', file: null, fileHistory: [] })),
     }
     try {
-      await api.createTrackerPage({ id: newPage.id, title: newPage.name })
+      const res = await api.createTrackerPage({ id: newPage.id, title: newPage.name })
+      if (res?.ok && newPageFolderId) {
+        await api.movePageToFolder(newPage.id, { folderId: newPageFolderId })
+      }
     } catch (e) { console.error('[DB] 페이지 생성 실패:', e?.message || e) }
 
     setPages(prev => [...prev, newPage])
     saveToStorage({ pages: [...pages, newPage] })
-    setNewPageName(''); setShowNewPage(false); setSelectedPageId(newPage.id)
+    setNewPageName(''); setNewPageFolderId(null); setShowNewPage(false); setSelectedPageId(newPage.id)
   }
+
+  // ── 폴더 핸들러 ─────────────────────────────────────────────
+  const createFolder = async () => {
+    if (!newFolderName.trim()) return
+    try {
+      const res = await api.createTrackerFolder({ name: newFolderName.trim() })
+      if (res?.ok) {
+        setFolders(prev => [...prev, { id: res.id, name: newFolderName.trim(), created_at: new Date().toISOString() }])
+      }
+    } catch (e) { console.error('[DB] 폴더 생성 실패:', e?.message || e) }
+    setNewFolderName(''); setShowNewFolder(false)
+  }
+
+  const renameFolder = async (folderId, newName) => {
+    try {
+      await api.updateTrackerFolder(folderId, { name: newName })
+      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, name: newName } : f))
+    } catch (e) { console.error('[DB] 폴더 이름 수정 실패:', e?.message || e) }
+  }
+
+  const deleteFolder = async (folder) => {
+    if (!window.confirm(`"\${folder.name}" 폴더를 삭제하시겠습니까?\n폴더 내 페이지는 최상위로 이동됩니다.`)) return
+    try {
+      await api.deleteTrackerFolder(folder.id)
+      setFolders(prev => prev.filter(f => f.id !== folder.id))
+      // 소속 페이지들 folder_id를 null로
+      setPages(prev => prev.map(p => p.folder_id === folder.id ? { ...p, folder_id: null } : p))
+    } catch (e) { console.error('[DB] 폴더 삭제 실패:', e?.message || e) }
+  }
+
+  const movePageToFolderHandler = async (pageId, folderId) => {
+    try {
+      await api.movePageToFolder(pageId, { folderId: folderId })
+      setPages(prev => prev.map(p => p.id === pageId ? { ...p, folder_id: folderId } : p))
+    } catch (e) { console.error('[DB] 폴더 이동 실패:', e?.message || e) }
+  }
+
+  const renamePage = useCallback(async (pageId, newTitle) => {
+    try {
+      await api.updateTrackerPage(pageId, { title: newTitle })
+      setPages(prev => prev.map(p => p.id === pageId ? { ...p, name: newTitle } : p))
+    } catch (e) { console.error('[DB] 페이지 이름 수정 실패:', e?.message || e) }
+  }, [])
 
   const deletePage = useCallback(async (page, e) => {
     e.stopPropagation()
@@ -1014,99 +1329,140 @@ export default function StatusTab() {
     return <PageDetail page={selectedPage} onBack={() => setSelectedPageId(null)} onUpdate={updatePage} />
   }
 
+  // 뷰 모드별 데이터 분리
+  const topLevelPages = pages.filter(p => !p.folder_id)
+  const folderPageMap = {}
+  folders.forEach(f => { folderPageMap[f.id] = pages.filter(p => p.folder_id === f.id) })
+
+  const sharedCardProps = {
+    onSelect: setSelectedPageId,
+    onDelete: deletePage,
+    onRename: renamePage,
+    user,
+    folders,
+    onMoveToFolder: movePageToFolderHandler,
+  }
+
   return (
     <div className="cst-container">
+      {/* ── 헤더 ── */}
       <div className="cst-list-header">
         <h2 className="cst-list-title">페이지별 국가 카피 작업 현황</h2>
-        <button className="btn-primary" onClick={() => setShowNewPage(true)}>+ 새 페이지 추가</button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* 뷰 모드 토글 */}
+          <div style={{ display: 'flex', border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+            <button
+              onClick={() => setViewMode('folder')}
+              style={{
+                padding: '6px 12px', fontSize: 12, border: 'none', cursor: 'pointer',
+                background: viewMode === 'folder' ? '#6366f1' : '#fff',
+                color: viewMode === 'folder' ? '#fff' : '#6b7280',
+                fontWeight: viewMode === 'folder' ? 600 : 400,
+              }}
+            >📂 폴더 뷰</button>
+            <button
+              onClick={() => setViewMode('flat')}
+              style={{
+                padding: '6px 12px', fontSize: 12, border: 'none', cursor: 'pointer',
+                background: viewMode === 'flat' ? '#6366f1' : '#fff',
+                color: viewMode === 'flat' ? '#fff' : '#6b7280',
+                fontWeight: viewMode === 'flat' ? 600 : 400,
+              }}
+            >📋 전체 뷰</button>
+          </div>
+          {user?.position === 'regular' && viewMode === 'folder' && (
+            <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setShowNewFolder(true)}>+ 새 폴더</button>
+          )}
+          <button className="btn-primary" onClick={() => setShowNewPage(true)}>+ 새 페이지</button>
+        </div>
       </div>
 
-      {showNewPage && (
-        <div className="cst-new-page-form" style={{ marginBottom: 20 }}>
-          <input className="form-input" placeholder="페이지 이름" value={newPageName} onChange={e => setNewPageName(e.target.value)} />
-          <button className="btn-primary" onClick={createPage}>추가</button>
-          <button className="btn-ghost" onClick={() => setShowNewPage(false)}>취소</button>
+      {/* ── 새 폴더 입력 폼 ── */}
+      {showNewFolder && (
+        <div className="cst-new-page-form" style={{ marginBottom: 16 }}>
+          <input className="form-input" placeholder="폴더 이름" value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') createFolder(); if (e.key === 'Escape') setShowNewFolder(false) }}
+            autoFocus />
+          <button className="btn-primary" onClick={createFolder}>만들기</button>
+          <button className="btn-ghost" onClick={() => { setShowNewFolder(false); setNewFolderName('') }}>취소</button>
         </div>
       )}
 
-      <div className="cst-page-grid">
-        {pages.map(page => {
-          const total = page.countries.length
-          const stepSum = page.countries.reduce((sum, c) => {
-            return sum + (COPY_STATUSES.find(s => s.value === c.status)?.step || 0)
-          }, 0)
-          const pct = total > 0 ? Math.round((stepSum / (total * TOTAL_STEPS)) * 100) : 0
-          const avgS = total > 0 ? stepSum / total : 0
-          const cardStatus = COPY_STATUSES.find(s => s.step === Math.round(avgS)) || COPY_STATUSES[0]
-          // 상태별 국가 수
-          const statusCounts = {}
-          COPY_STATUSES.forEach(s => {
-            if (s.value) statusCounts[s.value] = page.countries.filter(c => c.status === s.value).length
-          })
-          const unset = page.countries.filter(c => !c.status).length
+      {/* ── 새 페이지 입력 폼 ── */}
+      {showNewPage && (
+        <div className="cst-new-page-form" style={{ marginBottom: 20, flexWrap: 'wrap', gap: 8 }}>
+          <input className="form-input" placeholder="페이지 이름" value={newPageName}
+            onChange={e => setNewPageName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') createPage(); if (e.key === 'Escape') setShowNewPage(false) }}
+            autoFocus />
+          {viewMode === 'folder' && (
+            <select className="form-input" style={{ minWidth: 140 }} value={newPageFolderId ?? ''} onChange={e => setNewPageFolderId(e.target.value ? Number(e.target.value) : null)}>
+              <option value="">폴더 없음 (최상위)</option>
+              {folders.map(f => <option key={f.id} value={f.id}>📂 {f.name}</option>)}
+            </select>
+          )}
+          <button className="btn-primary" onClick={createPage}>추가</button>
+          <button className="btn-ghost" onClick={() => { setShowNewPage(false); setNewPageName(''); setNewPageFolderId(null) }}>취소</button>
+          {newPageMsg && <span style={{ color: '#ef4444', fontSize: 12 }}>{newPageMsg}</span>}
+        </div>
+      )}
 
-          return (
-            <div key={page.id} className="cst-page-card" onClick={() => setSelectedPageId(page.id)}>
-              <div className="cst-page-card-header">
-                <h3 className="cst-page-card-name">{page.name}</h3>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span className="cst-page-card-total">{total}개국</span>
-                  {user?.position === 'regular' && <button
-                    title="페이지 삭제"
-                    onClick={(e) => deletePage(page, e)}
-                    style={{
-                      background: 'none', border: 'none', cursor: 'pointer',
-                      fontSize: 14, color: '#9ca3af', padding: '2px 4px', lineHeight: 1,
-                      borderRadius: 4, transition: 'color 0.15s',
-                    }}
-                    onMouseEnter={e => e.currentTarget.style.color = '#ef4444'}
-                    onMouseLeave={e => e.currentTarget.style.color = '#9ca3af'}
-                  >
-                    🗑️
-                  </button>}
+      {/* ── 폴더 뷰 ── */}
+      {viewMode === 'folder' && (
+        <div>
+          {/* 폴더별 그룹 */}
+          {folders.map(folder => (
+            <FolderBlock
+              key={folder.id}
+              folder={folder}
+              pages={folderPageMap[folder.id] || []}
+              {...sharedCardProps}
+              onRenameFolder={renameFolder}
+              onDeleteFolder={deleteFolder}
+              isRegular={user?.position === 'regular'}
+            />
+          ))}
+
+          {/* 최상위 페이지 (폴더 없음) */}
+          {topLevelPages.length > 0 && (
+            <div>
+              {folders.length > 0 && (
+                <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8, marginTop: 4 }}>
+                  📋 폴더 미지정
                 </div>
-              </div>
-
-              {/* 단계별 컬러 스트립 */}
-              <div style={{ display: 'flex', gap: 2, margin: '8px 0 4px' }}>
-                {COPY_STATUSES.filter(s => s.value).map(s => (
-                  <div key={s.value} title={`${s.label}: ${statusCounts[s.value] || 0}개국`} style={{
-                    flex: 1, height: 6, borderRadius: 3,
-                    background: s.step <= Math.round(avgS) && Math.round(avgS) > 0 ? s.color : '#e5e7eb',
-                    transition: 'background 0.3s',
-                  }} />
+              )}
+              <div className="cst-page-grid">
+                {topLevelPages.map(page => (
+                  <PageCard key={page.id} page={page} {...sharedCardProps} />
                 ))}
-              </div>
-
-              {/* 프로그레스 바 */}
-              <div className="cst-mini-progress">
-                <div className="cst-mini-progress-bar">
-                  <div className="cst-progress-fill" style={{ width: `${pct}%`, background: cardStatus.color }} />
-                </div>
-                <span className="cst-mini-pct" style={{ color: cardStatus.color }}>
-                  {pct}% · {cardStatus.label}
-                </span>
-              </div>
-
-              {/* 상태별 뱃지 목록 */}
-              <div className="cst-page-card-badges">
-                {COPY_STATUSES.filter(s => s.value && statusCounts[s.value] > 0).map(s => (
-                  <span key={s.value} className="cst-mini-badge"
-                    style={{ background: s.bg, color: s.color, border: `1px solid ${s.color}` }}>
-                    {s.label} <strong>{statusCounts[s.value]}</strong>
-                  </span>
-                ))}
-                {unset > 0 && (
-                  <span className="cst-mini-badge"
-                    style={{ background: '#f3f4f6', color: '#6b7280', border: '1px solid #d1d5db' }}>
-                    미설정 <strong>{unset}</strong>
-                  </span>
-                )}
               </div>
             </div>
-          )
-        })}
-      </div>
+          )}
+
+          {folders.length === 0 && topLevelPages.length === 0 && (
+            <div style={{ padding: '48px 0', textAlign: 'center', color: '#9ca3af', fontSize: 14 }}>
+              페이지가 없습니다. "+ 새 페이지" 버튼으로 추가해주세요.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── 전체(플랫) 뷰 ── */}
+      {viewMode === 'flat' && (
+        <div>
+          <div className="cst-page-grid">
+            {pages.length === 0 ? (
+              <div style={{ padding: '48px 0', textAlign: 'center', color: '#9ca3af', fontSize: 14, gridColumn: '1/-1' }}>
+                페이지가 없습니다.
+              </div>
+            ) : (
+              pages.map(page => (
+                <PageCard key={page.id} page={page} {...sharedCardProps} />
+              ))
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
