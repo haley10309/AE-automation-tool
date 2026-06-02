@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef, memo } from 'react'
+import { useState, useCallback, useEffect, useRef, memo, useMemo } from 'react'
 import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import { useDB } from '../DBContext.jsx'
@@ -46,6 +46,7 @@ const NoteInput = memo(({ initialNote, onSave }) => {
   )
 })
 const HistoryItem = ({ file, index, onUpdateNote, download }) => {
+  const { user } = useAuth() // 1. 현재 로그인한 사용자 정보 가져오기
   const [isEditing, setIsEditing] = useState(false)
   const [tempNote, setTempNote] = useState(file.noteAtUpload || '')
 
@@ -55,6 +56,9 @@ const HistoryItem = ({ file, index, onUpdateNote, download }) => {
   }
 
   const statusStyle = getStatusStyle(file.statusAtUpload || '')
+
+  // 2. 본인이 작성한 메모인지 확인 (이름 또는 이메일 매칭)
+  const isMyNote = user && file.uploadedBy && (file.uploadedBy === user.name || file.uploadedBy === user.email);
 
   return (
     <div className="cst-file-history-item">
@@ -70,8 +74,6 @@ const HistoryItem = ({ file, index, onUpdateNote, download }) => {
           )}
         </div>
 
-        
-        
         {/* 상태 + 메모 한 줄 */}
         <div 
           className="cst-history-note-row" 
@@ -109,14 +111,18 @@ const HistoryItem = ({ file, index, onUpdateNote, download }) => {
               <span className="cst-file-note" style={{ fontSize: 11 }}>
                 📝 {file.noteAtUpload || '(메모 없음)'}
               </span>
-              <button 
-                className="btn-icon-edit" 
-                onClick={() => setIsEditing(true)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12 }}
-                title="메모 수정"
-              >
-                ✏️
-              </button>
+              
+              {/* 3. 본인이 쓴 메모일 때만 수정 버튼(✏️) 노출 */}
+              {isMyNote && (
+                <button 
+                  className="btn-icon-edit" 
+                  onClick={() => setIsEditing(true)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12 }}
+                  title="메모 수정"
+                >
+                  ✏️
+                </button>
+              )}
             </>
           )}
         </div>
@@ -487,42 +493,254 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
     </div>
   )
 }
-// ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, removeCountry, isRegular }) => {
+// ── [신규] 분기 생성 및 Git Graph 컴포넌트 ─────────────────────
+// ── [업그레이드] 분기별 Git Graph 및 Push 기능 컴포넌트 ─────────────────────
+const BranchTimeline = ({ branches, onCreateBranch }) => {
+  const [showNewBranchForm, setShowNewBranchForm] = useState(false)
+  const [activePushBranch, setActivePushBranch] = useState(null)
+  const [form, setForm] = useState({ branchName: '', status: '', note: '', file: null })
+  const fileRef = useRef(null)
+
+  // 1. 분기 이름(branch_name)을 기준으로 이력(Commit) 그룹화
+  const groupedBranches = useMemo(() => {
+    const map = {}
+    branches.forEach(b => {
+      if (!map[b.branch_name]) map[b.branch_name] = []
+      map[b.branch_name].push(b)
+    })
+    // 각 분기 내의 이력을 최신순(내림차순)으로 정렬
+    Object.values(map).forEach(arr => {
+      arr.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    })
+    return map
+  }, [branches])
+
+  const handleFile = (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => setForm({ ...form, file: { name: file.name, dataUrl: ev.target.result } })
+    reader.readAsDataURL(file)
+  }
+
+  // 새로운 분기 생성 또는 기존 분기에 Push
+  const submit = (isPush = false, targetBranchName = '') => {
+    const finalBranchName = isPush ? targetBranchName : form.branchName
+    if (!finalBranchName) return alert('분기 이름을 입력하세요.')
+    
+    onCreateBranch({
+      branchName: finalBranchName,
+      status: form.status,
+      note: form.note,
+      fileName: form.file?.name,
+      dataUrl: form.file?.dataUrl
+    })
+    
+    // 초기화
+    setShowNewBranchForm(false)
+    setActivePushBranch(null)
+    setForm({ branchName: '', status: '', note: '', file: null })
+  }
+
+  const downloadFile = (fileName, dataUrl) => {
+    const a = document.createElement('a')
+    a.href = dataUrl; a.download = fileName
+    document.body.appendChild(a); a.click(); document.body.removeChild(a)
+  }
+
   return (
-    <tr className="cst-row">
-      <td className="cst-td">
-        <div className="cst-country-cell">
-          <span className="cst-flag">{site.flag}</span>
-          <div className="cst-country-info">
-            <span className="cst-country-name">{site.name}</span>
-            <span className="cst-country-code" style={{ color: REGION_COLORS[site.region] }}>{site.code}</span>
-          </div>
+    <div style={{ padding: '16px', background: '#f8fafc', borderTop: '1px dashed #cbd5e1' }}>
+      {/* ── 헤더 및 새 분기 생성 버튼 ── */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <h4 style={{ margin: 0, fontSize: 13, color: '#334155', fontWeight: 700 }}>🔀 작업 분기 (Branch History)</h4>
+        <button className="btn-sm" onClick={() => {
+          setShowNewBranchForm(!showNewBranchForm)
+          setActivePushBranch(null)
+          setForm({ branchName: '', status: '', note: '', file: null })
+        }} style={{ background: '#fff', border: '1px solid #cbd5e1', color: '#475569' }}>
+          {showNewBranchForm ? '취소' : '+ 새 분기(Branch) 파기'}
+        </button>
+      </div>
+
+      {/* ── 새 분기 생성 폼 ── */}
+      {showNewBranchForm && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 20, padding: 12, background: '#e0e7ff', borderRadius: 8, border: '1px solid #c7d2fe' }}>
+          <input className="form-input" style={{ width: 160 }} placeholder="새 분기명 (예: Meta 배너)" 
+            value={form.branchName} onChange={e => setForm({...form, branchName: e.target.value})} autoFocus />
+          <select className="form-input" value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
+            {COPY_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+          </select>
+          <input className="form-input" style={{ flex: 1 }} placeholder="최초 메모" 
+            value={form.note} onChange={e => setForm({...form, note: e.target.value})} />
+          <button className="btn-ghost" onClick={() => fileRef.current?.click()} style={{ fontSize: 12, background: '#fff' }}>
+            {form.file ? `📎 ${form.file.name}` : '📎 파일'}
+          </button>
+          <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFile} />
+          <button className="btn-primary" onClick={() => submit(false)}>생성</button>
         </div>
-      </td>
-      <td className="cst-td">
-        <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChange} />
-      </td>
-      <td className="cst-td">
-        <FileCell 
-          siteCode={site.code} 
-          entry={entry} 
-          onFileUpload={handleFileUpload} 
-          onUpdateHistoryNote={handleHistoryNoteUpdate}
-        />
-      </td>
-      <td className="cst-td">
-        <NoteInput 
-          initialNote={entry?.note} 
-          onSave={(note) => handleStatusChange(site.code, entry?.status, note)} 
-        />
-      </td>
-      <td className="cst-td">
-        {isRegular && (
-          <button className="act-btn act-delete" onClick={() => removeCountry(site.code)}>✕</button>
+      )}
+
+      {/* ── 분기별 Git Graph 렌더링 ── */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+        {Object.entries(groupedBranches).map(([bName, history]) => (
+          <div key={bName} style={{ background: '#fff', padding: '16px', borderRadius: 8, border: '1px solid #e2e8f0', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' }}>
+            
+            {/* 분기 타이틀 및 Push 버튼 */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, borderBottom: '2px solid #f1f5f9', paddingBottom: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 16 }}>🌿</span>
+                <strong style={{ fontSize: 14, color: '#1e293b' }}>{bName}</strong>
+                <span style={{ fontSize: 11, color: '#94a3b8' }}>총 {history.length}개의 기록</span>
+              </div>
+              <button 
+                className="btn-sm" 
+                style={{ background: activePushBranch === bName ? '#f1f5f9' : '#4f46e5', color: activePushBranch === bName ? '#475569' : '#fff', border: 'none' }}
+                onClick={() => {
+                  setActivePushBranch(activePushBranch === bName ? null : bName)
+                  setForm({ branchName: '', status: '', note: '', file: null })
+                  setShowNewBranchForm(false)
+                }}>
+                {activePushBranch === bName ? '닫기' : '↑ Push (업데이트)'}
+              </button>
+            </div>
+
+            {/* 현재 분기에 Push(업데이트) 하는 폼: 위로 갈수록 최신이므로 맨 위에 배치 */}
+            {activePushBranch === bName && (
+              <div style={{ display: 'flex', gap: 8, marginBottom: 16, padding: 12, background: '#f8fafc', borderRadius: 6, border: '1px solid #cbd5e1' }}>
+                <select className="form-input" style={{ width: 160 }} value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
+                  {COPY_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                </select>
+                <input className="form-input" style={{ flex: 1 }} placeholder="진행 상황 메모 입력..." 
+                  value={form.note} onChange={e => setForm({...form, note: e.target.value})} autoFocus />
+                <button className="btn-ghost" onClick={() => fileRef.current?.click()} style={{ fontSize: 12, background: '#fff' }}>
+                  {form.file ? `📎 ${form.file.name}` : '📎 파일'}
+                </button>
+                <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFile} />
+                <button className="btn-primary" onClick={() => submit(true, bName)}>Push</button>
+              </div>
+            )}
+
+            {/* 타임라인 (이력) */}
+            <div style={{ position: 'relative', paddingLeft: 16, marginTop: 12 }}>
+              <div style={{ position: 'absolute', left: 4, top: 4, bottom: 0, width: 2, background: '#e2e8f0' }} />
+              
+              {history.map((record, idx) => {
+                const st = getStatusStyle(record.status)
+                const isLatest = idx === 0 // 배열이 최신순이므로 인덱스 0이 가장 최신 Commit
+                
+                return (
+                  <div key={record.id} style={{ position: 'relative', marginBottom: idx === history.length - 1 ? 0 : 20, opacity: isLatest ? 1 : 0.6 }}>
+                    {/* Commit Dot */}
+                    <div style={{ 
+                      position: 'absolute', left: -16, top: 4, width: 10, height: 10, 
+                      borderRadius: '50%', background: isLatest ? st.color : '#94a3b8', 
+                      border: '2px solid #fff', boxShadow: `0 0 0 1px ${isLatest ? st.color : '#cbd5e1'}`
+                    }} />
+                    
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                      <span style={{ 
+                        fontSize: 10, padding: '2px 6px', borderRadius: 12, 
+                        background: st.bg, color: st.color, border: `1px solid ${st.color}`, fontWeight: isLatest ? 700 : 400
+                      }}>
+                        {st.label}
+                      </span>
+                      <span style={{ fontSize: 11, color: '#64748b' }}>
+                        {formatDateTime(record.created_at)}
+                      </span>
+                      <span style={{ fontSize: 11, color: '#94a3b8', marginLeft: 'auto' }}>
+                        👤 {record.created_by}
+                      </span>
+                    </div>
+                    
+                    {record.note && (
+                      <div style={{ fontSize: 12, color: '#334155', background: '#f8fafc', padding: '6px 10px', borderRadius: 6, display: 'inline-block', marginTop: 4 }}>
+                        {record.note}
+                      </div>
+                    )}
+                    
+                    {record.file_name && (
+                      <div style={{ marginTop: 6 }}>
+                        <button onClick={() => downloadFile(record.file_name, record.data_url)} 
+                          style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 4, color: '#3b82f6', fontSize: 11, cursor: 'pointer', padding: '4px 8px' }}>
+                          📎 {record.file_name} 다운로드
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+          </div>
+        ))}
+
+        {branches.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '32px 0', color: '#94a3b8', fontSize: 13 }}>
+            진행 중인 작업 분기가 없습니다.<br/>새 분기를 파서 병렬 작업을 관리해보세요.
+          </div>
         )}
-      </td>
-    </tr>
+      </div>
+    </div>
+  )
+}
+
+// ── [최적화] 테이블 행 (React.memo) ───────────────────────────
+const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, removeCountry, isRegular }) => {
+  const [isExpanded, setIsExpanded] = useState(false)
+  const branches = entry?.branches || []
+
+  return (
+    <>
+      <tr className="cst-row">
+        <td className="cst-td">
+          <div className="cst-country-cell">
+            <span className="cst-flag">{site.flag}</span>
+            <div className="cst-country-info">
+              <span className="cst-country-name">{site.name}</span>
+              <span className="cst-country-code" style={{ color: REGION_COLORS[site.region] }}>{site.code}</span>
+            </div>
+          </div>
+          <button 
+            onClick={() => setIsExpanded(!isExpanded)} 
+            style={{ 
+              marginTop: 6, fontSize: 11, background: isExpanded ? '#e0e7ff' : '#f1f5f9', 
+              border: 'none', padding: '3px 8px', borderRadius: 4, cursor: 'pointer', color: '#4f46e5'
+            }}
+          >
+            {isExpanded ? '▼ 닫기' : '▶ 분기 관리'} {branches.length > 0 && `(${branches.length})`}
+          </button>
+        </td>
+        <td className="cst-td">
+          <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChange} />
+        </td>
+        <td className="cst-td">
+          <FileCell 
+            siteCode={site.code} 
+            entry={entry} 
+            onFileUpload={handleFileUpload} 
+            onUpdateHistoryNote={handleHistoryNoteUpdate}
+          />
+        </td>
+        <td className="cst-td">
+          <NoteInput 
+            initialNote={entry?.note} 
+            onSave={(note) => handleStatusChange(site.code, entry?.status, note)} 
+          />
+        </td>
+        <td className="cst-td">
+          {isRegular && (
+            <button className="act-btn act-delete" onClick={() => removeCountry(site.code)}>✕</button>
+          )}
+        </td>
+      </tr>
+      {isExpanded && (
+        <tr>
+          <td colSpan="5" style={{ padding: 0 }}>
+            <BranchTimeline branches={branches} onCreateBranch={(data) => handleBranchCreate(site.code, data)} />
+          </td>
+        </tr>
+      )}
+    </>
   )
 })
 
@@ -536,6 +754,7 @@ function PageDetail({ page, onBack, onUpdate }) {
   const dropRef = useRef(null)
 
   // ── 페이지 진입 시 DB에서 상태+파일 히스토리 로드 ──────────
+  // ── 페이지 진입 시 DB에서 상태+파일+분기 히스토리 로드 ──────────
   useEffect(() => {
     async function loadFromDB() {
       setLoadingDetail(true)
@@ -543,19 +762,19 @@ function PageDetail({ page, onBack, onUpdate }) {
         // 1. tracker_pages upsert (기존 localStorage 페이지도 DB에 등록 보장)
         await api.createTrackerPage({ id: String(page.id), title: page.name })
 
-        // 2. 상태/메모 + 파일 히스토리 한번에 조회
+        // 2. 상태/메모 + 파일 + 분기 히스토리 한번에 조회
         const res = await api.getTrackerDetail(String(page.id))
         if (!res.ok) return
 
-        // 3. DB 데이터 → countries 구조로 병합 (항상 DB가 정답)
+        // 3. 기본 국가 배열 세팅
         const baseCountries = ALL_SITES
           .filter(s => DEFAULT_COUNTRIES.includes(s.code))
-          .map(s => ({ code: s.code, status: '', note: '', file: null, fileHistory: [] }))
+          .map(s => ({ code: s.code, status: '', note: '', file: null, fileHistory: [], branches: [] }))
 
+        // 4. DB 데이터 맵핑(Mapping) 객체 생성
         const statusMap = {}
         for (const s of (res.statuses || [])) statusMap[s.site_code] = s
 
-        // 파일을 site_code별로 그룹핑
         const fileMap = {}
         for (const f of (res.files || [])) {
           if (!fileMap[f.site_code]) fileMap[f.site_code] = []
@@ -567,11 +786,17 @@ function PageDetail({ page, onBack, onUpdate }) {
             statusAtUpload: f.status,
             noteAtUpload:   f.note_at_upload,
             uploadedBy:     f.uploaded_by || null,
-            dataUrl:        null,   // 다운로드 클릭 시 서버에서 단건 조회
+            dataUrl:        null,   
           })
         }
 
-        // 기존 countries에 DB 값 덮어씌우기
+        const branchMap = {}
+        for (const b of (res.branches || [])) {
+          if (!branchMap[b.site_code]) branchMap[b.site_code] = []
+          branchMap[b.site_code].push(b)
+        }
+
+        // 5. 기본 배열에 DB 데이터를 최종 병합 (mergedCountries 단일 선언)
         const mergedCountries = baseCountries.map(c => {
           const st = statusMap[c.code]
           const history = fileMap[c.code] || []
@@ -581,10 +806,11 @@ function PageDetail({ page, onBack, onUpdate }) {
             note:   st ? st.note   : c.note,
             fileHistory: history,
             file: history.length ? history[history.length - 1] : c.file,
+            branches: branchMap[c.code] || [], // 분기 배열 연결
           }
         })
 
-        // DB에만 있는 국가 (나중에 추가된 국가) 도 병합
+        // 6. DB에만 있는 국가(나중에 수동 추가된 국가) 추가 병합
         for (const code of Object.keys(statusMap)) {
           if (!mergedCountries.find(c => c.code === code)) {
             const st = statusMap[code]
@@ -595,6 +821,7 @@ function PageDetail({ page, onBack, onUpdate }) {
               note: st.note,
               fileHistory: history,
               file: history.length ? history[history.length - 1] : null,
+              branches: branchMap[code] || [], // 분기 배열 연결
             })
           }
         }
@@ -651,7 +878,36 @@ function PageDetail({ page, onBack, onUpdate }) {
     } catch (e) { console.warn('status DB 저장 실패', e) }
   }, [page, onUpdate])
 
-  
+  const handleBranchCreate = useCallback(async (siteCode, branchData) => {
+    try {
+      const res = await api.createTrackerBranch({
+        pageId: page.id,
+        siteCode,
+        ...branchData
+      })
+      if (res.ok) {
+        // UI 즉시 업데이트 (생성된 분기를 맨 위에 추가)
+        const newBranch = {
+          id: res.id,
+          site_code: siteCode,
+          branch_name: branchData.branchName,
+          status: branchData.status,
+          note: branchData.note,
+          file_name: branchData.fileName,
+          data_url: branchData.dataUrl,
+          created_by: user?.name,
+          created_at: new Date().toISOString()
+        }
+        
+        const updatedCountries = page.countries.map(c => 
+          c.code === siteCode 
+            ? { ...c, branches: [newBranch, ...(c.branches || [])] }
+            : c
+        )
+        onUpdate({ ...page, countries: updatedCountries }, true)
+      }
+    } catch (e) { console.warn('분기 생성 실패', e) }
+  }, [page, user, onUpdate])
 
   const handleFileUpload = useCallback(async (siteCode, fileInfo) => {
     // DB에 파일 저장 후 insertId를 받아 fileHistory에 기록
@@ -860,6 +1116,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 handleStatusChange={handleStatusChange}
                 handleFileUpload={handleFileUpload}
                 handleHistoryNoteUpdate={handleHistoryNoteUpdate}
+                handleBranchCreate={handleBranchCreate} /* 👈 이 줄이 반드시 있어야 합니다 */
                 removeCountry={removeCountry}
                 isRegular={user?.position === 'regular'}
               />
