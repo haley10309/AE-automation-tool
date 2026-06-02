@@ -181,6 +181,21 @@ dbRouter.post('/connect', async (req, res) => {
 
 dbRouter.post('/init', checkDbConnection, async (req, res) => {
   try {
+    // status 텝이 있는 국가별 관리 브랜치 분리를 위한 테이블 
+    await pool.execute(`CREATE TABLE IF NOT EXISTS tracker_branches (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      page_id VARCHAR(100) NOT NULL,
+      site_code VARCHAR(50) NOT NULL,
+      branch_name VARCHAR(255) NOT NULL,
+      status VARCHAR(100),
+      note TEXT,
+      file_name VARCHAR(500),
+      data_url LONGTEXT,
+      created_by VARCHAR(100) COMMENT '요청자(자동)',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      deleted TINYINT(1) NOT NULL DEFAULT 0,
+      INDEX idx_branch (page_id, site_code)
+    ) COMMENT='국가별 작업 분기(Branch) 타임라인 관리'`);
     // [신규] 인증용 users 테이블 생성
     await pool.execute(`CREATE TABLE IF NOT EXISTS users (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -917,7 +932,12 @@ statusRouter.get('/tracker/pages/:id', async (req, res) => {
       `SELECT id, site_code, name, size, status, note_at_upload, uploaded_by, uploaded_at
        FROM page_files WHERE page_id = ? ORDER BY uploaded_at ASC`, [pageId]
     );
-    res.json({ ok: true, statuses, files });
+    // [신규] 분기(Branch) 데이터 조회 (최신순)
+    const [branches] = await pool.execute(
+      `SELECT id, site_code, branch_name, status, note, file_name, data_url, created_by, created_at 
+       FROM tracker_branches WHERE page_id = ? AND deleted = 0 ORDER BY created_at DESC`, [pageId]
+    );
+    res.json({ ok: true, statuses, files, branches });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
@@ -959,6 +979,33 @@ statusRouter.post('/tracker/status', async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
+// status 텝에 분기 생성 api 추가 
+statusRouter.post('/tracker/branches', authMiddleware, async (req, res) => {
+  try {
+    const { pageId, siteCode, branchName, status, note, fileName, dataUrl } = req.body;
+    const createdBy = req.user?.name || '알 수 없음'; // 토큰에서 자동 추출
+
+    const [result] = await pool.execute(
+      `INSERT INTO tracker_branches (page_id, site_code, branch_name, status, note, file_name, data_url, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [pageId, siteCode, branchName, status || '', note || '', fileName || null, dataUrl || null, createdBy]
+    );
+    
+    res.json({ ok: true, id: result.insertId });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+app.put('/api/tracker/branches/:id/note', async (req, res) => {
+  const { note } = req.body;
+  try {
+    await pool.execute(
+      `UPDATE branch_history SET note = ? WHERE id = ?`,
+      [note, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.json({ ok: false, message: e.message });
+  }
+});
 statusRouter.post('/files', async (req, res) => {
   try {
     const { pageId, siteCode, name, size, status, noteAtUpload, uploadedAt, dataUrl, uploadedBy } = req.body;

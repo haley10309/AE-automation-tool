@@ -77,6 +77,8 @@ export const api = window.electronAPI || {
   createTrackerPage: (body)     => call('POST',  '/api/tracker/pages', body),
   updateTrackerPage: (id, body) => call('PUT',   `/api/tracker/pages/${id}`, body),
   deleteTrackerPage: (id)       => call('DELETE', `/api/tracker/pages/${id}`),
+  // ── [신규] 작업 분기(Branch) 관리 ──
+  createTrackerBranch: (body) => call('POST', '/api/tracker/branches', body),
 
   // ── Merge 프로젝트 ──────────────────────────────────────────
   mergeListProjects:   ()         => call('GET',    '/api/merge/projects'),
