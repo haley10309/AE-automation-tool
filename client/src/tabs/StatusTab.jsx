@@ -1070,11 +1070,19 @@ function FolderBlock({ folder, pages, onSelect, onDelete, onRename, user, folder
   ] : []
 
   return (
-    <div style={{ marginBottom: 16 }}>
+    <div style={{
+      marginBottom: 16,
+      border: '1px solid #e2e8f0',
+      borderRadius: 12,
+      overflow: 'hidden',
+      background: '#f1f5f9',
+      boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+    }}>
+      {/* 폴더 헤더 */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
-        background: '#f1f5f9', borderRadius: 10, marginBottom: isOpen ? 10 : 0,
-        border: '1px solid #e2e8f0', userSelect: 'none',
+        display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px',
+        background: '#f1f5f9', userSelect: 'none',
+        borderBottom: isOpen ? '1px solid #e2e8f0' : 'none',
       }}>
         <span
           onClick={() => setIsOpen(v => !v)}
@@ -1098,23 +1106,26 @@ function FolderBlock({ folder, pages, onSelect, onDelete, onRename, user, folder
         )}
       </div>
 
+      {/* 폴더 내용 — 헤더 안쪽에 자연스럽게 */}
       {isOpen && (
-        <div className="cst-page-grid" style={{ paddingLeft: 16 }}>
+        <div style={{ padding: 16 }}>
           {pages.length === 0 ? (
-            <div style={{ fontSize: 12, color: '#9ca3af', padding: '12px 0', gridColumn: '1/-1' }}>빈 폴더입니다.</div>
+            <div style={{ fontSize: 12, color: '#9ca3af', padding: '8px 4px', textAlign: 'center' }}>빈 폴더입니다.</div>
           ) : (
-            pages.map(page => (
-              <PageCard
-                key={page.id}
-                page={page}
-                onSelect={onSelect}
-                onDelete={onDelete}
-                onRename={onRename}
-                user={user}
-                folders={folders}
-                onMoveToFolder={onMoveToFolder}
-              />
-            ))
+            <div className="cst-page-grid">
+              {pages.map(page => (
+                <PageCard
+                  key={page.id}
+                  page={page}
+                  onSelect={onSelect}
+                  onDelete={onDelete}
+                  onRename={onRename}
+                  user={user}
+                  folders={folders}
+                  onMoveToFolder={onMoveToFolder}
+                />
+              ))}
+            </div>
           )}
         </div>
       )}
