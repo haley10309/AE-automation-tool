@@ -29,6 +29,7 @@ export const api = window.electronAPI || {
   createProduct:    (body)     => call('POST',   '/api/products', body),
   updateProduct:    (id, body) => call('PUT',    `/api/products/${id}`, body),
   deleteProduct:    (id)       => call('DELETE', `/api/products/${id}`),
+  getProductHistory:(id)       => call('GET',    `/api/products/${id}/history`),
 
   // 국가별 카피 프로젝트 CRUD (CC)
   ccListProjects:   ()         => call('GET',    '/api/cc/projects'),
@@ -79,6 +80,7 @@ export const api = window.electronAPI || {
   deleteTrackerPage: (id)       => call('DELETE', `/api/tracker/pages/${id}`),
   // ── [신규] 작업 분기(Branch) 관리 ──
   createTrackerBranch: (body) => call('POST', '/api/tracker/branches', body),
+  updateBranchNote:    (id, body) => call('PUT', `/api/tracker/branches/${id}/note`, body),
 
   // ── Merge 프로젝트 ──────────────────────────────────────────
   mergeListProjects:   ()         => call('GET',    '/api/merge/projects'),

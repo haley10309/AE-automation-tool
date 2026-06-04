@@ -271,6 +271,17 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (request_id) REFERENCES copy_requests(id) ON DELETE CASCADE)`);
 
+    await pool.execute(`CREATE TABLE IF NOT EXISTS product_launch_history (
+      id          INT AUTO_INCREMENT PRIMARY KEY,
+      product_id  INT NOT NULL,
+      changed_by  VARCHAR(100),
+      changed_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      field       VARCHAR(50) NOT NULL COMMENT 'excluded_countries|name|aliases',
+      as_was      TEXT,
+      to_be       TEXT,
+      INDEX idx_product (product_id)
+    ) COMMENT='제품 출시여부 수정 이력'`);
+
     await pool.execute(`CREATE TABLE IF NOT EXISTS samsung_products (
       id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL,
       aliases JSON NOT NULL DEFAULT ('[]'), excluded_countries JSON NOT NULL DEFAULT ('[]'),
@@ -515,12 +526,60 @@ productRouter.post('/', checkDbConnection, async (req, res) => {
 
 productRouter.put('/:id', checkDbConnection, async (req, res) => {
   try {
-    const { name, aliases, excluded_countries } = req.body;
+    const { name, aliases, excluded_countries, changedBy } = req.body;
+    const productId = req.params.id;
+
+    // 수정 전 데이터 조회 (as-was)
+    const [[before]] = await pool.execute(`SELECT name, aliases, excluded_countries FROM samsung_products WHERE id = ?`, [productId]);
+    const beforeExcluded = typeof before.excluded_countries === 'string' ? JSON.parse(before.excluded_countries) : before.excluded_countries;
+    const beforeAliases  = typeof before.aliases === 'string' ? JSON.parse(before.aliases) : before.aliases;
+
+    // 실제 수정
     await pool.execute(
       `UPDATE samsung_products SET name=?, aliases=?, excluded_countries=? WHERE id=?`,
-      [name.trim(), JSON.stringify(aliases || []), JSON.stringify(excluded_countries || []), req.params.id]
+      [name.trim(), JSON.stringify(aliases || []), JSON.stringify(excluded_countries || []), productId]
     );
+
+    // 변경된 필드만 히스토리 기록
+    const historyRows = [];
+    const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    const editor = changedBy || null;
+
+    if (before.name !== name.trim()) {
+      historyRows.push([productId, editor, now, 'name', before.name, name.trim()]);
+    }
+    const aliasesStr   = JSON.stringify(aliases || []);
+    const beforeAliasesStr = JSON.stringify(beforeAliases);
+    if (aliasesStr !== beforeAliasesStr) {
+      historyRows.push([productId, editor, now, 'aliases', beforeAliasesStr, aliasesStr]);
+    }
+    const excStr       = JSON.stringify([...(excluded_countries || [])].sort());
+    const beforeExcStr = JSON.stringify([...beforeExcluded].sort());
+    if (excStr !== beforeExcStr) {
+      historyRows.push([productId, editor, now, 'excluded_countries', beforeExcStr, excStr]);
+    }
+
+    if (historyRows.length > 0) {
+      await pool.query(
+        `INSERT INTO product_launch_history (product_id, changed_by, changed_at, field, as_was, to_be) VALUES ?`,
+        [historyRows]
+      );
+    }
+
     res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+productRouter.get('/:id/history', checkDbConnection, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT id, field, as_was, to_be, changed_by, changed_at
+       FROM product_launch_history
+       WHERE product_id = ?
+       ORDER BY changed_at DESC`,
+      [req.params.id]
+    );
+    res.json({ ok: true, data: rows });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
@@ -994,11 +1053,20 @@ statusRouter.post('/tracker/branches', authMiddleware, async (req, res) => {
     res.json({ ok: true, id: result.insertId });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
-app.put('/api/tracker/branches/:id/note', async (req, res) => {
+statusRouter.put('/tracker/branches/:id/note', authMiddleware, async (req, res) => {
   const { note } = req.body;
   try {
+    // created_by 검증: 본인 레코드만 수정 가능
+    const [[row]] = await pool.execute(
+      `SELECT created_by FROM tracker_branches WHERE id = ? AND deleted = 0`,
+      [req.params.id]
+    );
+    if (!row) return res.json({ ok: false, message: '레코드를 찾을 수 없습니다.' });
+    if (row.created_by !== req.user.name) {
+      return res.status(403).json({ ok: false, message: '본인이 작성한 메모만 수정할 수 있습니다.' });
+    }
     await pool.execute(
-      `UPDATE branch_history SET note = ? WHERE id = ?`,
+      `UPDATE tracker_branches SET note = ? WHERE id = ?`,
       [note, req.params.id]
     );
     res.json({ ok: true });
