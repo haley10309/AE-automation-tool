@@ -195,7 +195,18 @@ dbRouter.post('/init', checkDbConnection, async (req, res) => {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       deleted TINYINT(1) NOT NULL DEFAULT 0,
       INDEX idx_branch (page_id, site_code)
-    ) COMMENT='국가별 작업 분기(Branch) 타임라인 관리'`);
+    ) COMMENT='국가별 작업 분기(Branch) 타임라인 관리'`)
+    // [신규] 분기 close 상태 관리 테이블
+    await pool.execute(`CREATE TABLE IF NOT EXISTS tracker_branch_status (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      page_id VARCHAR(100) NOT NULL,
+      site_code VARCHAR(50) NOT NULL,
+      branch_name VARCHAR(255) NOT NULL,
+      is_closed TINYINT(1) NOT NULL DEFAULT 0,
+      closed_by VARCHAR(100),
+      closed_at DATETIME,
+      UNIQUE KEY uq_branch (page_id, site_code, branch_name)
+    ) COMMENT='분기별 Close 상태'`);
     // [신규] 인증용 users 테이블 생성
     await pool.execute(`CREATE TABLE IF NOT EXISTS users (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -996,7 +1007,10 @@ statusRouter.get('/tracker/pages/:id', async (req, res) => {
       `SELECT id, site_code, branch_name, status, note, file_name, data_url, created_by, created_at 
        FROM tracker_branches WHERE page_id = ? AND deleted = 0 ORDER BY created_at DESC`, [pageId]
     );
-    res.json({ ok: true, statuses, files, branches });
+    const [branchStatuses] = await pool.execute(
+      `SELECT site_code, branch_name, is_closed, closed_by, closed_at FROM tracker_branch_status WHERE page_id = ?`, [pageId]
+    );
+    res.json({ ok: true, statuses, files, branches, branchStatuses });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
@@ -1053,6 +1067,22 @@ statusRouter.post('/tracker/branches', authMiddleware, async (req, res) => {
     res.json({ ok: true, id: result.insertId });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
+// 분기 close / reopen
+statusRouter.put('/tracker/branches/close', authMiddleware, async (req, res) => {
+  const { pageId, siteCode, branchName, isClosed } = req.body;
+  const closedBy = isClosed ? (req.user?.name || '알 수 없음') : null;
+  const closedAt = isClosed ? new Date().toISOString().slice(0, 19).replace('T', ' ') : null;
+  try {
+    await pool.execute(
+      `INSERT INTO tracker_branch_status (page_id, site_code, branch_name, is_closed, closed_by, closed_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE is_closed = VALUES(is_closed), closed_by = VALUES(closed_by), closed_at = VALUES(closed_at)`,
+      [pageId, siteCode, branchName, isClosed ? 1 : 0, closedBy, closedAt]
+    );
+    res.json({ ok: true });
+  } catch (e) { res.json({ ok: false, message: e.message }); }
+});
+
 statusRouter.put('/tracker/branches/:id/note', authMiddleware, async (req, res) => {
   const { note } = req.body;
   try {
