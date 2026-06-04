@@ -965,6 +965,119 @@ function ProjectManager({ products }) {
 // ════════════════════════════════════════════════════════════════
 
 
+// ── 제품 출시여부 수정 히스토리 드로어 ──────────────────────────
+function ProductHistoryDrawer({ product, onClose }) {
+  const [history, setHistory] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    api.getProductHistory(product.id).then(res => {
+      if (res.ok) setHistory(res.data)
+      setLoading(false)
+    })
+  }, [product.id])
+
+  const fmt = iso => {
+    if (!iso) return ''
+    const d = new Date(iso)
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
+  }
+
+  const FIELD_LABEL = {
+    excluded_countries: '미출시 국가',
+    name:    '제품명',
+    aliases: '감지 키워드',
+  }
+
+  const renderDiff = (field, asWas, toBe) => {
+    if (field === 'excluded_countries') {
+      const before = asWas ? JSON.parse(asWas) : []
+      const after  = toBe  ? JSON.parse(toBe)  : []
+      const added   = after.filter(c => !before.includes(c))   // 미출시 추가
+      const removed = before.filter(c => !after.includes(c))   // 미출시 해제(출시로 전환)
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
+          {removed.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: '#10b981', fontWeight: 600, minWidth: 60 }}>출시 전환</span>
+              {removed.map(c => <span key={c} style={{ fontSize: 11, background: '#dcfce7', color: '#166534', borderRadius: 4, padding: '1px 6px', border: '1px solid #bbf7d0' }}>{c}</span>)}
+            </div>
+          )}
+          {added.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: '#ef4444', fontWeight: 600, minWidth: 60 }}>미출시 추가</span>
+              {added.map(c => <span key={c} style={{ fontSize: 11, background: '#fee2e2', color: '#b91c1c', borderRadius: 4, padding: '1px 6px', border: '1px solid #fecaca' }}>{c}</span>)}
+            </div>
+          )}
+        </div>
+      )
+    }
+    // 일반 텍스트 diff
+    return (
+      <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+          <span style={{ fontSize: 11, color: '#ef4444', fontWeight: 600, minWidth: 40 }}>이전</span>
+          <span style={{ fontSize: 12, color: '#374151', background: '#fee2e2', borderRadius: 4, padding: '2px 8px', textDecoration: 'line-through' }}>{asWas || '(없음)'}</span>
+        </div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+          <span style={{ fontSize: 11, color: '#10b981', fontWeight: 600, minWidth: 40 }}>이후</span>
+          <span style={{ fontSize: 12, color: '#374151', background: '#dcfce7', borderRadius: 4, padding: '2px 8px' }}>{toBe || '(없음)'}</span>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 400, display: 'flex', justifyContent: 'flex-end' }}
+      onClick={onClose}>
+      <div style={{ width: 480, maxWidth: '95vw', background: '#fff', height: '100%', overflowY: 'auto', boxShadow: '-4px 0 24px rgba(0,0,0,0.12)', display: 'flex', flexDirection: 'column' }}
+        onClick={e => e.stopPropagation()}>
+
+        {/* 헤더 */}
+        <div style={{ padding: '20px 24px 16px', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', background: '#f8fafc' }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#1e293b' }}>📋 수정 히스토리</div>
+            <div style={{ fontSize: 13, color: '#6b7280', marginTop: 4 }}>{product.name}</div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: '#9ca3af', lineHeight: 1 }}>✕</button>
+        </div>
+
+        {/* 본문 */}
+        <div style={{ flex: 1, padding: '16px 24px' }}>
+          {loading ? (
+            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>불러오는 중...</div>
+          ) : history.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af', fontSize: 13 }}>
+              수정 이력이 없습니다.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {history.map((h, i) => (
+                <div key={h.id} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: '12px 16px' }}>
+                  {/* 메타 */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 11, background: '#e0e7ff', color: '#4f46e5', borderRadius: 4, padding: '2px 8px', fontWeight: 600 }}>
+                      {FIELD_LABEL[h.field] || h.field}
+                    </span>
+                    <span style={{ fontSize: 11, color: '#64748b' }}>
+                      👤 {h.changed_by || '알 수 없음'}
+                    </span>
+                    <span style={{ fontSize: 11, color: '#94a3b8', marginLeft: 'auto' }}>
+                      {fmt(h.changed_at)}
+                    </span>
+                  </div>
+                  {/* diff */}
+                  {renderDiff(h.field, h.as_was, h.to_be)}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ProductPanel({ onClose, onProductsChanged }) {
   const { user } = useAuth()
   const [products, setProducts]   = useState([])
@@ -974,6 +1087,7 @@ function ProductPanel({ onClose, onProductsChanged }) {
   const [msg, setMsg]             = useState('')
   const [saving, setSaving]       = useState(false)
   const [regionFilter, setRegionFilter] = useState('ALL')
+  const [historyProduct, setHistoryProduct] = useState(null)
 
   const load = async () => {
     setLoading(true)
@@ -999,6 +1113,7 @@ function ProductPanel({ onClose, onProductsChanged }) {
       name: formData.name.trim(),
       aliases: formData.aliases.split('\n').map(s => s.trim()).filter(Boolean),
       excluded_countries: formData.excluded_countries,
+      changedBy: user?.name || user?.email || null,
     }
     const res = editingId === 'new' ? await api.createProduct(payload) : await api.updateProduct(editingId, payload)
     setSaving(false)
@@ -1023,6 +1138,9 @@ function ProductPanel({ onClose, onProductsChanged }) {
   return (
     <div className="product-panel-overlay" onClick={onClose}>
       <div className="product-panel" onClick={e => e.stopPropagation()}>
+        {historyProduct && (
+          <ProductHistoryDrawer product={historyProduct} onClose={() => setHistoryProduct(null)} />
+        )}
         <div className="pp-header">
           <div className="pp-title-row">
             {editingId !== null
@@ -1052,6 +1170,7 @@ function ProductPanel({ onClose, onProductsChanged }) {
                     </div>
                   </div>
                   <div className="pp-item-actions">
+                    <button className="act-btn" style={{ color: '#6366f1', borderColor: '#6366f1' }} onClick={() => setHistoryProduct(p)}>📋 이력</button>
                     <button className="act-btn act-edit" onClick={() => openEdit(p)}>✏ 수정</button>
                     {user?.position === 'regular' && (
                       <button className="act-btn act-delete" onClick={() => handleDelete(p.id, p.name)}>🗑</button>
