@@ -495,11 +495,29 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
 }
 // ── [신규] 분기 생성 및 Git Graph 컴포넌트 ─────────────────────
 // ── [업그레이드] 분기별 Git Graph 및 Push 기능 컴포넌트 ─────────────────────
-const BranchTimeline = ({ branches, onCreateBranch }) => {
+const BranchTimeline = ({ branches, onCreateBranch, onUpdateBranchNote }) => {
+  const { user } = useAuth()
   const [showNewBranchForm, setShowNewBranchForm] = useState(false)
   const [activePushBranch, setActivePushBranch] = useState(null)
   const [form, setForm] = useState({ branchName: '', status: '', note: '', file: null })
+  const [editingNoteId, setEditingNoteId] = useState(null)
+  const [editingNoteText, setEditingNoteText] = useState('')
   const fileRef = useRef(null)
+
+  const handleNoteEditStart = (record) => {
+    setEditingNoteId(record.id)
+    setEditingNoteText(record.note || '')
+  }
+
+  const handleNoteEditSave = async (recordId) => {
+    if (onUpdateBranchNote) await onUpdateBranchNote(recordId, editingNoteText)
+    setEditingNoteId(null)
+  }
+
+  const handleNoteEditCancel = () => {
+    setEditingNoteId(null)
+    setEditingNoteText('')
+  }
 
   // 1. 분기 이름(branch_name)을 기준으로 이력(Commit) 그룹화
   const groupedBranches = useMemo(() => {
@@ -652,10 +670,37 @@ const BranchTimeline = ({ branches, onCreateBranch }) => {
                       </span>
                     </div>
                     
-                    {record.note && (
-                      <div style={{ fontSize: 12, color: '#334155', background: '#f8fafc', padding: '6px 10px', borderRadius: 6, display: 'inline-block', marginTop: 4 }}>
-                        {record.note}
+                    {/* 메모: 본인 ��한 수정 가능 */}
+                    {editingNoteId === record.id ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                        <input
+                          className="form-input"
+                          style={{ fontSize: 11, padding: '2px 6px', flex: 1 }}
+                          value={editingNoteText}
+                          onChange={e => setEditingNoteText(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') handleNoteEditSave(record.id); if (e.key === 'Escape') handleNoteEditCancel() }}
+                          autoFocus
+                        />
+                        <button className="btn-sm" onClick={() => handleNoteEditSave(record.id)} style={{ padding: '2px 6px' }}>쭔장</button>
+                        <button className="btn-ghost" onClick={handleNoteEditCancel} style={{ padding: '2px 6px' }}>취소</button>
                       </div>
+                    ) : (
+                      record.note && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                          <div style={{ fontSize: 12, color: '#334155', background: '#f8fafc', padding: '6px 10px', borderRadius: 6, display: 'inline-block' }}>
+                            {record.note}
+                          </div>
+                          {user && record.created_by && (record.created_by === user.name || record.created_by === user.email) && (
+                            <button
+                              onClick={() => handleNoteEditStart(record)}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, padding: 0 }}
+                              title="메모 수정"
+                            >
+                              ✏️
+                            </button>
+                          )}
+                        </div>
+                      )
                     )}
                     
                     {record.file_name && (
@@ -685,7 +730,7 @@ const BranchTimeline = ({ branches, onCreateBranch }) => {
 }
 
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, removeCountry, isRegular }) => {
+const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, removeCountry, isRegular }) => {
   const [isExpanded, setIsExpanded] = useState(false)
   const branches = entry?.branches || []
 
@@ -736,7 +781,7 @@ const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, han
       {isExpanded && (
         <tr>
           <td colSpan="5" style={{ padding: 0 }}>
-            <BranchTimeline branches={branches} onCreateBranch={(data) => handleBranchCreate(site.code, data)} />
+            <BranchTimeline branches={branches} onCreateBranch={(data) => handleBranchCreate(site.code, data)} onUpdateBranchNote={(id, note) => handleBranchNoteUpdate(site.code, id, note)} />
           </td>
         </tr>
       )}
@@ -908,6 +953,22 @@ function PageDetail({ page, onBack, onUpdate }) {
       }
     } catch (e) { console.warn('분기 생성 실패', e) }
   }, [page, user, onUpdate])
+
+  const handleBranchNoteUpdate = useCallback(async (siteCode, branchId, newNote) => {
+    try {
+      const res = await api.updateBranchNote(branchId, { note: newNote })
+      if (res.ok) {
+        const updatedCountries = page.countries.map(c =>
+          c.code === siteCode
+            ? { ...c, branches: (c.branches || []).map(b => b.id === branchId ? { ...b, note: newNote } : b) }
+            : c
+        )
+        onUpdate({ ...page, countries: updatedCountries }, true)
+      } else {
+        alert(res.message || '메모 수정에 실패했습니다.')
+      }
+    } catch (e) { console.warn('분기 메모 수정 실패', e) }
+  }, [page, onUpdate])
 
   const handleFileUpload = useCallback(async (siteCode, fileInfo) => {
     // DB에 파일 저장 후 insertId를 받아 fileHistory에 기록
@@ -1117,6 +1178,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 handleFileUpload={handleFileUpload}
                 handleHistoryNoteUpdate={handleHistoryNoteUpdate}
                 handleBranchCreate={handleBranchCreate} /* 👈 이 줄이 반드시 있어야 합니다 */
+                handleBranchNoteUpdate={handleBranchNoteUpdate}
                 removeCountry={removeCountry}
                 isRegular={user?.position === 'regular'}
               />

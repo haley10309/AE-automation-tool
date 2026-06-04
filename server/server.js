@@ -994,11 +994,20 @@ statusRouter.post('/tracker/branches', authMiddleware, async (req, res) => {
     res.json({ ok: true, id: result.insertId });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
-app.put('/api/tracker/branches/:id/note', async (req, res) => {
+statusRouter.put('/tracker/branches/:id/note', authMiddleware, async (req, res) => {
   const { note } = req.body;
   try {
+    // created_by 검증: 본인 레코드만 수정 가능
+    const [[row]] = await pool.execute(
+      `SELECT created_by FROM tracker_branches WHERE id = ? AND deleted = 0`,
+      [req.params.id]
+    );
+    if (!row) return res.json({ ok: false, message: '레코드를 찾을 수 없습니다.' });
+    if (row.created_by !== req.user.name) {
+      return res.status(403).json({ ok: false, message: '본인이 작성한 메모만 수정할 수 있습니다.' });
+    }
     await pool.execute(
-      `UPDATE branch_history SET note = ? WHERE id = ?`,
+      `UPDATE tracker_branches SET note = ? WHERE id = ?`,
       [note, req.params.id]
     );
     res.json({ ok: true });
