@@ -495,13 +495,15 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
 }
 // ── [신규] 분기 생성 및 Git Graph 컴포넌트 ─────────────────────
 // ── [업그레이드] 분기별 Git Graph 및 Push 기능 컴포넌트 ─────────────────────
-const BranchTimeline = ({ branches, onCreateBranch, onUpdateBranchNote }) => {
+const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBranchNote, onCloseBranch }) => {
   const { user } = useAuth()
   const [showNewBranchForm, setShowNewBranchForm] = useState(false)
   const [activePushBranch, setActivePushBranch] = useState(null)
   const [form, setForm] = useState({ branchName: '', status: '', note: '', file: null })
   const [editingNoteId, setEditingNoteId] = useState(null)
   const [editingNoteText, setEditingNoteText] = useState('')
+  const [collapsedClosed, setCollapsedClosed] = useState(true) // closed 분기 기본 접힘
+  const [expandedClosed, setExpandedClosed] = useState({}) // 개별 closed 분기 히스토리 펼침
   const fileRef = useRef(null)
 
   const handleNoteEditStart = (record) => {
@@ -532,6 +534,13 @@ const BranchTimeline = ({ branches, onCreateBranch, onUpdateBranchNote }) => {
     })
     return map
   }, [branches])
+
+  // branch_name -> is_closed 맵 (같은 국가 내이므로 branch_name만으로 키)
+  const closedMap = useMemo(() => {
+    const m = {}
+    if (branchStatuses) branchStatuses.forEach(s => { m[s.branch_name] = s })
+    return m
+  }, [branchStatuses])
 
   const handleFile = (e) => {
     const file = e.target.files?.[0]
@@ -619,139 +628,234 @@ const BranchTimeline = ({ branches, onCreateBranch, onUpdateBranchNote }) => {
       )}
 
       {/* 분기 카드 가로 그리드 */}
-      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.max(Object.keys(groupedBranches).length, 1)}, minmax(210px, 1fr))`, gap: 10, overflowX: 'auto' }}>
-        {Object.entries(groupedBranches).map(([bName, history]) => {
+      {(() => {
+        const allEntries = Object.entries(groupedBranches)
+        const openEntries   = allEntries.filter(([bName]) => !closedMap[bName]?.is_closed)
+        const closedEntries = allEntries.filter(([bName]) =>  closedMap[bName]?.is_closed)
+        const siteCode = branches[0]?.site_code || ''
+        const renderCard = ([bName, history]) => {
+          const closedInfo = closedMap[bName]
+          const isClosed = !!closedInfo?.is_closed
           const latestRecord = history[0]
           const latestSt = getStatusStyle(latestRecord?.status)
           const isActive = activePushBranch === bName
           return (
             <div key={bName} style={{
-              background: '#fff', borderRadius: 8,
-              border: isActive ? '2px solid #4f46e5' : '1px solid #e2e8f0',
+              background: isClosed ? '#f8fafc' : '#fff', borderRadius: 8,
+              border: isClosed ? '1px solid #e2e8f0' : isActive ? '2px solid #4f46e5' : '1px solid #e2e8f0',
               boxShadow: isActive ? '0 0 0 3px #e0e7ff' : '0 1px 2px rgba(0,0,0,0.04)',
-              display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0
+              display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0,
+              opacity: isClosed ? 0.72 : 1
             }}>
               {/* 분기 헤더 */}
-              <div style={{ padding: '9px 12px', borderBottom: '1px solid #f1f5f9', background: isActive ? '#eef2ff' : '#fafafa', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+              <div style={{ padding: '9px 12px', borderBottom: '1px solid #f1f5f9', background: isClosed ? '#f1f5f9' : isActive ? '#eef2ff' : '#fafafa', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
-                  <span style={{ fontSize: 13 }}>🌿</span>
-                  <strong style={{ fontSize: 12, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={bName}>{bName}</strong>
+                  <span style={{ fontSize: 13 }}>{isClosed ? '🔒' : '🌿'}</span>
+                  <strong style={{ fontSize: 12, color: isClosed ? '#94a3b8' : '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: isClosed ? 'line-through' : 'none' }} title={bName}>{bName}</strong>
                 </div>
-                <button
-                  className="btn-sm"
-                  style={{ flexShrink: 0, fontSize: 10, padding: '2px 7px', background: isActive ? '#6366f1' : '#4f46e5', color: '#fff', border: 'none', borderRadius: 4 }}
-                  onClick={() => {
-                    setActivePushBranch(isActive ? null : bName)
-                    setForm({ branchName: '', status: '', note: '', file: null })
-                    setShowNewBranchForm(false)
-                  }}
-                >
-                  {isActive ? '✕' : '↑ Push'}
-                </button>
+                <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                  {!isClosed && (
+                    <button
+                      className="btn-sm"
+                      style={{ fontSize: 10, padding: '2px 7px', background: isActive ? '#6366f1' : '#4f46e5', color: '#fff', border: 'none', borderRadius: 4 }}
+                      onClick={() => {
+                        setActivePushBranch(isActive ? null : bName)
+                        setForm({ branchName: '', status: '', note: '', file: null })
+                        setShowNewBranchForm(false)
+                      }}
+                    >
+                      {isActive ? '✕' : '↑ Push'}
+                    </button>
+                  )}
+                  <button
+                    className="btn-sm"
+                    style={{ fontSize: 10, padding: '2px 7px', background: isClosed ? '#10b981' : '#ef4444', color: '#fff', border: 'none', borderRadius: 4 }}
+                    onClick={() => onCloseBranch && onCloseBranch(siteCode, bName, !isClosed)}
+                    title={isClosed ? '분기 재개' : '분기 종료'}
+                  >
+                    {isClosed ? '↺ 재개' : '✕ Close'}
+                  </button>
+                </div>
               </div>
 
-              {/* 최신 상태 뱃지 */}
-              <div style={{ padding: '7px 12px', borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 10, background: latestSt.bg, color: latestSt.color, border: `1px solid ${latestSt.color}`, fontWeight: 700, whiteSpace: 'nowrap' }}>
-                  {latestSt.label}
-                </span>
-                <span style={{ fontSize: 10, color: '#94a3b8', marginLeft: 'auto', whiteSpace: 'nowrap' }}>{history.length}건</span>
-              </div>
+              {/* closed가 아닐 때만 본문 표시 */}
+              {!isClosed && (
+                <>
+                  {/* 최신 상태 뱃지 */}
+                  <div style={{ padding: '7px 12px', borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 10, background: latestSt.bg, color: latestSt.color, border: `1px solid ${latestSt.color}`, fontWeight: 700, whiteSpace: 'nowrap' }}>
+                      {latestSt.label}
+                    </span>
+                    <span style={{ fontSize: 10, color: '#94a3b8', marginLeft: 'auto', whiteSpace: 'nowrap' }}>{history.length}건</span>
+                  </div>
 
-              {/* 최신 메모 (편집 가능) */}
-              {latestRecord?.note && (
-                <div style={{ padding: '6px 12px', borderBottom: '1px solid #f1f5f9' }}>
-                  {editingNoteId === latestRecord.id ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <input
-                        className="form-input"
-                        style={{ fontSize: 11, padding: '2px 6px' }}
-                        value={editingNoteText}
-                        onChange={e => setEditingNoteText(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') handleNoteEditSave(latestRecord.id); if (e.key === 'Escape') handleNoteEditCancel() }}
-                        autoFocus
-                      />
-                      <div style={{ display: 'flex', gap: 4 }}>
-                        <button className="btn-sm" onClick={() => handleNoteEditSave(latestRecord.id)} style={{ padding: '1px 6px', fontSize: 11 }}>저장</button>
-                        <button className="btn-ghost" onClick={handleNoteEditCancel} style={{ padding: '1px 6px', fontSize: 11 }}>취소</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
-                      <span style={{ fontSize: 11, color: '#475569', lineHeight: 1.4, flex: 1 }}>{latestRecord.note}</span>
-                      {user && latestRecord.created_by && (latestRecord.created_by === user.name || latestRecord.created_by === user.email) && (
-                        <button onClick={() => handleNoteEditStart(latestRecord)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, padding: 0, flexShrink: 0 }} title="메모 수정">✏️</button>
+                  {/* 최신 메모 (편집 가능) */}
+                  {latestRecord?.note && (
+                    <div style={{ padding: '6px 12px', borderBottom: '1px solid #f1f5f9' }}>
+                      {editingNoteId === latestRecord.id ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <input
+                            className="form-input"
+                            style={{ fontSize: 11, padding: '2px 6px' }}
+                            value={editingNoteText}
+                            onChange={e => setEditingNoteText(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') handleNoteEditSave(latestRecord.id); if (e.key === 'Escape') handleNoteEditCancel() }}
+                            autoFocus
+                          />
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <button className="btn-sm" onClick={() => handleNoteEditSave(latestRecord.id)} style={{ padding: '1px 6px', fontSize: 11 }}>저장</button>
+                            <button className="btn-ghost" onClick={handleNoteEditCancel} style={{ padding: '1px 6px', fontSize: 11 }}>취소</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
+                          <span style={{ fontSize: 11, color: '#475569', lineHeight: 1.4, flex: 1 }}>{latestRecord.note}</span>
+                          {user && latestRecord.created_by && (latestRecord.created_by === user.name || latestRecord.created_by === user.email) && (
+                            <button onClick={() => handleNoteEditStart(latestRecord)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, padding: 0, flexShrink: 0 }} title="메모 수정">✏️</button>
+                          )}
+                        </div>
                       )}
+                    </div>
+                  )}
+
+                  {/* 타임라인 이력 (스크롤) */}
+                  <div style={{ flex: 1, overflowY: 'auto', maxHeight: 240, position: 'relative', paddingLeft: 20, paddingRight: 12, paddingTop: 8, paddingBottom: 8 }}>
+                    <div style={{ position: 'absolute', left: 12, top: 0, bottom: 0, width: 2, background: '#e2e8f0' }} />
+                    {history.map((record, idx) => {
+                      const st = getStatusStyle(record.status)
+                      const isLatest = idx === 0
+                      return (
+                        <div key={record.id} style={{ position: 'relative', marginBottom: idx === history.length - 1 ? 4 : 12, opacity: isLatest ? 1 : 0.55 }}>
+                          <div style={{ position: 'absolute', left: -12, top: 3, width: 8, height: 8, borderRadius: '50%', background: isLatest ? st.color : '#94a3b8', border: '2px solid #fff', boxShadow: `0 0 0 1px ${isLatest ? st.color : '#cbd5e1'}` }} />
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginBottom: 1 }}>
+                            <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 8, background: st.bg, color: st.color, border: `1px solid ${st.color}`, fontWeight: isLatest ? 700 : 400, whiteSpace: 'nowrap' }}>{st.label}</span>
+                            <span style={{ fontSize: 10, color: '#94a3b8', whiteSpace: 'nowrap' }}>{formatDateTime(record.created_at)}</span>
+                          </div>
+                          <div style={{ fontSize: 10, color: '#94a3b8' }}>👤 {record.created_by}</div>
+                          {!isLatest && record.note && (
+                            <div style={{ marginTop: 2 }}>
+                              {editingNoteId === record.id ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                                  <input className="form-input" style={{ fontSize: 10, padding: '1px 4px' }}
+                                    value={editingNoteText} onChange={e => setEditingNoteText(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter') handleNoteEditSave(record.id); if (e.key === 'Escape') handleNoteEditCancel() }}
+                                    autoFocus />
+                                  <div style={{ display: 'flex', gap: 3 }}>
+                                    <button className="btn-sm" onClick={() => handleNoteEditSave(record.id)} style={{ fontSize: 10, padding: '1px 5px' }}>저장</button>
+                                    <button className="btn-ghost" onClick={handleNoteEditCancel} style={{ fontSize: 10, padding: '1px 5px' }}>취소</button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                                  <span style={{ fontSize: 10, color: '#64748b' }}>{record.note}</span>
+                                  {user && record.created_by && (record.created_by === user.name || record.created_by === user.email) && (
+                                    <button onClick={() => handleNoteEditStart(record)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: 0 }} title="메모 수정">✏️</button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {record.file_name && (
+                            <div style={{ marginTop: 3 }}>
+                              <button onClick={() => downloadFile(record.file_name, record.data_url)}
+                                style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 3, color: '#3b82f6', fontSize: 10, cursor: 'pointer', padding: '2px 6px' }}>
+                                📎 {record.file_name}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </>
+              )}
+
+              {/* closed 상태일 때: 종료자/시각 + 히스토리 토글 */}
+              {isClosed && (
+                <div>
+                  <div style={{ padding: '6px 12px', fontSize: 10, color: '#94a3b8', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>🔒 {closedInfo.closed_by} · {formatDateTime(closedInfo.closed_at)}</span>
+                    <button
+                      onClick={() => setExpandedClosed(v => ({ ...v, [bName]: !v[bName] }))}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, color: '#64748b', padding: 0 }}
+                    >
+                      {expandedClosed[bName] ? '▲ 접기' : '▼ 히스토리'}
+                    </button>
+                  </div>
+                  {expandedClosed[bName] && (
+                    <div style={{ position: 'relative', paddingLeft: 20, paddingRight: 12, paddingTop: 6, paddingBottom: 8, maxHeight: 220, overflowY: 'auto' }}>
+                      <div style={{ position: 'absolute', left: 12, top: 0, bottom: 0, width: 2, background: '#e2e8f0' }} />
+                      {history.map((record, idx) => {
+                        const st = getStatusStyle(record.status)
+                        const isLatest = idx === 0
+                        return (
+                          <div key={record.id} style={{ position: 'relative', marginBottom: idx === history.length - 1 ? 4 : 12, opacity: isLatest ? 1 : 0.55 }}>
+                            <div style={{ position: 'absolute', left: -12, top: 3, width: 8, height: 8, borderRadius: '50%', background: isLatest ? st.color : '#94a3b8', border: '2px solid #fff', boxShadow: `0 0 0 1px ${isLatest ? st.color : '#cbd5e1'}` }} />
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginBottom: 1 }}>
+                              <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 8, background: st.bg, color: st.color, border: `1px solid ${st.color}`, fontWeight: isLatest ? 700 : 400, whiteSpace: 'nowrap' }}>{st.label}</span>
+                              <span style={{ fontSize: 10, color: '#94a3b8', whiteSpace: 'nowrap' }}>{formatDateTime(record.created_at)}</span>
+                            </div>
+                            <div style={{ fontSize: 10, color: '#94a3b8' }}>👤 {record.created_by}</div>
+                            {record.note && <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>{record.note}</div>}
+                            {record.file_name && (
+                              <div style={{ marginTop: 3 }}>
+                                <button onClick={() => downloadFile(record.file_name, record.data_url)}
+                                  style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 3, color: '#3b82f6', fontSize: 10, cursor: 'pointer', padding: '2px 6px' }}>
+                                  📎 {record.file_name}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   )}
                 </div>
               )}
-
-              {/* 타임라인 이력 (스크롤) */}
-              <div style={{ flex: 1, overflowY: 'auto', maxHeight: 240, position: 'relative', paddingLeft: 20, paddingRight: 12, paddingTop: 8, paddingBottom: 8 }}>
-                <div style={{ position: 'absolute', left: 12, top: 0, bottom: 0, width: 2, background: '#e2e8f0' }} />
-                {history.map((record, idx) => {
-                  const st = getStatusStyle(record.status)
-                  const isLatest = idx === 0
-                  return (
-                    <div key={record.id} style={{ position: 'relative', marginBottom: idx === history.length - 1 ? 4 : 12, opacity: isLatest ? 1 : 0.55 }}>
-                      <div style={{ position: 'absolute', left: -12, top: 3, width: 8, height: 8, borderRadius: '50%', background: isLatest ? st.color : '#94a3b8', border: '2px solid #fff', boxShadow: `0 0 0 1px ${isLatest ? st.color : '#cbd5e1'}` }} />
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginBottom: 1 }}>
-                        <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 8, background: st.bg, color: st.color, border: `1px solid ${st.color}`, fontWeight: isLatest ? 700 : 400, whiteSpace: 'nowrap' }}>{st.label}</span>
-                        <span style={{ fontSize: 10, color: '#94a3b8', whiteSpace: 'nowrap' }}>{formatDateTime(record.created_at)}</span>
-                      </div>
-                      <div style={{ fontSize: 10, color: '#94a3b8' }}>👤 {record.created_by}</div>
-                      {!isLatest && record.note && (
-                        <div style={{ marginTop: 2 }}>
-                          {editingNoteId === record.id ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                              <input className="form-input" style={{ fontSize: 10, padding: '1px 4px' }}
-                                value={editingNoteText} onChange={e => setEditingNoteText(e.target.value)}
-                                onKeyDown={e => { if (e.key === 'Enter') handleNoteEditSave(record.id); if (e.key === 'Escape') handleNoteEditCancel() }}
-                                autoFocus />
-                              <div style={{ display: 'flex', gap: 3 }}>
-                                <button className="btn-sm" onClick={() => handleNoteEditSave(record.id)} style={{ fontSize: 10, padding: '1px 5px' }}>저장</button>
-                                <button className="btn-ghost" onClick={handleNoteEditCancel} style={{ fontSize: 10, padding: '1px 5px' }}>취소</button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                              <span style={{ fontSize: 10, color: '#64748b' }}>{record.note}</span>
-                              {user && record.created_by && (record.created_by === user.name || record.created_by === user.email) && (
-                                <button onClick={() => handleNoteEditStart(record)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: 0 }} title="메모 수정">✏️</button>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {record.file_name && (
-                        <div style={{ marginTop: 3 }}>
-                          <button onClick={() => downloadFile(record.file_name, record.data_url)}
-                            style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 3, color: '#3b82f6', fontSize: 10, cursor: 'pointer', padding: '2px 6px' }}>
-                            📎 {record.file_name}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
             </div>
           )
-        })}
+        }
+        return (
+          <>
+            {/* 활성 분기 그리드 */}
+            {openEntries.length > 0 && (
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${openEntries.length}, minmax(210px, 1fr))`, gap: 10, overflowX: 'auto' }}>
+                {openEntries.map(renderCard)}
+              </div>
+            )}
 
-        {branches.length === 0 && (
-          <div style={{ textAlign: 'center', padding: '32px 0', color: '#94a3b8', fontSize: 13, gridColumn: '1/-1' }}>
-            진행 중인 작업 분기가 없습니다.<br/>새 분기를 파서 병렬 작업을 관리해보세요.
-          </div>
-        )}
-      </div>
+            {/* Closed 분기 접기/펼치기 */}
+            {closedEntries.length > 0 && (
+              <div style={{ marginTop: openEntries.length > 0 ? 12 : 0 }}>
+                <button
+                  onClick={() => setCollapsedClosed(v => !v)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#64748b', padding: '4px 0', marginBottom: 8 }}
+                >
+                  <span style={{ fontSize: 11 }}>{collapsedClosed ? '▶' : '▼'}</span>
+                  🔒 종료된 분기 {closedEntries.length}개
+                </button>
+                {!collapsedClosed && (
+                  <div style={{ display: 'grid', gridTemplateColumns: `repeat(${closedEntries.length}, minmax(210px, 1fr))`, gap: 10, overflowX: 'auto' }}>
+                    {closedEntries.map(renderCard)}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {branches.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '32px 0', color: '#94a3b8', fontSize: 13 }}>
+                진행 중인 작업 분기가 없습니다.<br/>새 분기를 파서 병렬 작업을 관리해보세요.
+              </div>
+            )}
+          </>
+        )
+      })()}
     </div>
   )
 }
 
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, removeCountry, isRegular }) => {
+const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, removeCountry, isRegular }) => {
   const [isExpanded, setIsExpanded] = useState(false)
   const branches = entry?.branches || []
 
@@ -773,7 +877,7 @@ const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, han
               border: 'none', padding: '3px 8px', borderRadius: 4, cursor: 'pointer', color: '#4f46e5'
             }}
           >
-            {isExpanded ? '▼ 닫기' : '▶ 분기 관리'} {branches.length > 0 && `(${branches.length})`}
+            {isExpanded ? '▼ 닫기' : '▶ 분기 관리'} {branches.length > 0 && `(${new Set(branches.map(b => b.branch_name)).size})`}
           </button>
         </td>
         <td className="cst-td">
@@ -802,7 +906,7 @@ const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, han
       {isExpanded && (
         <tr>
           <td colSpan="5" style={{ padding: 0 }}>
-            <BranchTimeline branches={branches} onCreateBranch={(data) => handleBranchCreate(site.code, data)} onUpdateBranchNote={(id, note) => handleBranchNoteUpdate(site.code, id, note)} />
+            <BranchTimeline branches={branches} branchStatuses={entry?.branchStatuses || []} onCreateBranch={(data) => handleBranchCreate(site.code, data)} onUpdateBranchNote={(id, note) => handleBranchNoteUpdate(site.code, id, note)} onCloseBranch={(siteCode, bName, isClosed) => handleBranchClose(siteCode, bName, isClosed)} />
           </td>
         </tr>
       )}
@@ -862,6 +966,12 @@ function PageDetail({ page, onBack, onUpdate }) {
           branchMap[b.site_code].push(b)
         }
 
+        const branchStatusMap = {}
+        for (const s of (res.branchStatuses || [])) {
+          if (!branchStatusMap[s.site_code]) branchStatusMap[s.site_code] = []
+          branchStatusMap[s.site_code].push(s)
+        }
+
         // 5. 기본 배열에 DB 데이터를 최종 병합 (mergedCountries 단일 선언)
         const mergedCountries = baseCountries.map(c => {
           const st = statusMap[c.code]
@@ -873,6 +983,7 @@ function PageDetail({ page, onBack, onUpdate }) {
             fileHistory: history,
             file: history.length ? history[history.length - 1] : c.file,
             branches: branchMap[c.code] || [], // 분기 배열 연결
+            branchStatuses: branchStatusMap[c.code] || [],
           }
         })
 
@@ -888,6 +999,7 @@ function PageDetail({ page, onBack, onUpdate }) {
               fileHistory: history,
               file: history.length ? history[history.length - 1] : null,
               branches: branchMap[code] || [], // 분기 배열 연결
+              branchStatuses: branchStatusMap[code] || [],
             })
           }
         }
@@ -990,6 +1102,23 @@ function PageDetail({ page, onBack, onUpdate }) {
       }
     } catch (e) { console.warn('분기 메모 수정 실패', e) }
   }, [page, onUpdate])
+
+  const handleBranchClose = useCallback(async (siteCode, branchName, isClosed) => {
+    try {
+      const res = await api.closeBranch({ pageId: page.id, siteCode, branchName, isClosed })
+      if (res.ok) {
+        const updatedCountries = page.countries.map(c => {
+          if (c.code !== siteCode) return c
+          const prev = (c.branchStatuses || []).filter(s => s.branch_name !== branchName)
+          const entry = { site_code: siteCode, branch_name: branchName, is_closed: isClosed ? 1 : 0,
+            closed_by: isClosed ? (user?.name || '') : null,
+            closed_at: isClosed ? new Date().toISOString() : null }
+          return { ...c, branchStatuses: [...prev, entry] }
+        })
+        onUpdate({ ...page, countries: updatedCountries }, true)
+      } else { alert(res.message || '분기 상태 변경에 실패했습니다.') }
+    } catch (e) { console.warn('분기 close 실패', e) }
+  }, [page, user, onUpdate])
 
   const handleFileUpload = useCallback(async (siteCode, fileInfo) => {
     // DB에 파일 저장 후 insertId를 받아 fileHistory에 기록
@@ -1200,6 +1329,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 handleHistoryNoteUpdate={handleHistoryNoteUpdate}
                 handleBranchCreate={handleBranchCreate} /* 👈 이 줄이 반드시 있어야 합니다 */
                 handleBranchNoteUpdate={handleBranchNoteUpdate}
+                handleBranchClose={handleBranchClose}
                 removeCountry={removeCountry}
                 isRegular={user?.position === 'regular'}
               />
