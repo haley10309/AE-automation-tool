@@ -1412,68 +1412,72 @@ export default function StatusTab() {
   useEffect(() => {
     if (!dbReady) return
     async function loadPages() {
-      try {
-        const res = await api.getTrackerPages()
-        if (res.ok && res.data?.length) {
-          
-          // 1. DB에서 넘어온 전체 상태(statuses)를 페이지 ID별로 그룹핑
-          const statusByPage = {}
-          if (res.statuses) {
-            res.statuses.forEach(s => {
-              if (!statusByPage[s.page_id]) statusByPage[s.page_id] = {}
-              statusByPage[s.page_id][s.site_code] = s.status
-            })
+  try {
+    const res = await api.getTrackerPages()
+    console.log('🔍 getTrackerPages 응답:', JSON.stringify(res, null, 2)) // 확인용
+
+    if (res.ok) {
+      setFolders(res.folders || [])
+
+      if (res.data?.length) {
+        const statusByPage = {}
+        if (res.statuses) {
+          res.statuses.forEach(s => {
+            if (!statusByPage[s.page_id]) statusByPage[s.page_id] = {}
+            statusByPage[s.page_id][s.site_code] = s.status
+          })
+        }
+
+        const dbPages = res.data.map(p => {
+          const pageId = String(p.id)
+          const pageStatuses = statusByPage[pageId] || {}
+
+          const baseCountries = ALL_SITES
+            .filter(s => DEFAULT_COUNTRIES.includes(s.code))
+            .map(s => ({
+              code: s.code,
+              status: pageStatuses[s.code] || '',
+              note: '', file: null, fileHistory: []
+            }))
+
+          for (const code of Object.keys(pageStatuses)) {
+            if (!baseCountries.find(c => c.code === code)) {
+              baseCountries.push({
+                code,
+                status: pageStatuses[code] || '',
+                note: '', file: null, fileHistory: []
+              })
+            }
           }
 
-          const dbPages = res.data.map(p => {
-            const pageId = String(p.id)
-            const pageStatuses = statusByPage[pageId] || {}
-            
-            // 2. 기본 국가 목록을 세팅하고, DB의 상태값을 꽂아 넣음
-            const baseCountries = ALL_SITES
-              .filter(s => DEFAULT_COUNTRIES.includes(s.code))
-              .map(s => ({ 
-                code: s.code, 
-                status: pageStatuses[s.code] || '', 
-                note: '', file: null, fileHistory: [] 
-              }))
-            
-            // 3. DB에만 존재하는 추가 국가(나중에 수동으로 추가한 국가)도 병합
-            for (const code of Object.keys(pageStatuses)) {
-              if (!baseCountries.find(c => c.code === code)) {
-                baseCountries.push({
-                  code,
-                  status: pageStatuses[code] || '',
-                  note: '', file: null, fileHistory: []
-                })
-              }
-            }
+          return {
+            id: pageId,
+            name: p.title,
+            folder_id: p.folder_id ?? null,
+            createdAt: p.created_at,
+            countries: baseCountries,
+            _loadedFromDB: true,
+          }
+        })
 
-            return {
-              id: pageId,
-              name: p.title,
-              folder_id: p.folder_id ?? null,
-              createdAt: p.created_at,
-              countries: baseCountries,
-              _loadedFromDB: true,
-            }
-          })
-          
-          setPages(dbPages)
-          setFolders(res.folders || [])
-          saveToStorage({ pages: dbPages }) // DB 데이터를 로컬스토리지에 동기화
-        } else {
-          // DB 연결 실패 또는 데이터가 없을 시 localStorage fallback
-          const local = loadFromStorage()
-          setPages(local.pages || [])
-        }
-      } catch {
-        const local = loadFromStorage()
-        setPages(local.pages || [])
-      } finally {
-        setLoading(false)
+        setPages(dbPages)
+        saveToStorage({ pages: dbPages })
+      } else {
+        setPages([])
+        saveToStorage({ pages: [] })
       }
+    } else {
+      const local = loadFromStorage()
+      setPages(local.pages || [])
     }
+  } catch (e) {
+    console.error('loadPages 에러:', e)
+    const local = loadFromStorage()
+    setPages(local.pages || [])
+  } finally {
+    setLoading(false)
+  }
+}
     loadPages()
   }, [dbReady])
 
