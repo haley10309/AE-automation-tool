@@ -29,6 +29,7 @@ export const api = window.electronAPI || {
   createProduct:    (body)     => call('POST',   '/api/products', body),
   updateProduct:    (id, body) => call('PUT',    `/api/products/${id}`, body),
   deleteProduct:    (id)       => call('DELETE', `/api/products/${id}`),
+  getProductHistory:(id)       => call('GET',    `/api/products/${id}/history`),
 
   // 국가별 카피 프로젝트 CRUD (CC)
   ccListProjects:   ()         => call('GET',    '/api/cc/projects'),
