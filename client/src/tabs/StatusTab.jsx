@@ -598,129 +598,150 @@ const BranchTimeline = ({ branches, onCreateBranch, onUpdateBranchNote }) => {
         </div>
       )}
 
-      {/* ── 분기별 Git Graph 렌더링 ── */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-        {Object.entries(groupedBranches).map(([bName, history]) => (
-          <div key={bName} style={{ background: '#fff', padding: '16px', borderRadius: 8, border: '1px solid #e2e8f0', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' }}>
-            
-            {/* 분기 타이틀 및 Push 버튼 */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, borderBottom: '2px solid #f1f5f9', paddingBottom: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 16 }}>🌿</span>
-                <strong style={{ fontSize: 14, color: '#1e293b' }}>{bName}</strong>
-                <span style={{ fontSize: 11, color: '#94a3b8' }}>총 {history.length}개의 기록</span>
-              </div>
-              <button 
-                className="btn-sm" 
-                style={{ background: activePushBranch === bName ? '#f1f5f9' : '#4f46e5', color: activePushBranch === bName ? '#475569' : '#fff', border: 'none' }}
-                onClick={() => {
-                  setActivePushBranch(activePushBranch === bName ? null : bName)
-                  setForm({ branchName: '', status: '', note: '', file: null })
-                  setShowNewBranchForm(false)
-                }}>
-                {activePushBranch === bName ? '닫기' : '↑ Push (업데이트)'}
-              </button>
-            </div>
+      {/* ── 분기별 Git Graph: 가로 레이아웃 (1분기 = 1열) ── */}
 
-            {/* 현재 분기에 Push(업데이트) 하는 폼: 위로 갈수록 최신이므로 맨 위에 배치 */}
-            {activePushBranch === bName && (
-              <div style={{ display: 'flex', gap: 8, marginBottom: 16, padding: 12, background: '#f8fafc', borderRadius: 6, border: '1px solid #cbd5e1' }}>
-                <select className="form-input" style={{ width: 160 }} value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
-                  {COPY_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-                </select>
-                <input className="form-input" style={{ flex: 1 }} placeholder="진행 상황 메모 입력..." 
-                  value={form.note} onChange={e => setForm({...form, note: e.target.value})} autoFocus />
-                <button className="btn-ghost" onClick={() => fileRef.current?.click()} style={{ fontSize: 12, background: '#fff' }}>
-                  {form.file ? `📎 ${form.file.name}` : '📎 파일'}
+      {/* Push 폼: 선택된 분기 아래에 고정 렌더링 */}
+      {activePushBranch && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16, padding: 12, background: '#f0f9ff', borderRadius: 6, border: '1px solid #bae6fd', alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: '#0369a1', fontWeight: 600, whiteSpace: 'nowrap' }}>🌿 {activePushBranch}</span>
+          <select className="form-input" style={{ width: 160 }} value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
+            {COPY_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+          </select>
+          <input className="form-input" style={{ flex: 1 }} placeholder="진행 상황 메모 입력..."
+            value={form.note} onChange={e => setForm({...form, note: e.target.value})} autoFocus />
+          <button className="btn-ghost" onClick={() => fileRef.current?.click()} style={{ fontSize: 12, background: '#fff' }}>
+            {form.file ? `📎 ${form.file.name}` : '📎 파일'}
+          </button>
+          <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFile} />
+          <button className="btn-primary" onClick={() => submit(true, activePushBranch)}>Push</button>
+          <button className="btn-ghost" onClick={() => { setActivePushBranch(null); setForm({ branchName: '', status: '', note: '', file: null }) }} style={{ whiteSpace: 'nowrap' }}>닫기</button>
+        </div>
+      )}
+
+      {/* 분기 카드 가로 그리드 */}
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.max(Object.keys(groupedBranches).length, 1)}, minmax(210px, 1fr))`, gap: 10, overflowX: 'auto' }}>
+        {Object.entries(groupedBranches).map(([bName, history]) => {
+          const latestRecord = history[0]
+          const latestSt = getStatusStyle(latestRecord?.status)
+          const isActive = activePushBranch === bName
+          return (
+            <div key={bName} style={{
+              background: '#fff', borderRadius: 8,
+              border: isActive ? '2px solid #4f46e5' : '1px solid #e2e8f0',
+              boxShadow: isActive ? '0 0 0 3px #e0e7ff' : '0 1px 2px rgba(0,0,0,0.04)',
+              display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0
+            }}>
+              {/* 분기 헤더 */}
+              <div style={{ padding: '9px 12px', borderBottom: '1px solid #f1f5f9', background: isActive ? '#eef2ff' : '#fafafa', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+                  <span style={{ fontSize: 13 }}>🌿</span>
+                  <strong style={{ fontSize: 12, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={bName}>{bName}</strong>
+                </div>
+                <button
+                  className="btn-sm"
+                  style={{ flexShrink: 0, fontSize: 10, padding: '2px 7px', background: isActive ? '#6366f1' : '#4f46e5', color: '#fff', border: 'none', borderRadius: 4 }}
+                  onClick={() => {
+                    setActivePushBranch(isActive ? null : bName)
+                    setForm({ branchName: '', status: '', note: '', file: null })
+                    setShowNewBranchForm(false)
+                  }}
+                >
+                  {isActive ? '✕' : '↑ Push'}
                 </button>
-                <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFile} />
-                <button className="btn-primary" onClick={() => submit(true, bName)}>Push</button>
               </div>
-            )}
 
-            {/* 타임라인 (이력) */}
-            <div style={{ position: 'relative', paddingLeft: 16, marginTop: 12 }}>
-              <div style={{ position: 'absolute', left: 4, top: 4, bottom: 0, width: 2, background: '#e2e8f0' }} />
-              
-              {history.map((record, idx) => {
-                const st = getStatusStyle(record.status)
-                const isLatest = idx === 0 // 배열이 최신순이므로 인덱스 0이 가장 최신 Commit
-                
-                return (
-                  <div key={record.id} style={{ position: 'relative', marginBottom: idx === history.length - 1 ? 0 : 20, opacity: isLatest ? 1 : 0.6 }}>
-                    {/* Commit Dot */}
-                    <div style={{ 
-                      position: 'absolute', left: -16, top: 4, width: 10, height: 10, 
-                      borderRadius: '50%', background: isLatest ? st.color : '#94a3b8', 
-                      border: '2px solid #fff', boxShadow: `0 0 0 1px ${isLatest ? st.color : '#cbd5e1'}`
-                    }} />
-                    
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                      <span style={{ 
-                        fontSize: 10, padding: '2px 6px', borderRadius: 12, 
-                        background: st.bg, color: st.color, border: `1px solid ${st.color}`, fontWeight: isLatest ? 700 : 400
-                      }}>
-                        {st.label}
-                      </span>
-                      <span style={{ fontSize: 11, color: '#64748b' }}>
-                        {formatDateTime(record.created_at)}
-                      </span>
-                      <span style={{ fontSize: 11, color: '#94a3b8', marginLeft: 'auto' }}>
-                        👤 {record.created_by}
-                      </span>
-                    </div>
-                    
-                    {/* 메모: 본인 ��한 수정 가능 */}
-                    {editingNoteId === record.id ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                        <input
-                          className="form-input"
-                          style={{ fontSize: 11, padding: '2px 6px', flex: 1 }}
-                          value={editingNoteText}
-                          onChange={e => setEditingNoteText(e.target.value)}
-                          onKeyDown={e => { if (e.key === 'Enter') handleNoteEditSave(record.id); if (e.key === 'Escape') handleNoteEditCancel() }}
-                          autoFocus
-                        />
-                        <button className="btn-sm" onClick={() => handleNoteEditSave(record.id)} style={{ padding: '2px 6px' }}>쭔장</button>
-                        <button className="btn-ghost" onClick={handleNoteEditCancel} style={{ padding: '2px 6px' }}>취소</button>
+              {/* 최신 상태 뱃지 */}
+              <div style={{ padding: '7px 12px', borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 10, background: latestSt.bg, color: latestSt.color, border: `1px solid ${latestSt.color}`, fontWeight: 700, whiteSpace: 'nowrap' }}>
+                  {latestSt.label}
+                </span>
+                <span style={{ fontSize: 10, color: '#94a3b8', marginLeft: 'auto', whiteSpace: 'nowrap' }}>{history.length}건</span>
+              </div>
+
+              {/* 최신 메모 (편집 가능) */}
+              {latestRecord?.note && (
+                <div style={{ padding: '6px 12px', borderBottom: '1px solid #f1f5f9' }}>
+                  {editingNoteId === latestRecord.id ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <input
+                        className="form-input"
+                        style={{ fontSize: 11, padding: '2px 6px' }}
+                        value={editingNoteText}
+                        onChange={e => setEditingNoteText(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleNoteEditSave(latestRecord.id); if (e.key === 'Escape') handleNoteEditCancel() }}
+                        autoFocus
+                      />
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <button className="btn-sm" onClick={() => handleNoteEditSave(latestRecord.id)} style={{ padding: '1px 6px', fontSize: 11 }}>저장</button>
+                        <button className="btn-ghost" onClick={handleNoteEditCancel} style={{ padding: '1px 6px', fontSize: 11 }}>취소</button>
                       </div>
-                    ) : (
-                      record.note && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                          <div style={{ fontSize: 12, color: '#334155', background: '#f8fafc', padding: '6px 10px', borderRadius: 6, display: 'inline-block' }}>
-                            {record.note}
-                          </div>
-                          {user && record.created_by && (record.created_by === user.name || record.created_by === user.email) && (
-                            <button
-                              onClick={() => handleNoteEditStart(record)}
-                              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, padding: 0 }}
-                              title="메모 수정"
-                            >
-                              ✏️
-                            </button>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
+                      <span style={{ fontSize: 11, color: '#475569', lineHeight: 1.4, flex: 1 }}>{latestRecord.note}</span>
+                      {user && latestRecord.created_by && (latestRecord.created_by === user.name || latestRecord.created_by === user.email) && (
+                        <button onClick={() => handleNoteEditStart(latestRecord)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, padding: 0, flexShrink: 0 }} title="메모 수정">✏️</button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 타임라인 이력 (스크롤) */}
+              <div style={{ flex: 1, overflowY: 'auto', maxHeight: 240, position: 'relative', paddingLeft: 20, paddingRight: 12, paddingTop: 8, paddingBottom: 8 }}>
+                <div style={{ position: 'absolute', left: 12, top: 0, bottom: 0, width: 2, background: '#e2e8f0' }} />
+                {history.map((record, idx) => {
+                  const st = getStatusStyle(record.status)
+                  const isLatest = idx === 0
+                  return (
+                    <div key={record.id} style={{ position: 'relative', marginBottom: idx === history.length - 1 ? 4 : 12, opacity: isLatest ? 1 : 0.55 }}>
+                      <div style={{ position: 'absolute', left: -12, top: 3, width: 8, height: 8, borderRadius: '50%', background: isLatest ? st.color : '#94a3b8', border: '2px solid #fff', boxShadow: `0 0 0 1px ${isLatest ? st.color : '#cbd5e1'}` }} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginBottom: 1 }}>
+                        <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 8, background: st.bg, color: st.color, border: `1px solid ${st.color}`, fontWeight: isLatest ? 700 : 400, whiteSpace: 'nowrap' }}>{st.label}</span>
+                        <span style={{ fontSize: 10, color: '#94a3b8', whiteSpace: 'nowrap' }}>{formatDateTime(record.created_at)}</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: '#94a3b8' }}>👤 {record.created_by}</div>
+                      {!isLatest && record.note && (
+                        <div style={{ marginTop: 2 }}>
+                          {editingNoteId === record.id ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                              <input className="form-input" style={{ fontSize: 10, padding: '1px 4px' }}
+                                value={editingNoteText} onChange={e => setEditingNoteText(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') handleNoteEditSave(record.id); if (e.key === 'Escape') handleNoteEditCancel() }}
+                                autoFocus />
+                              <div style={{ display: 'flex', gap: 3 }}>
+                                <button className="btn-sm" onClick={() => handleNoteEditSave(record.id)} style={{ fontSize: 10, padding: '1px 5px' }}>저장</button>
+                                <button className="btn-ghost" onClick={handleNoteEditCancel} style={{ fontSize: 10, padding: '1px 5px' }}>취소</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                              <span style={{ fontSize: 10, color: '#64748b' }}>{record.note}</span>
+                              {user && record.created_by && (record.created_by === user.name || record.created_by === user.email) && (
+                                <button onClick={() => handleNoteEditStart(record)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: 0 }} title="메모 수정">✏️</button>
+                              )}
+                            </div>
                           )}
                         </div>
-                      )
-                    )}
-                    
-                    {record.file_name && (
-                      <div style={{ marginTop: 6 }}>
-                        <button onClick={() => downloadFile(record.file_name, record.data_url)} 
-                          style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 4, color: '#3b82f6', fontSize: 11, cursor: 'pointer', padding: '4px 8px' }}>
-                          📎 {record.file_name} 다운로드
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
+                      )}
+                      {record.file_name && (
+                        <div style={{ marginTop: 3 }}>
+                          <button onClick={() => downloadFile(record.file_name, record.data_url)}
+                            style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 3, color: '#3b82f6', fontSize: 10, cursor: 'pointer', padding: '2px 6px' }}>
+                            📎 {record.file_name}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
             </div>
-
-          </div>
-        ))}
+          )
+        })}
 
         {branches.length === 0 && (
-          <div style={{ textAlign: 'center', padding: '32px 0', color: '#94a3b8', fontSize: 13 }}>
+          <div style={{ textAlign: 'center', padding: '32px 0', color: '#94a3b8', fontSize: 13, gridColumn: '1/-1' }}>
             진행 중인 작업 분기가 없습니다.<br/>새 분기를 파서 병렬 작업을 관리해보세요.
           </div>
         )}
