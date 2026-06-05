@@ -83,6 +83,12 @@ export const api = window.electronAPI || {
   updateBranchNote:    (id, body) => call('PUT', `/api/tracker/branches/${id}/note`, body),
   closeBranch:         (body)     => call('PUT', '/api/tracker/branches/close', body),
 
+  // ── 서비스 운영 현황 ──────────────────────────────────────────
+  getServices:          ()              => call('GET',  '/api/services'),
+  updateService:        (code, body)    => call('PUT',  `/api/services/${code}`, body),
+  getServiceHistory:    (code)          => call('GET',  `/api/services/${code}/history`),
+  getServiceAllHistory: ()              => call('GET',  '/api/services/history/all'),
+
   // ── Merge 프로젝트 ──────────────────────────────────────────
   mergeListProjects:   ()         => call('GET',    '/api/merge/projects'),
   mergeCreateProject:  (body)     => call('POST',   '/api/merge/projects', body),

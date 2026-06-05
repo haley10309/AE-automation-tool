@@ -4,7 +4,7 @@ import { useAuth } from '../auth.jsx'
 import SiteDropdown from '../components/SiteDropdown.jsx'
 import { ALL_SITES, SITE_MAP, REGIONS, REGION_COLORS as RC, REGION_BG as RB } from '../constants.js'
 import { parseCol, detectBadges, exportToCSV } from '../utils.js'
-import {SERVICE_KEYS,SERVICE_DATA,  detectServiceIssues} from '../components/ServiceCheck.jsx'
+import {SERVICE_KEYS, SERVICE_DATA, setServiceData, detectServiceIssues} from '../components/ServiceCheck.jsx'
 
 // ── CSV 내보내기 헬퍼 ─────────────────────────────────────────
 function doExportCSV(sites, rowCount, cells) {
@@ -1113,7 +1113,6 @@ function ProductPanel({ onClose, onProductsChanged }) {
       name: formData.name.trim(),
       aliases: formData.aliases.split('\n').map(s => s.trim()).filter(Boolean),
       excluded_countries: formData.excluded_countries,
-      changedBy: user?.name || user?.email || null,
     }
     const res = editingId === 'new' ? await api.createProduct(payload) : await api.updateProduct(editingId, payload)
     setSaving(false)
@@ -1251,6 +1250,139 @@ function ProductPanel({ onClose, onProductsChanged }) {
   )
 }
 // ════════════════════════════════════════════════════════════════
+// ── 전체 서비스 변경 이력 드로어 ─────────────────────────────────
+const SVC_COLOR = {
+  samsungHealth: '#10b981',
+  appsServices:  '#3b82f6',
+  carePlus:      '#8b5cf6',
+  tradeIn:       '#f59e0b',
+}
+const SVC_LABEL = {
+  samsungHealth: 'Samsung Health',
+  appsServices:  'Apps & Services',
+  carePlus:      'Samsung Care+',
+  tradeIn:       'Samsung Trade-in',
+}
+const FIELD_LABEL = { operated: '운영 여부', text: '표시 텍스트', url: 'URL' }
+
+function ServiceAllHistoryDrawer({ onClose }) {
+  const [history, setHistory] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [svcFilter, setSvcFilter] = useState('ALL')   // 서비스 필터
+  const [search, setSearch]       = useState('')       // 국가 코드/이름 검색
+
+  useEffect(() => {
+    api.getServiceAllHistory().then(res => {
+      if (res.ok) setHistory(res.data)
+      setLoading(false)
+    })
+  }, [])
+
+  const fmt = iso => {
+    if (!iso) return ''
+    const d = new Date(iso)
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
+  }
+
+  const filtered = history.filter(h => {
+    if (svcFilter !== 'ALL' && h.service_key !== svcFilter) return false
+    if (search) {
+      const q = search.toLowerCase()
+      const site = ALL_SITES.find(s => s.code === h.site_code)
+      if (!h.site_code.toLowerCase().includes(q) && !site?.name.toLowerCase().includes(q)) return false
+    }
+    return true
+  })
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1100, display: 'flex', justifyContent: 'flex-end' }}
+      onClick={onClose}>
+      <div style={{ width: 540, maxWidth: '95vw', background: '#fff', height: '100%', display: 'flex', flexDirection: 'column', boxShadow: '-4px 0 24px rgba(0,0,0,0.13)' }}
+        onClick={e => e.stopPropagation()}>
+
+        {/* 헤더 */}
+        <div style={{ padding: '20px 24px 14px', borderBottom: '1px solid #e5e7eb', background: '#f8fafc', flexShrink: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#1e293b' }}>📋 전체 변경 이력</div>
+              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3 }}>모든 국가의 서비스 운영 수정 내역</div>
+            </div>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: '#9ca3af' }}>✕</button>
+          </div>
+          {/* 필터 */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            {['ALL', ...SERVICE_KEYS.map(s => s.key)].map(k => (
+              <button key={k} onClick={() => setSvcFilter(k)}
+                style={{
+                  fontSize: 11, padding: '3px 10px', borderRadius: 20, border: 'none', cursor: 'pointer',
+                  background: svcFilter === k ? (SVC_COLOR[k] || '#334155') : '#f1f5f9',
+                  color: svcFilter === k ? '#fff' : '#475569',
+                  fontWeight: svcFilter === k ? 600 : 400,
+                }}>
+                {k === 'ALL' ? '전체' : SVC_LABEL[k]}
+              </button>
+            ))}
+            <input className="form-input" placeholder="국가 검색" value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{ fontSize: 11, padding: '3px 8px', width: 110, marginLeft: 4 }} />
+          </div>
+        </div>
+
+        {/* 본문 */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 20px' }}>
+          {loading ? (
+            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>불러오는 중...</div>
+          ) : filtered.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af', fontSize: 13 }}>변경 이력이 없습니다.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {filtered.map(h => {
+                const site = ALL_SITES.find(s => s.code === h.site_code)
+                return (
+                  <div key={h.id} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: '10px 14px' }}>
+                    {/* 메타 행 */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 7 }}>
+                      {/* 국가 */}
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 600, color: '#1e293b' }}>
+                        {site?.flag} {h.site_code}
+                        {site && <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 400 }}>({site.name})</span>}
+                      </span>
+                      {/* 서비스 */}
+                      <span style={{ fontSize: 11, background: (SVC_COLOR[h.service_key] || '#94a3b8') + '22', color: SVC_COLOR[h.service_key] || '#64748b', border: `1px solid ${(SVC_COLOR[h.service_key] || '#94a3b8')}55`, borderRadius: 4, padding: '1px 7px', fontWeight: 600 }}>
+                        {SVC_LABEL[h.service_key] || h.service_key}
+                      </span>
+                      {/* 필드 */}
+                      <span style={{ fontSize: 11, background: '#f1f5f9', color: '#475569', borderRadius: 4, padding: '1px 6px' }}>
+                        {FIELD_LABEL[h.field] || h.field}
+                      </span>
+                      {/* 수정자 + 시각 */}
+                      <span style={{ fontSize: 11, color: '#64748b', marginLeft: 2 }}>👤 {h.changed_by || '알 수 없음'}</span>
+                      <span style={{ fontSize: 11, color: '#94a3b8', marginLeft: 'auto', whiteSpace: 'nowrap' }}>{fmt(h.changed_at)}</span>
+                    </div>
+                    {/* diff */}
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 12, background: '#fee2e2', color: '#b91c1c', borderRadius: 4, padding: '2px 8px', textDecoration: 'line-through', wordBreak: 'break-all' }}>{h.as_was ?? '(없음)'}</span>
+                      <span style={{ color: '#94a3b8', flexShrink: 0 }}>→</span>
+                      <span style={{ fontSize: 12, background: '#dcfce7', color: '#166534', borderRadius: 4, padding: '2px 8px', wordBreak: 'break-all' }}>{h.to_be ?? '(없음)'}</span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* 푸터 */}
+        {!loading && (
+          <div style={{ padding: '10px 20px', borderTop: '1px solid #e5e7eb', fontSize: 11, color: '#9ca3af', flexShrink: 0 }}>
+            총 {filtered.length}건 표시 중 (전체 {history.length}건)
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── ServicePanel (서비스 운영 현황 패널) ─────────────────────
 // ════════════════════════════════════════════════════════════════
 //
@@ -1260,96 +1392,230 @@ function ProductPanel({ onClose, onProductsChanged }) {
 // SERVICE_DATA를 읽기 전용 테이블로 표시.
 // ════════════════════════════════════════════════════════════════
  
-function ServicePanel({ onClose }) {
+// ── 서비스 셀 인라인 편집 컴포넌트 ──────────────────────────
+function ServiceCellEditor({ siteCode, serviceKey, entry, onSaved }) {
+  const { user } = useAuth()
+  const [editing, setEditing] = useState(false)
+  // form: { operated, text, url }
+  const [form, setForm] = useState({
+    operated: !!entry,
+    text: entry?.text || '',
+    url:  entry?.url  || '',
+  })
+  const [saving, setSaving] = useState(false)
+  const [err, setErr]       = useState('')
+
+  // entry가 바뀌면 form 초기화 (저장 후 리프레시 시)
+  useEffect(() => {
+    if (!editing) {
+      setForm({ operated: !!entry, text: entry?.text || '', url: entry?.url || '' })
+    }
+  }, [entry, editing])
+
+  const handleOpen = () => {
+    setForm({ operated: !!entry, text: entry?.text || '', url: entry?.url || '' })
+    setErr('')
+    setEditing(true)
+  }
+
+  const handleSave = async () => {
+    if (form.operated && !form.text.trim()) { setErr('텍스트를 입력해주세요.'); return }
+    if (form.operated && !form.url.trim())  { setErr('URL을 입력해주세요.'); return }
+    setSaving(true); setErr('')
+
+    // 현재 국가 전체 데이터 읽어서 해당 서비스키만 교체
+    const current = SERVICE_DATA[siteCode] || {}
+    const payload = {
+      samsungHealth: current.samsungHealth || null,
+      appsServices:  current.appsServices  || null,
+      carePlus:      current.carePlus      || null,
+      tradeIn:       current.tradeIn       || null,
+      changedBy: user?.name || user?.email || null,
+    }
+    payload[serviceKey] = form.operated
+      ? { text: form.text.trim(), url: form.url.trim() }
+      : null
+
+    const res = await api.updateService(siteCode, payload)
+    setSaving(false)
+    if (res.ok) {
+      setEditing(false)
+      onSaved()
+    } else {
+      setErr(res.message || '저장 실패')
+    }
+  }
+
+  const SVC_COLOR_MAP = {
+    samsungHealth: '#10b981', appsServices: '#3b82f6',
+    carePlus: '#8b5cf6', tradeIn: '#f59e0b',
+  }
+  const accentColor = SVC_COLOR_MAP[serviceKey] || '#64748b'
+
+  if (editing) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}
+        onClick={e => e.stopPropagation()}>
+        {/* 운영 여부 토글 */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', userSelect: 'none' }}>
+          <input type="checkbox" checked={form.operated}
+            onChange={e => setForm(f => ({ ...f, operated: e.target.checked, text: e.target.checked ? f.text : '', url: e.target.checked ? f.url : '' }))} />
+          <span style={{ fontSize: 11, fontWeight: 600, color: form.operated ? accentColor : '#9ca3af' }}>
+            {form.operated ? '운영' : '미운영'}
+          </span>
+        </label>
+        {form.operated && (
+          <>
+            <input
+              className="form-input"
+              placeholder="표시 텍스트"
+              value={form.text}
+              onChange={e => setForm(f => ({ ...f, text: e.target.value }))}
+              style={{ fontSize: 11, padding: '3px 6px' }}
+              autoFocus
+            />
+            <input
+              className="form-input"
+              placeholder="/경로/url/"
+              value={form.url}
+              onChange={e => setForm(f => ({ ...f, url: e.target.value }))}
+              style={{ fontSize: 11, padding: '3px 6px', fontFamily: 'monospace' }}
+            />
+          </>
+        )}
+        {err && <div style={{ fontSize: 10, color: '#ef4444' }}>{err}</div>}
+        <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            style={{ flex: 1, fontSize: 11, padding: '3px 0', borderRadius: 4, border: 'none',
+              background: accentColor, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
+            {saving ? '저장 중' : '저장'}
+          </button>
+          <button
+            onClick={() => setEditing(false)}
+            style={{ flex: 1, fontSize: 11, padding: '3px 0', borderRadius: 4,
+              border: '1px solid #d1d5db', background: '#fff', color: '#374151', cursor: 'pointer' }}>
+            취소
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // 읽기 모드 — 수정 버튼 클릭 시 편집
+  return (
+    <div style={{ borderRadius: 5, padding: '3px 5px' }}>
+      {entry ? (
+        <>
+          <div style={{ fontWeight: 500, lineHeight: 1.3, marginBottom: 2 }}>{entry.text}</div>
+          <div style={{ color: '#6b7280', fontSize: 10, wordBreak: 'break-all', fontFamily: 'monospace',
+            background: 'var(--bg-hover, #f3f4f6)', padding: '1px 4px', borderRadius: 3, display: 'inline-block' }}>
+            {entry.url}
+          </div>
+        </>
+      ) : (
+        <div style={{ color: '#d1d5db', fontSize: 11 }}>
+          <span style={{ fontSize: 13 }}>✗</span> 미운영
+        </div>
+      )}
+      <button
+        onClick={handleOpen}
+        style={{ marginTop: 4, display: 'block', fontSize: 10, padding: '2px 8px', borderRadius: 4,
+          border: '1px solid #d1d5db', background: '#f8fafc', color: '#64748b', cursor: 'pointer' }}>
+        ✏ 수정
+      </button>
+    </div>
+  )
+}
+
+function ServicePanel({ onClose, onShowHistory }) {
+  const { user } = useAuth()
   const [regionFilter, setRegionFilter] = useState('ALL')
   const [search, setSearch]             = useState('')
-  const [highlight, setHighlight]       = useState('ALL') // 'ALL'|'carePlus'|'tradeIn'|'limited'
- 
+  // 로컬 서비스 데이터 (저장 후 즉시 반영용)
+  const [localData, setLocalData]       = useState(() => ({ ...SERVICE_DATA }))
+  const [savedMsg, setSavedMsg]         = useState('')
+
+  // 저장 후 호출: 서버에서 최신 데이터 재로드 → setServiceData + localData 갱신
+  const reload = useCallback(async () => {
+    const res = await api.getServices()
+    if (res.ok) {
+      setServiceData(res.data)
+      setLocalData({ ...res.data })
+      setSavedMsg('✅ 저장됨')
+      setTimeout(() => setSavedMsg(''), 1800)
+    }
+  }, [])
+
   const filteredSites = ALL_SITES.filter(s => {
     if (regionFilter !== 'ALL' && s.region !== regionFilter) return false
     if (search) {
       const q = search.toLowerCase()
       if (!s.code.toLowerCase().includes(q) && !s.name.toLowerCase().includes(q)) return false
     }
-    const d = SERVICE_DATA[s.code]
-    if (!d) return false
-    if (highlight === 'carePlus'  && d.carePlus)  return false   // Care+ 미운영만
-    if (highlight === 'noCarePlus' && d.carePlus) return false
-    if (highlight === 'tradeIn'   && d.tradeIn)   return false
-    if (highlight === 'noTradeIn' && d.tradeIn)   return false
-    return true
+    return !!localData[s.code]
   })
- 
-  // 미운영 카운트
-  const stats = SERVICE_KEYS.reduce((acc, { key, label }) => {
-    acc[key] = Object.values(SERVICE_DATA).filter(d => !d[key]).length
+
+  const stats = SERVICE_KEYS.reduce((acc, { key }) => {
+    acc[key] = Object.values(localData).filter(d => !d[key]).length
     return acc
   }, {})
- 
+
   return (
     <div className="product-panel-overlay" onClick={onClose}>
-      <div
-        className="product-panel"
-        style={{ maxWidth: 960, width: '92vw' }}
-        onClick={e => e.stopPropagation()}
-      >
+      <div className="product-panel" style={{ maxWidth: 980, width: '94vw' }}
+        onClick={e => e.stopPropagation()}>
+
         {/* ── 헤더 ── */}
         <div className="pp-header">
           <div className="pp-title-row">
             <span className="pp-title">🛎 서비스 운영 현황</span>
-            <button className="pp-close-btn" onClick={onClose}>✕</button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {savedMsg && <span style={{ fontSize: 12, color: '#10b981', fontWeight: 600 }}>{savedMsg}</span>}
+              <button onClick={onShowHistory}
+                style={{ fontSize: 12, padding: '4px 12px', borderRadius: 6, border: '1px solid #6366f1',
+                  background: '#eef2ff', color: '#4f46e5', cursor: 'pointer', fontWeight: 600 }}>
+                📋 전체 변경 이력
+              </button>
+              <button className="pp-close-btn" onClick={onClose}>✕</button>
+            </div>
           </div>
           <div className="pp-subtitle" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
             {SERVICE_KEYS.map(({ key, label }) => (
               <span key={key} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
-                <span style={{
-                  display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-                  background: key === 'samsungHealth' ? '#10b981'
-                    : key === 'appsServices' ? '#3b82f6'
-                    : key === 'carePlus'     ? '#8b5cf6'
-                    : '#f59e0b',
-                }} />
+                <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                  background: SVC_COLOR[key] }} />
                 {label}
                 <span style={{ color: '#ef4444', fontWeight: 600 }}>({stats[key]}개국 미운영)</span>
               </span>
             ))}
           </div>
         </div>
- 
+
         <div className="pp-body">
           {/* ── 필터 행 ── */}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
-            {/* 지역 필터 */}
             <div className="pp-region-tabs" style={{ margin: 0 }}>
               {['ALL', ...REGIONS].map(r => (
-                <button
-                  key={r}
+                <button key={r}
                   className={`cc-region-btn ${regionFilter === r ? 'active' : ''}`}
                   style={regionFilter === r && r !== 'ALL' ? { background: RC[r], color: '#fff' } : {}}
-                  onClick={() => setRegionFilter(r)}
-                >{r}</button>
+                  onClick={() => setRegionFilter(r)}>{r}</button>
               ))}
             </div>
- 
-            {/* 검색 */}
-            <input
-              className="form-input"
-              placeholder="국가 검색 (코드/이름)"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              style={{ width: 160, fontSize: 12 }}
-            />
+            <input className="form-input" placeholder="국가 검색 (코드/이름)" value={search}
+              onChange={e => setSearch(e.target.value)} style={{ width: 160, fontSize: 12 }} />
+            <span style={{ fontSize: 11, color: '#94a3b8', marginLeft: 4 }}>셀을 클릭하면 수정할 수 있습니다.</span>
           </div>
- 
+
           {/* ── 서비스 테이블 ── */}
           <div className="cc-table-wrap" style={{ maxHeight: '62vh', overflowY: 'auto' }}>
             <table className="cc-table" style={{ fontSize: 12, tableLayout: 'fixed', width: '100%' }}>
               <colgroup>
                 <col style={{ width: 110 }} />
-                <col style={{ width: '22%' }} />
-                <col style={{ width: '25%' }} />
-                <col style={{ width: '22%' }} />
-                <col style={{ width: '25%' }} />
+                <col style={{ width: '22%' }} /><col style={{ width: '25%' }} />
+                <col style={{ width: '22%' }} /><col style={{ width: '25%' }} />
               </colgroup>
               <thead>
                 <tr>
@@ -1357,83 +1623,48 @@ function ServicePanel({ onClose }) {
                   {SERVICE_KEYS.map(({ key, label }) => (
                     <th key={key} className="cc-th" style={{
                       position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-card)',
-                      borderTop: `3px solid ${
-                        key === 'samsungHealth' ? '#10b981'
-                        : key === 'appsServices' ? '#3b82f6'
-                        : key === 'carePlus'     ? '#8b5cf6'
-                        : '#f59e0b'
-                      }`,
-                    }}>
-                      {label}
-                    </th>
+                      borderTop: `3px solid ${SVC_COLOR[key]}`,
+                    }}>{label}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {filteredSites.map(s => {
-                  const d = SERVICE_DATA[s.code]
+                  const d = localData[s.code]
                   if (!d) return null
                   return (
                     <tr key={s.code}>
-                      {/* 국가 셀 */}
                       <td className="cc-td" style={{ verticalAlign: 'middle' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                           <span className="cc-flag">{s.flag}</span>
-                          <span
-                            className="cc-card-code"
-                            style={{ background: RB[s.region], color: RC[s.region] }}
-                          >{s.code}</span>
+                          <span className="cc-card-code" style={{ background: RB[s.region], color: RC[s.region] }}>{s.code}</span>
                         </div>
                         <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>{s.name}</div>
                       </td>
- 
-                      {/* 서비스 4종 셀 */}
-                      {SERVICE_KEYS.map(({ key }) => {
-                        const entry = d[key]
-                        return (
-                          <td key={key} className="cc-td" style={{ verticalAlign: 'top', padding: '6px 8px' }}>
-                            {entry ? (
-                              <div>
-                                <div style={{ fontWeight: 500, marginBottom: 2, lineHeight: 1.3 }}>
-                                  {entry.text}
-                                </div>
-                                <div style={{
-                                  color: '#6b7280', fontSize: 10,
-                                  wordBreak: 'break-all', fontFamily: 'monospace',
-                                  background: 'var(--bg-hover, #f3f4f6)',
-                                  padding: '1px 4px', borderRadius: 3, display: 'inline-block',
-                                }}>
-                                  {entry.url}
-                                </div>
-                              </div>
-                            ) : (
-                              <span style={{
-                                color: '#d1d5db', fontSize: 11,
-                                display: 'flex', alignItems: 'center', gap: 3,
-                              }}>
-                                <span style={{ fontSize: 14 }}>✗</span> 미운영
-                              </span>
-                            )}
-                          </td>
-                        )
-                      })}
+                      {SERVICE_KEYS.map(({ key }) => (
+                        <td key={key} className="cc-td" style={{ verticalAlign: 'top', padding: '6px 8px' }}>
+                          <ServiceCellEditor
+                            siteCode={s.code}
+                            serviceKey={key}
+                            entry={d[key]}
+                            onSaved={reload}
+                          />
+                        </td>
+                      ))}
                     </tr>
                   )
                 })}
                 {filteredSites.length === 0 && (
                   <tr>
-                    <td colSpan={5} style={{ padding: 32, textAlign: 'center', color: '#9ca3af' }}>
-                      검색 결과 없음
-                    </td>
+                    <td colSpan={5} style={{ padding: 32, textAlign: 'center', color: '#9ca3af' }}>검색 결과 없음</td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
- 
-          {/* ── 범례 ── */}
+
           <div style={{ marginTop: 10, fontSize: 11, color: '#9ca3af' }}>
-            총 {filteredSites.length}개국 표시 중 · 텍스트와 URL은 카피 검수 시 자동 감지 기준으로 사용됩니다.
+            총 {filteredSites.length}개국 표시 중 · 셀 클릭 → 텍스트/URL 수정 또는 운영 여부 전환
           </div>
         </div>
       </div>
@@ -1499,7 +1730,8 @@ export default function CountryTab() {
   const [showProductPanel, setShowProductPanel] = useState(false)
   // ▼ 신규: 서비스 패널 상태
   const [showServicePanel, setShowServicePanel] = useState(false)
- 
+  const [showAllHistory, setShowAllHistory]     = useState(false)
+
   const loadProducts = useCallback(async () => {
     try {
       const res = await api.getProducts()
@@ -1507,8 +1739,15 @@ export default function CountryTab() {
       else setLoadErr(res.message)
     } catch { setLoadErr('서버를 먼저 실행해주세요 (npm start)') }
   }, [])
- 
-  useEffect(() => { loadProducts() }, [loadProducts])
+
+  const loadServices = useCallback(async () => {
+    try {
+      const res = await api.getServices()
+      if (res.ok) setServiceData(res.data)
+    } catch {}
+  }, [])
+
+  useEffect(() => { loadProducts(); loadServices() }, [loadProducts, loadServices])
  
   return (
     <div className="country-check">
@@ -1554,9 +1793,12 @@ export default function CountryTab() {
         <ProductPanel onClose={() => setShowProductPanel(false)} onProductsChanged={loadProducts} />
       )}
  
-      {/* ▼ 신규: 서비스 패널 */}
       {showServicePanel && (
-        <ServicePanel onClose={() => setShowServicePanel(false)} />
+        <ServicePanel onClose={() => setShowServicePanel(false)} onShowHistory={() => setShowAllHistory(true)} />
+      )}
+
+      {showAllHistory && (
+        <ServiceAllHistoryDrawer onClose={() => setShowAllHistory(false)} />
       )}
     </div>
   )
