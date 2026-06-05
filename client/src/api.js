@@ -81,7 +81,8 @@ export const api = window.electronAPI || {
   // ── [신규] 작업 분기(Branch) 관리 ──
   createTrackerBranch: (body) => call('POST', '/api/tracker/branches', body),
   updateBranchNote:    (id, body) => call('PUT', `/api/tracker/branches/${id}/note`, body),
-  closeBranch:         (body)     => call('PUT', '/api/tracker/branches/close', body),
+  closeBranch:         (body)     => call('PUT',    '/api/tracker/branches/close', body),
+  deleteBranch:        (body)     => call('DELETE', '/api/tracker/branches', body),
 
   // ── 서비스 운영 현황 ──────────────────────────────────────────
   getServices:          ()              => call('GET',  '/api/services'),

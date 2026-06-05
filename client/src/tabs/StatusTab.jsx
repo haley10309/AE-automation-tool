@@ -495,7 +495,7 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
 }
 // ── [신규] 분기 생성 및 Git Graph 컴포넌트 ─────────────────────
 // ── [업그레이드] 분기별 Git Graph 및 Push 기능 컴포넌트 ─────────────────────
-const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBranchNote, onCloseBranch }) => {
+const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBranchNote, onCloseBranch, onDeleteBranch }) => {
   const { user } = useAuth()
   const [showNewBranchForm, setShowNewBranchForm] = useState(false)
   const [activePushBranch, setActivePushBranch] = useState(null)
@@ -504,6 +504,7 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
   const [editingNoteText, setEditingNoteText] = useState('')
   const [collapsedClosed, setCollapsedClosed] = useState(true) // closed 분기 기본 접힘
   const [expandedClosed, setExpandedClosed] = useState({}) // 개별 closed 분기 히스토리 펼침
+  const [openMenu, setOpenMenu] = useState(null) // 점세개 메뉴 열린 분기명
   const fileRef = useRef(null)
 
   const handleNoteEditStart = (record) => {
@@ -675,6 +676,32 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
                   >
                     {isClosed ? '↺ 재개' : '✕ Close'}
                   </button>
+                  {/* 점세개 메뉴 */}
+                  <div style={{ position: 'relative' }}>
+                    <button
+                      onClick={() => setOpenMenu(openMenu === bName ? null : bName)}
+                      style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 4, cursor: 'pointer', fontSize: 13, padding: '1px 5px', color: '#64748b', lineHeight: 1 }}
+                      title="더보기"
+                    >⋯</button>
+                    {openMenu === bName && (
+                      <div style={{ position: 'absolute', right: 0, top: '110%', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 50, minWidth: 110, overflow: 'hidden' }}
+                        onMouseLeave={() => setOpenMenu(null)}
+                      >
+                        <button
+                          onClick={() => {
+                            setOpenMenu(null)
+                            if (!window.confirm(`'${bName}' 분기를 삭제할까요?`)) return
+                            onDeleteBranch && onDeleteBranch(siteCode, bName)
+                          }}
+                          style={{ display: 'block', width: '100%', padding: '8px 12px', background: 'none', border: 'none', textAlign: 'left', fontSize: 12, color: '#ef4444', cursor: 'pointer' }}
+                          onMouseEnter={e => e.currentTarget.style.background = '#fef2f2'}
+                          onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                        >
+                          🗑 분기 삭제
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -855,7 +882,7 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
 }
 
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, removeCountry, isRegular }) => {
+const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular }) => {
   const [isExpanded, setIsExpanded] = useState(false)
   const branches = entry?.branches || []
 
@@ -906,7 +933,7 @@ const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, han
       {isExpanded && (
         <tr>
           <td colSpan="5" style={{ padding: 0 }}>
-            <BranchTimeline branches={branches} branchStatuses={entry?.branchStatuses || []} onCreateBranch={(data) => handleBranchCreate(site.code, data)} onUpdateBranchNote={(id, note) => handleBranchNoteUpdate(site.code, id, note)} onCloseBranch={(siteCode, bName, isClosed) => handleBranchClose(siteCode, bName, isClosed)} />
+            <BranchTimeline branches={branches} branchStatuses={entry?.branchStatuses || []} onCreateBranch={(data) => handleBranchCreate(site.code, data)} onUpdateBranchNote={(id, note) => handleBranchNoteUpdate(site.code, id, note)} onCloseBranch={(siteCode, bName, isClosed) => handleBranchClose(siteCode, bName, isClosed)} onDeleteBranch={(siteCode, bName) => handleBranchDelete(siteCode, bName)} />
           </td>
         </tr>
       )}
@@ -1120,6 +1147,23 @@ function PageDetail({ page, onBack, onUpdate }) {
     } catch (e) { console.warn('분기 close 실패', e) }
   }, [page, user, onUpdate])
 
+  const handleBranchDelete = useCallback(async (siteCode, branchName) => {
+    try {
+      const res = await api.deleteBranch({ pageId: page.id, siteCode, branchName })
+      if (res.ok) {
+        const updatedCountries = page.countries.map(c => {
+          if (c.code !== siteCode) return c
+          return {
+            ...c,
+            branches: (c.branches || []).filter(b => b.branch_name !== branchName),
+            branchStatuses: (c.branchStatuses || []).filter(s => s.branch_name !== branchName),
+          }
+        })
+        onUpdate({ ...page, countries: updatedCountries }, true)
+      } else { alert(res.message || '분기 삭제에 실패했습니다.') }
+    } catch (e) { console.warn('분기 삭제 실패', e) }
+  }, [page, onUpdate])
+
   const handleFileUpload = useCallback(async (siteCode, fileInfo) => {
     // DB에 파일 저장 후 insertId를 받아 fileHistory에 기록
     let dbId = null
@@ -1330,6 +1374,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 handleBranchCreate={handleBranchCreate} /* 👈 이 줄이 반드시 있어야 합니다 */
                 handleBranchNoteUpdate={handleBranchNoteUpdate}
                 handleBranchClose={handleBranchClose}
+                handleBranchDelete={handleBranchDelete}
                 removeCountry={removeCountry}
                 isRegular={user?.position === 'regular'}
               />
@@ -1765,7 +1810,7 @@ export default function StatusTab() {
   const deletePage = useCallback(async (page, e) => {
     e.stopPropagation()
     if (user?.position !== 'regular') { alert('정규직만 페이지를 삭제할 수 있습니다.'); return }
-    if (!window.confirm(`"${page.name}" 페이지를 삭제하시겠습니까?\n페이지 내 모든 상태·파일 데이터가 영구 삭제됩니다.`)) return
+    if (!window.confirm(`"${page.name}" 페이지를 삭제하시겠습니까?\n페이지 내 모든 상태·파일 데이터가  삭제됩니다.`)) return
     try {
       const res = await api.deleteTrackerPage(page.id)
       if (!res?.ok) {
