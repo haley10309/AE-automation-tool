@@ -1212,6 +1212,24 @@ statusRouter.put('/tracker/branches/close', authMiddleware, async (req, res) => 
   } catch (e) { res.json({ ok: false, message: e.message }); }
 });
 
+// 분기 soft delete (branch_name 단위로 해당 분기의 모든 레코드 삭제)
+statusRouter.delete('/tracker/branches', authMiddleware, async (req, res) => {
+  const { pageId, siteCode, branchName } = req.body;
+  if (!pageId || !siteCode || !branchName) return res.json({ ok: false, message: '필수 파라미터 누락' });
+  try {
+    await pool.execute(
+      `UPDATE tracker_branches SET deleted = 1 WHERE page_id = ? AND site_code = ? AND branch_name = ?`,
+      [pageId, siteCode, branchName]
+    );
+    // tracker_branch_status에서도 해당 분기 상태 제거
+    await pool.execute(
+      `DELETE FROM tracker_branch_status WHERE page_id = ? AND site_code = ? AND branch_name = ?`,
+      [pageId, siteCode, branchName]
+    );
+    res.json({ ok: true });
+  } catch (e) { res.json({ ok: false, message: e.message }); }
+});
+
 statusRouter.put('/tracker/branches/:id/note', authMiddleware, async (req, res) => {
   const { note } = req.body;
   try {
