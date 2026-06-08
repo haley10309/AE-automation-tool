@@ -1,5 +1,8 @@
-'use strict';
+// ── JWT 설정 ─────────────────────────────────────────────────
+const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_key_for_copy_diff';
+const JWT_EXPIRES = '24h';
 
+// ── 전역 설정 및 시드 데이터 ──────────────────────────────────────────
 const ALL_SITE_CODES = [
   'CA_FR','CA','MX','BR','LATIN','LATIN_EN','CO','AR','PY','UY','CL','PE',
   'SG','AU','NZ','ID','TH','VN','MY','PH','MM','JP',
@@ -19,17 +22,18 @@ const SEED_PRODUCTS = [
   { name:'Galaxy Z Flip7',   aliases:['Galaxy Z Flip7','Z Flip7','Flip7','Flip 7'],                excluded:['BD','PK'] },
   { name:'Galaxy Z Fold7',   aliases:['Galaxy Z Fold7','Z Fold7','Fold7','Fold 7'],                excluded:['BD','PK'] },
   { name:'Galaxy S25 FE',    aliases:['Galaxy S25 FE','S25 FE'],                                   excluded:['JP'] },
-  { name:'Buds4 Pro',        aliases:['Buds4 Pro','Buds 4 Pro','Galaxy Buds4 Pro'],                excluded:['BD','PK'] },
+  { name:'Buds4 Pro',        aliases:['Buds4 Pro','Buds 4 Pro','Galaxy Buds4 Pro'],               excluded:['BD','PK'] },
   { name:'Buds4',            aliases:['Buds4','Buds 4','Galaxy Buds4'],                            excluded:['BD','PK'] },
-  { name:'Buds3 FE',         aliases:['Buds3 FE','Buds 3 FE','Galaxy Buds3 FE'],                  excluded:['MM','BD','AFRICA_FR'] },
+  { name:'Buds3 FE',         aliases:['Buds3 FE','Buds 3 FE','Galaxy Buds3 FE'],                 excluded:['MM','BD','AFRICA_FR'] },
   { name:'Buds Core',        aliases:['Buds Core','Galaxy Buds Core'],
     excluded:['CA_FR','CA','SG','AU','NZ','JP','UK','IE','DE','AT','CH','CH_FR','FR','IT','GR','ES','PT','BE','BE_FR','NL','SE','DK','FI','NO','PL','RO','BG','HU','CZ','SK','EE','LV','LT','HR','RS','SI','AL','MK','BA','UA'] },
   { name:'Watch 8',          aliases:['Watch 8','Galaxy Watch 8'],                                 excluded:[] },
-  { name:'Watch 8 Classic',  aliases:['Watch 8 Classic','Galaxy Watch 8 Classic'],                 excluded:[] },
+  { name:'Watch 8 Classic',  aliases:['Watch 8 Classic','Galaxy Watch 8 Classic'],                excluded:[] },
   { name:'Watch Ultra (2025)', aliases:['Watch Ultra','Galaxy Watch Ultra','Watch Ultra 2025'],
     excluded:['AR','PY','MM','BD','PS','LEVANT','LEVANT_AR','PK','EG','N_AFRICA','IQ_AR','IQ_KU','LB'] },
 ];
 
+// ── 서비스 운영 시드 데이터 (최초 1회만 DB에 삽입) ──────────────────
 const SEED_SERVICE_DATA = {
   CA_FR:     { samsungHealth: { text: 'Samsung Health', url: '/ca_fr/apps/samsung-health/' }, appsServices: { text: 'Applications et services', url: '/ca_fr/apps/' }, carePlus: { text: 'Samsung Care+', url: '/ca_fr/offer/samsung-care-plus/' }, tradeIn: { text: 'Samsung Trade-in', url: '/ca_fr/trade-in/' } },
   CA:        { samsungHealth: { text: 'Samsung Health', url: '/ca/apps/samsung-health/' }, appsServices: { text: 'Apps & Services', url: '/ca/apps/' }, carePlus: { text: 'Samsung Care+', url: '/ca/offer/samsung-care-plus/' }, tradeIn: { text: 'Samsung Trade-in', url: '/ca/trade-in/' } },
@@ -111,4 +115,4 @@ const SEED_SERVICE_DATA = {
   UA:        { samsungHealth: { text: 'Samsung Health', url: '/ua/apps/samsung-health/' }, appsServices: { text: 'Застосунки та служби', url: '/ua/apps/' }, carePlus: null, tradeIn: { text: 'Samsung Trade-in', url: '/ua/trade-in/' } },
 };
 
-module.exports = { ALL_SITE_CODES, SEED_PRODUCTS, SEED_SERVICE_DATA };
+module.exports = { JWT_SECRET, JWT_EXPIRES, ALL_SITE_CODES, SEED_PRODUCTS, SEED_SERVICE_DATA };

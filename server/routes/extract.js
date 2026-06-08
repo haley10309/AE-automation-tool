@@ -1,14 +1,13 @@
-'use strict';
 const express = require('express');
-const { getPool, checkDbConnection, authMiddleware } = require('../db');
+const { getPool } = require('../db');
+const { checkDbConnection, authMiddleware } = require('../middleware');
 
-const extractRouter = express.Router();
-// pool은 요청 시점에 getPool()로 가져옴
-const pool = { execute: (...a) => getPool().execute(...a), query: (...a) => getPool().query(...a), getConnection: () => getPool().getConnection() };
-extractRouter.use(checkDbConnection);
 
-extractRouter.post('/save', async (req, res) => {
-  const conn = await pool.getConnection();
+const router = express.Router();
+router.use(checkDbConnection);
+
+router.post('/save', async (req, res) => {
+  const conn = await getPool().getConnection();
   try {
     await conn.beginTransaction();
     const { meta, allRows } = req.body;
@@ -29,9 +28,9 @@ extractRouter.post('/save', async (req, res) => {
   } finally { conn.release(); }
 });
 
-extractRouter.get('/requests', async (req, res) => {
+router.get('/requests', async (req, res) => {
   try {
-    const [rows] = await pool.execute(`
+    const [rows] = await getPool().execute(`
       SELECT r.id, r.product_name, r.requester, r.request_date, r.note, r.created_at,
              COUNT(c.id) AS total_rows, SUM(c.status != '동일') AS diff_rows
       FROM copy_requests r LEFT JOIN copy_rows c ON c.request_id = r.id AND c.deleted = 0
@@ -41,25 +40,25 @@ extractRouter.get('/requests', async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-extractRouter.delete('/requests/:id', async (req, res) => {
+router.delete('/requests/:id', async (req, res) => {
   try {
-    await pool.execute(`UPDATE copy_requests SET deleted = 1 WHERE id = ?`, [req.params.id]);
+    await getPool().execute(`UPDATE copy_requests SET deleted = 1 WHERE id = ?`, [req.params.id]);
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-extractRouter.get('/rows', async (req, res) => {
+router.get('/rows', async (req, res) => {
   try {
     const { requestId, diffOnly } = req.query;
     let sql = `SELECT * FROM copy_rows WHERE request_id = ? AND deleted = 0`;
     if (diffOnly === 'true') sql += ` AND status != '동일'`;
     sql += ` ORDER BY row_index`;
-    const [rows] = await pool.execute(sql, [requestId]);
+    const [rows] = await getPool().execute(sql, [requestId]);
     res.json({ ok: true, data: rows });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-extractRouter.put('/rows/:id', async (req, res) => {
+router.put('/rows/:id', async (req, res) => {
   try {
     const { as_was, to_be } = req.body;
     const a = (as_was || '').trim(), b = (to_be || '').trim();
@@ -69,16 +68,16 @@ extractRouter.put('/rows/:id', async (req, res) => {
       else if (a && !b) status = '삭제'; 
       else status = '변경'; 
     }
-    await pool.execute(`UPDATE copy_rows SET as_was=?, to_be=?, status=? WHERE id=?`, [as_was, to_be, status, req.params.id]);
+    await getPool().execute(`UPDATE copy_rows SET as_was=?, to_be=?, status=? WHERE id=?`, [as_was, to_be, status, req.params.id]);
     res.json({ ok: true, status });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-extractRouter.delete('/rows/:id', async (req, res) => {
+router.delete('/rows/:id', async (req, res) => {
   try {
-    await pool.execute(`UPDATE copy_rows SET deleted = 1 WHERE id = ?`, [req.params.id]);
+    await getPool().execute(`UPDATE copy_rows SET deleted = 1 WHERE id = ?`, [req.params.id]);
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-module.exports = extractRouter;
+module.exports = router;

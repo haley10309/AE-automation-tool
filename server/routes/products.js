@@ -1,13 +1,11 @@
-'use strict';
 const express = require('express');
-const { getPool, checkDbConnection, authMiddleware } = require('../db');
-const { ALL_SITE_CODES, SEED_PRODUCTS } = require('../seeds');
+const { getPool } = require('../db');
+const { checkDbConnection, authMiddleware } = require('../middleware');
+const { SEED_PRODUCTS, ALL_SITE_CODES } = require('../constants');
 
-const productRouter = express.Router();
-// pool은 요청 시점에 getPool()로 가져옴
-const pool = { execute: (...a) => getPool().execute(...a), query: (...a) => getPool().query(...a), getConnection: () => getPool().getConnection() };
+const router = express.Router();
 
-productRouter.get('/', async (req, res) => {
+router.get('/', async (req, res) => {
   if (!getPool()) {
     const data = SEED_PRODUCTS.map((p, i) => ({
       id: i + 1, name: p.name, aliases: p.aliases,
@@ -17,7 +15,7 @@ productRouter.get('/', async (req, res) => {
     return res.json({ ok: true, data });
   }
   try {
-    const [rows] = await pool.execute(`SELECT * FROM samsung_products WHERE deleted = 0 ORDER BY id`);
+    const [rows] = await getPool().execute(`SELECT * FROM samsung_products WHERE deleted = 0 ORDER BY id`);
     const data = rows.map(r => ({
       ...r,
       aliases: typeof r.aliases === 'string' ? JSON.parse(r.aliases) : r.aliases,
@@ -28,11 +26,11 @@ productRouter.get('/', async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-productRouter.post('/', checkDbConnection, async (req, res) => {
+router.post('/', checkDbConnection, async (req, res) => {
   try {
     const { name, aliases, excluded_countries } = req.body;
     if (!name?.trim()) return res.json({ ok: false, message: '제품명을 입력해주세요.' });
-    const [r] = await pool.execute(
+    const [r] = await getPool().execute(
       `INSERT INTO samsung_products (name, aliases, excluded_countries) VALUES (?,?,?)`,
       [name.trim(), JSON.stringify(aliases || []), JSON.stringify(excluded_countries || [])]
     );
@@ -40,18 +38,18 @@ productRouter.post('/', checkDbConnection, async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-productRouter.put('/:id', checkDbConnection, async (req, res) => {
+router.put('/:id', checkDbConnection, async (req, res) => {
   try {
     const { name, aliases, excluded_countries, changedBy } = req.body;
     const productId = req.params.id;
 
     // 수정 전 데이터 조회 (as-was)
-    const [[before]] = await pool.execute(`SELECT name, aliases, excluded_countries FROM samsung_products WHERE id = ?`, [productId]);
+    const [[before]] = await getPool().execute(`SELECT name, aliases, excluded_countries FROM samsung_products WHERE id = ?`, [productId]);
     const beforeExcluded = typeof before.excluded_countries === 'string' ? JSON.parse(before.excluded_countries) : before.excluded_countries;
     const beforeAliases  = typeof before.aliases === 'string' ? JSON.parse(before.aliases) : before.aliases;
 
     // 실제 수정
-    await pool.execute(
+    await getPool().execute(
       `UPDATE samsung_products SET name=?, aliases=?, excluded_countries=? WHERE id=?`,
       [name.trim(), JSON.stringify(aliases || []), JSON.stringify(excluded_countries || []), productId]
     );
@@ -76,7 +74,7 @@ productRouter.put('/:id', checkDbConnection, async (req, res) => {
     }
 
     if (historyRows.length > 0) {
-      await pool.query(
+      await getPool().query(
         `INSERT INTO product_launch_history (product_id, changed_by, changed_at, field, as_was, to_be) VALUES ?`,
         [historyRows]
       );
@@ -86,9 +84,9 @@ productRouter.put('/:id', checkDbConnection, async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-productRouter.get('/:id/history', checkDbConnection, async (req, res) => {
+router.get('/:id/history', checkDbConnection, async (req, res) => {
   try {
-    const [rows] = await pool.execute(
+    const [rows] = await getPool().execute(
       `SELECT id, field, as_was, to_be, changed_by, changed_at
        FROM product_launch_history
        WHERE product_id = ?
@@ -99,11 +97,11 @@ productRouter.get('/:id/history', checkDbConnection, async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-productRouter.delete('/:id', checkDbConnection, async (req, res) => {
+router.delete('/:id', checkDbConnection, async (req, res) => {
   try {
-    await pool.execute(`UPDATE samsung_products SET deleted = 1 WHERE id = ?`, [req.params.id]);
+    await getPool().execute(`UPDATE samsung_products SET deleted = 1 WHERE id = ?`, [req.params.id]);
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-module.exports = productRouter;
+module.exports = router;
