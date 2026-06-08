@@ -1113,6 +1113,8 @@ function ProductPanel({ onClose, onProductsChanged }) {
       name: formData.name.trim(),
       aliases: formData.aliases.split('\n').map(s => s.trim()).filter(Boolean),
       excluded_countries: formData.excluded_countries,
+      // ✅ 현재 로그인한 유저 정보를 payload에 추가합니다.
+      changedBy: user?.name || user?.email || null, 
     }
     const res = editingId === 'new' ? await api.createProduct(payload) : await api.updateProduct(editingId, payload)
     setSaving(false)
