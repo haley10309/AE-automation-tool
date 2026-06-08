@@ -1,16 +1,15 @@
-'use strict';
 const express = require('express');
-const { getPool, checkDbConnection, authMiddleware } = require('../db');
+const { getPool } = require('../db');
+const { checkDbConnection, authMiddleware } = require('../middleware');
+const { SEED_SERVICE_DATA, ALL_SITE_CODES } = require('../constants');
 
-const serviceRouter = express.Router();
-// pool은 요청 시점에 getPool()로 가져옴
-const pool = { execute: (...a) => getPool().execute(...a), query: (...a) => getPool().query(...a), getConnection: () => getPool().getConnection() };
-serviceRouter.use(checkDbConnection);
+const router = express.Router();
+router.use(checkDbConnection);
 
 // 전체 조회 — DB → { siteCode: { samsungHealth, appsServices, carePlus, tradeIn } } 형태로 반환
-serviceRouter.get('/', async (req, res) => {
+router.get('/', async (req, res) => {
   try {
-    const [rows] = await pool.execute(`SELECT * FROM service_status ORDER BY site_code`);
+    const [rows] = await getPool().execute(`SELECT * FROM service_status ORDER BY site_code`);
     const data = {};
     for (const r of rows) {
       data[r.site_code] = {
@@ -25,13 +24,13 @@ serviceRouter.get('/', async (req, res) => {
 });
 
 // 국가별 단건 수정 + 히스토리 기록
-serviceRouter.put('/:siteCode', async (req, res) => {
+router.put('/:siteCode', async (req, res) => {
   try {
     const { siteCode } = req.params;
     const { samsungHealth, appsServices, carePlus, tradeIn, changedBy } = req.body;
 
     // 수정 전 조회 (as-was)
-    const [[before]] = await pool.execute(`SELECT * FROM service_status WHERE site_code = ?`, [siteCode]);
+    const [[before]] = await getPool().execute(`SELECT * FROM service_status WHERE site_code = ?`, [siteCode]);
 
     const toVal = (obj) => obj ? { text: obj.text || null, url: obj.url || null } : { text: null, url: null };
     const after = {
@@ -42,7 +41,7 @@ serviceRouter.put('/:siteCode', async (req, res) => {
     };
 
     if (before) {
-      await pool.execute(
+      await getPool().execute(
         `UPDATE service_status SET
           samsung_health_text=?, samsung_health_url=?,
           apps_services_text=?,  apps_services_url=?,
@@ -84,14 +83,14 @@ serviceRouter.put('/:siteCode', async (req, res) => {
         }
       }
       if (histRows.length) {
-        await pool.query(
+        await getPool().query(
           `INSERT INTO service_history (site_code, changed_by, changed_at, service_key, field, as_was, to_be) VALUES ?`,
           [histRows]
         );
       }
     } else {
       // 시드에 없는 신규 사이트
-      await pool.execute(
+      await getPool().execute(
         `INSERT INTO service_status (site_code, samsung_health_text, samsung_health_url, apps_services_text, apps_services_url, care_plus_text, care_plus_url, trade_in_text, trade_in_url)
          VALUES (?,?,?,?,?,?,?,?,?)`,
         [siteCode,
@@ -107,9 +106,9 @@ serviceRouter.put('/:siteCode', async (req, res) => {
 });
 
 // 전체 국가 변경 이력 한번에 조회 (__all__ 경로)
-serviceRouter.get('/history/all', async (req, res) => {
+router.get('/history/all', async (req, res) => {
   try {
-    const [rows] = await pool.execute(
+    const [rows] = await getPool().execute(
       `SELECT id, site_code, service_key, field, as_was, to_be, changed_by, changed_at
        FROM service_history
        ORDER BY changed_at DESC
@@ -120,9 +119,9 @@ serviceRouter.get('/history/all', async (req, res) => {
 });
 
 // 국가별 히스토리 조회
-serviceRouter.get('/:siteCode/history', async (req, res) => {
+router.get('/:siteCode/history', async (req, res) => {
   try {
-    const [rows] = await pool.execute(
+    const [rows] = await getPool().execute(
       `SELECT id, service_key, field, as_was, to_be, changed_by, changed_at
        FROM service_history WHERE site_code = ? ORDER BY changed_at DESC`,
       [req.params.siteCode]
@@ -131,4 +130,4 @@ serviceRouter.get('/:siteCode/history', async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
-module.exports = serviceRouter;
+module.exports = router;

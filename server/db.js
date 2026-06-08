@@ -1,33 +1,49 @@
-'use strict';
+// ── DB 연결 풀 싱글톤 ─────────────────────────────────────────
 const mysql = require('mysql2/promise');
-const jwt   = require('jsonwebtoken');
-
-const JWT_SECRET  = process.env.JWT_SECRET || 'super_secret_key_for_copy_diff';
-const JWT_EXPIRES = '24h';
 
 let pool = null;
 
-// pool은 /api/connect 호출 시 또는 index.js 시작 시 setPool()로 주입됨
+/** 환경변수로 pool 초기화 (서버 시작 시 1회 호출) */
+function initPool(config = {}) {
+  pool = mysql.createPool({
+    host:             config.host     || process.env.DB_HOST     || 'localhost',
+    port:             config.port     || process.env.DB_PORT     || 3306,
+    user:             config.user     || process.env.DB_USER     || 'root',
+    password:         config.password || process.env.DB_PASSWORD || '',
+    database:         config.database || process.env.DB_NAME     || 'ae-auto-db',
+    waitForConnections: true,
+    connectionLimit:  10,
+    queueLimit:       0,
+    charset:          'utf8mb4',
+  });
+  return pool;
+}
 
-function getPool() { return pool; }
-function setPool(p) { pool = p; }
+/** 현재 pool 반환 (null 이면 미연결 상태) */
+function getPool() {
+  return pool;
+}
 
-const checkDbConnection = (req, res, next) => {
-  if (!pool) return res.json({ ok: false, message: 'DB 연결이 없습니다.' });
-  next();
-};
-
-const authMiddleware = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer '))
-    return res.status(401).json({ ok: false, message: '토큰이 제공되지 않았습니다.' });
-
-  try {
-    req.user = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
-    next();
-  } catch {
-    return res.status(401).json({ ok: false, message: '유효하지 않거나 만료된 토큰입니다.' });
+/** 새 config로 pool 교체 (DB 설정 탭에서 수동 연결 시) */
+async function reconnect(config) {
+  if (pool) {
+    try { await pool.end(); } catch (_) {}
   }
-};
+  pool = mysql.createPool({
+    host:     config.host,
+    port:     Number(config.port) || 3306,
+    user:     config.user,
+    password: config.password,
+    database: config.database,
+    waitForConnections: true,
+    connectionLimit:  10,
+    queueLimit:       0,
+    charset:          'utf8mb4',
+  });
+  // 연결 테스트
+  const conn = await pool.getConnection();
+  conn.release();
+  return pool;
+}
 
-module.exports = { getPool, setPool, checkDbConnection, authMiddleware, JWT_SECRET, JWT_EXPIRES };
+module.exports = { getPool, initPool, reconnect };

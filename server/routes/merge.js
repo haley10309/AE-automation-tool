@@ -1,15 +1,17 @@
-'use strict';
 const express = require('express');
-const { getPool, checkDbConnection, authMiddleware } = require('../db');
+const { getPool } = require('../db');
+const { checkDbConnection, authMiddleware } = require('../middleware');
 
-const mergeRouter = express.Router()
+const router = express.Router();
+router.use(authMiddleware);
 
-// pool은 요청 시점에 getPool()로 가져옴
-const pool = { execute: (...a) => getPool().execute(...a), query: (...a) => getPool().query(...a), getConnection: () => getPool().getConnection() };
-mergeRouter.use(checkDbConnection);
-mergeRouter.get('/projects', async (req, res) => {
+
+
+// ── 프로젝트 목록
+router.get('/projects', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
-    const [rows] = await pool.execute(
+    const [rows] = await getPool().execute(
       `SELECT p.id, p.title, p.en_lines, p.created_at, p.updated_at,
               COUNT(c.id) AS country_count
        FROM merge_projects p
@@ -28,14 +30,15 @@ mergeRouter.get('/projects', async (req, res) => {
 })
 
 // ── 프로젝트 상세 (en_lines + 국가 목록)
-mergeRouter.get('/projects/:id', async (req, res) => {
+router.get('/projects/:id', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
-    const [[project]] = await pool.execute(
+    const [[project]] = await getPool().execute(
       `SELECT id, title, en_lines, created_at, updated_at FROM merge_projects WHERE id = ?`,
       [req.params.id]
     )
     if (!project) return res.json({ ok: false, message: '프로젝트 없음' })
-    const [countries] = await pool.execute(
+    const [countries] = await getPool().execute(
       `SELECT id, label, raw_paste, mapped_json, created_at, updated_at FROM merge_countries WHERE project_id = ? AND deleted = 0 ORDER BY id ASC`,
       [req.params.id]
     )
@@ -44,11 +47,12 @@ mergeRouter.get('/projects/:id', async (req, res) => {
 })
 
 // ── 프로젝트 생성
-mergeRouter.post('/projects', async (req, res) => {
+router.post('/projects', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
     const { title, enLines } = req.body
     if (!title?.trim()) return res.json({ ok: false, message: '프로젝트 이름을 입력하세요.' })
-    const [result] = await pool.execute(
+    const [result] = await getPool().execute(
       `INSERT INTO merge_projects (title, en_lines) VALUES (?, ?)`,
       [title.trim(), enLines || '']
     )
@@ -57,10 +61,11 @@ mergeRouter.post('/projects', async (req, res) => {
 })
 
 // ── 프로젝트 수정 (제목 / en_lines 업데이트)
-mergeRouter.put('/projects/:id', async (req, res) => {
+router.put('/projects/:id', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
     const { title, enLines } = req.body
-    await pool.execute(
+    await getPool().execute(
       `UPDATE merge_projects SET title = COALESCE(?, title), en_lines = COALESCE(?, en_lines) WHERE id = ?`,
       [title ?? null, enLines ?? null, req.params.id]
     )
@@ -69,16 +74,18 @@ mergeRouter.put('/projects/:id', async (req, res) => {
 })
 
 // ── 프로젝트 삭제 (cascade → 국가도 삭제)
-mergeRouter.delete('/projects/:id', async (req, res) => {
+router.delete('/projects/:id', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
-    await pool.execute(`UPDATE merge_projects SET deleted = 1 WHERE id = ?`, [req.params.id])
+    await getPool().execute(`UPDATE merge_projects SET deleted = 1 WHERE id = ?`, [req.params.id])
     res.json({ ok: true })
   } catch (e) { res.json({ ok: false, message: e.message }) }
 })
 
 // ── 국가 upsert (label로 식별 — 있으면 UPDATE, 없으면 INSERT)
 // ── 국가 upsert (label로 식별 — 있으면 UPDATE, 없으면 INSERT)
-mergeRouter.post('/projects/:id/countries', authMiddleware, async (req, res) => {
+router.post('/projects/:id/countries', authMiddleware, async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
     const projectId = req.params.id
     const { countryId, label, rawPaste, mappedJson } = req.body
@@ -90,13 +97,13 @@ mergeRouter.post('/projects/:id/countries', authMiddleware, async (req, res) => 
 
     if (countryId) {
       // 1. 기존 국가 업데이트
-      await pool.execute(
+      await getPool().execute(
         `UPDATE merge_countries SET label = ?, raw_paste = ?, mapped_json = ? WHERE id = ? AND project_id = ?`,
         [label, rawPaste || '', mappedJson || null, countryId, projectId]
       )
     } else {
       // 2. 신규 국가 추가
-      const [result] = await pool.execute(
+      const [result] = await getPool().execute(
         `INSERT INTO merge_countries (project_id, label, raw_paste, mapped_json) VALUES (?, ?, ?, ?)`,
         [projectId, label, rawPaste || '', mappedJson || null]
       )
@@ -107,7 +114,7 @@ mergeRouter.post('/projects/:id/countries', authMiddleware, async (req, res) => 
     // 이전 mapped_json과 비교해서 변경된 행만 diff_json으로 저장
     let prevMapped = []
     try {
-      const [[prev]] = await pool.execute(
+      const [[prev]] = await getPool().execute(
         `SELECT mapped_json FROM merge_country_history
          WHERE country_id = ? AND project_id = ?
          ORDER BY saved_at DESC LIMIT 1`,
@@ -144,7 +151,7 @@ mergeRouter.post('/projects/:id/countries', authMiddleware, async (req, res) => 
 
     // 최초 저장이거나 변경이 있을 때만 히스토리 기록
     if (prevMapped.length === 0 || diffRows.length > 0) {
-      await pool.execute(
+      await getPool().execute(
         `INSERT INTO merge_country_history (project_id, country_id, label, raw_paste, mapped_json, diff_json, saved_by, saved_by_email)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [projectId, finalCountryId, label, rawPaste || '', mappedJson || null, JSON.stringify(diffRows), savedBy, savedByEmail]
@@ -161,9 +168,10 @@ mergeRouter.post('/projects/:id/countries', authMiddleware, async (req, res) => 
   }
 })
 // ── 국가 삭제
-mergeRouter.delete('/projects/:id/countries/:countryId', async (req, res) => {
+router.delete('/projects/:id/countries/:countryId', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
-    await pool.execute(
+    await getPool().execute(
       `UPDATE merge_countries SET deleted = 1 WHERE id = ? AND project_id = ?`,
       [req.params.countryId, req.params.id]
     )
@@ -171,11 +179,12 @@ mergeRouter.delete('/projects/:id/countries/:countryId', async (req, res) => {
   } catch (e) { res.json({ ok: false, message: e.message }) }
 })
 // ── [3] 히스토리 조회 엔드포인트 추가 ─────────────────────────
-// mergeRouter.delete(...) 바로 아래에 추가
+// router.delete(...) 바로 아래에 추가
  
-mergeRouter.get('/projects/:id/countries/:countryId/history', async (req, res) => {
+router.get('/projects/:id/countries/:countryId/history', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
-    const [rows] = await pool.execute(
+    const [rows] = await getPool().execute(
       `SELECT id, label, raw_paste, mapped_json, diff_json, saved_by, saved_by_email, saved_at
        FROM merge_country_history
        WHERE country_id = ? AND project_id = ?
@@ -186,4 +195,6 @@ mergeRouter.get('/projects/:id/countries/:countryId/history', async (req, res) =
   } catch (e) { res.json({ ok: false, message: e.message }) }
 })
 
-module.exports = mergeRouter;
+
+
+module.exports = router;
