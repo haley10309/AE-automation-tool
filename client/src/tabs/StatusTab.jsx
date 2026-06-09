@@ -941,6 +941,460 @@ const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, han
   )
 })
 
+// ── Billing 엑셀 추출 함수 ────────────────────────────────────
+function exportBillingXLSX(billings, pageName) {
+  const aoa = [['#', '프로젝트명', '대상 페이지', '사이트 코드 수', '페이지 수', 'Quantity', '비고', '작성자', '작성일']]
+  billings.forEach((b, i) => {
+    aoa.push([
+      i + 1,
+      b.project_name,
+      b.target_page,
+      b.site_count,
+      b.page_count,
+      b.quantity,
+      b.note || '',
+      b.created_by || '',
+      b.created_at ? b.created_at.slice(0, 10) : '',
+    ])
+  })
+  // 합계 행
+  const totalQty = billings.reduce((s, b) => s + (b.quantity || 0), 0)
+  aoa.push(['', '', '', '', '합계', totalQty, '', '', ''])
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa)
+  ws['!cols'] = [
+    { wch: 4 }, { wch: 30 }, { wch: 30 }, { wch: 16 }, { wch: 10 }, { wch: 12 }, { wch: 30 }, { wch: 14 }, { wch: 12 }
+  ]
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Billing')
+  XLSX.writeFile(wb, `billing_${pageName}_${new Date().toISOString().slice(0, 10)}.xlsx`)
+}
+
+// ── BillingModal 컴포넌트 ──────────────────────────────────────
+function BillingModal({ page, onClose }) {
+  const { user } = useAuth()
+  const isRegular = user?.position === 'regular'
+
+  // 폼 상태
+  const [form, setForm] = useState({
+    projectName: '',
+    targetPage: page.name,   // 현재 프로젝트 자동 입력
+    siteCount: page.countries?.length ?? 0,  // 현재 국가 수 자동 입력
+    pageCount: '',
+    note: '',
+  })
+  const [formFiles, setFormFiles] = useState([])  // 새 항목에 첨부할 파일들
+  const formFileRef = useRef(null)
+
+  // 목록 상태
+  const [billings, setBillings] = useState([])
+  const [loadingList, setLoadingList] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
+  const [editingId, setEditingId] = useState(null)
+  const [editForm, setEditForm] = useState({})
+  const [downloading, setDownloading] = useState(null)
+
+  const quantity = form.siteCount && form.pageCount
+    ? Number(form.siteCount) * Number(form.pageCount) : 0
+
+  // 목록 로드
+  useEffect(() => {
+    async function load() {
+      setLoadingList(true)
+      try {
+        const res = await api.getBillings(page.id)
+        if (res.ok) setBillings(res.data || [])
+      } catch (e) { console.warn('billing 로드 실패', e) }
+      finally { setLoadingList(false) }
+    }
+    load()
+  }, [page.id])
+
+  // 파일 선택 핸들러 (폼용)
+  const handleFormFileChange = (e) => {
+    const files = Array.from(e.target.files || [])
+    files.forEach(file => {
+      const reader = new FileReader()
+      reader.onload = ev => {
+        setFormFiles(prev => [...prev, { name: file.name, size: file.size, dataUrl: ev.target.result }])
+      }
+      reader.readAsDataURL(file)
+    })
+    e.target.value = ''
+  }
+
+  // 항목 생성
+  const handleCreate = async () => {
+    if (!form.projectName.trim()) return alert('프로젝트명을 입력하세요.')
+    if (!form.pageCount || Number(form.pageCount) < 1) return alert('페이지 수를 입력하세요.')
+    setSubmitting(true)
+    try {
+      const res = await api.createBilling({
+        pageId: page.id,
+        projectName: form.projectName.trim(),
+        targetPage: form.targetPage,
+        siteCount: Number(form.siteCount),
+        pageCount: Number(form.pageCount),
+        note: form.note,
+      })
+      if (!res.ok) return alert(res.message || '생성 실패')
+      const newId = res.id
+      // 첨부파일 업로드
+      const uploadedFiles = []
+      for (const f of formFiles) {
+        const fr = await api.uploadBillingFile(newId, { name: f.name, size: f.size, dataUrl: f.dataUrl })
+        if (fr.ok) uploadedFiles.push({ id: fr.id, name: f.name, size: f.size, uploaded_by: user?.name, uploaded_at: new Date().toISOString() })
+      }
+      const newRecord = {
+        id: newId,
+        project_name: form.projectName.trim(),
+        target_page: form.targetPage,
+        site_count: Number(form.siteCount),
+        page_count: Number(form.pageCount),
+        quantity: Number(form.siteCount) * Number(form.pageCount),
+        note: form.note,
+        created_by: user?.name,
+        created_at: new Date().toISOString(),
+        files: uploadedFiles,
+      }
+      setBillings(prev => [newRecord, ...prev])
+      setForm({ projectName: '', targetPage: page.name, siteCount: page.countries?.length ?? 0, pageCount: '', note: '' })
+      setFormFiles([])
+    } catch (e) { alert('오류: ' + e.message) }
+    finally { setSubmitting(false) }
+  }
+
+  // 항목 삭제
+  const handleDelete = async (id) => {
+    if (!window.confirm('이 항목을 삭제하시겠습니까?')) return
+    try {
+      await api.deleteBilling(id)
+      setBillings(prev => prev.filter(b => b.id !== id))
+    } catch (e) { alert('삭제 실패: ' + e.message) }
+  }
+
+  // 항목 수정 시작
+  const startEdit = (b) => {
+    setEditingId(b.id)
+    setEditForm({ projectName: b.project_name, targetPage: b.target_page, siteCount: b.site_count, pageCount: b.page_count, note: b.note || '' })
+  }
+
+  // 항목 수정 저장
+  const saveEdit = async (id) => {
+    try {
+      await api.updateBilling(id, {
+        projectName: editForm.projectName,
+        targetPage: editForm.targetPage,
+        siteCount: Number(editForm.siteCount),
+        pageCount: Number(editForm.pageCount),
+        note: editForm.note,
+      })
+      setBillings(prev => prev.map(b => b.id === id ? {
+        ...b,
+        project_name: editForm.projectName,
+        target_page: editForm.targetPage,
+        site_count: Number(editForm.siteCount),
+        page_count: Number(editForm.pageCount),
+        quantity: Number(editForm.siteCount) * Number(editForm.pageCount),
+        note: editForm.note,
+      } : b))
+      setEditingId(null)
+    } catch (e) { alert('수정 실패: ' + e.message) }
+  }
+
+  // 파일 다운로드
+  const downloadFile = async (fileId, fileName) => {
+    setDownloading(fileId)
+    try {
+      const res = await api.getBillingFileData(fileId)
+      if (res.ok && res.data?.data_url) {
+        const a = document.createElement('a')
+        a.href = res.data.data_url; a.download = fileName
+        document.body.appendChild(a); a.click(); document.body.removeChild(a)
+      }
+    } catch (e) { alert('다운로드 실패') }
+    finally { setDownloading(null) }
+  }
+
+  // 파일 삭제
+  const deleteFile = async (billingId, fileId) => {
+    if (!window.confirm('첨부파일을 삭제하시겠습니까?')) return
+    try {
+      await api.deleteBillingFile(fileId)
+      setBillings(prev => prev.map(b => b.id === billingId
+        ? { ...b, files: b.files.filter(f => f.id !== fileId) }
+        : b
+      ))
+    } catch (e) { alert('파일 삭제 실패') }
+  }
+
+  const totalQty = billings.reduce((s, b) => s + (b.quantity || 0), 0)
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={onClose}>
+      <div style={{
+        background: '#fff', borderRadius: 16, width: '90%', maxWidth: 900,
+        maxHeight: '90vh', display: 'flex', flexDirection: 'column',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+      }} onClick={e => e.stopPropagation()}>
+
+        {/* ── 모달 헤더 ── */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '18px 24px 14px', borderBottom: '1px solid #f1f5f9', flexShrink: 0,
+        }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#1e293b' }}>💰 Billing Track</h3>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{page.name}</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => billings.length > 0 && exportBillingXLSX(billings, page.name)}
+              disabled={billings.length === 0}
+              style={{
+                background: '#166534', color: '#fff', border: 'none',
+                borderRadius: 'var(--r-sm)', padding: '6px 13px', fontSize: 12,
+                fontFamily: "'Noto Sans KR', sans-serif", fontWeight: 500,
+                cursor: billings.length > 0 ? 'pointer' : 'not-allowed',
+                transition: 'opacity .15s', opacity: billings.length === 0 ? 0.4 : 1,
+              }}
+              onMouseEnter={e => { if (billings.length > 0) e.currentTarget.style.opacity = '0.85' }}
+              onMouseLeave={e => e.currentTarget.style.opacity = billings.length === 0 ? '0.4' : '1'}
+            >⬇ 엑셀 추출</button>
+            <button onClick={onClose} style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              fontSize: 20, color: '#94a3b8', lineHeight: 1, padding: 4,
+            }}>✕</button>
+          </div>
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, padding: '20px 24px' }}>
+
+          {/* ── 입력 폼 ── */}
+          {isRegular && (
+            <div style={{
+              background: '#f8fafc', borderRadius: 12, padding: 16, marginBottom: 24,
+              border: '1px solid #e2e8f0',
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 12 }}>+ 새 항목 추가</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                <div>
+                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>프로젝트명 *</label>
+                  <input className="form-input" placeholder="예: Galaxy S25 Ultra" value={form.projectName}
+                    onChange={e => setForm(f => ({ ...f, projectName: e.target.value }))} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>대상 페이지</label>
+                  <input className="form-input" value={form.targetPage}
+                    onChange={e => setForm(f => ({ ...f, targetPage: e.target.value }))} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>
+                    사이트 코드 수 <span style={{ color: '#6366f1', fontSize: 10 }}>자동입력</span>
+                  </label>
+                  <input className="form-input" type="number" min="0" value={form.siteCount}
+                    onChange={e => setForm(f => ({ ...f, siteCount: e.target.value }))} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>페이지 수 *</label>
+                  <input className="form-input" type="number" min="1" placeholder="직접 입력"
+                    value={form.pageCount} onChange={e => setForm(f => ({ ...f, pageCount: e.target.value }))} />
+                </div>
+              </div>
+
+              {/* Quantity 미리보기 */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+                background: quantity > 0 ? '#ede9fe' : '#f1f5f9', borderRadius: 8, marginBottom: 10,
+                border: `1px solid ${quantity > 0 ? '#c4b5fd' : '#e2e8f0'}`,
+              }}>
+                <span style={{ fontSize: 12, color: '#64748b' }}>Quantity =</span>
+                <span style={{ fontSize: 12, color: '#64748b' }}>{form.siteCount || 0} 사이트 × {form.pageCount || 0} 페이지</span>
+                <span style={{ fontSize: 16, fontWeight: 700, color: quantity > 0 ? '#7c3aed' : '#94a3b8', marginLeft: 'auto' }}>
+                  {quantity.toLocaleString()}
+                </span>
+              </div>
+
+              {/* 비고 */}
+              <div style={{ marginBottom: 10 }}>
+                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>비고</label>
+                <input className="form-input" placeholder="메모 (선택)" value={form.note}
+                  onChange={e => setForm(f => ({ ...f, note: e.target.value }))} />
+              </div>
+
+              {/* 파일 첨부 */}
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>첨부파일</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={() => formFileRef.current?.click()}
+                    style={{
+                      padding: '5px 12px', borderRadius: 6, border: '1px dashed #cbd5e1',
+                      background: '#fff', fontSize: 12, cursor: 'pointer', color: '#64748b',
+                    }}
+                  >+ 파일 선택</button>
+                  <input ref={formFileRef} type="file" multiple style={{ display: 'none' }} onChange={handleFormFileChange} />
+                  {formFiles.map((f, i) => (
+                    <span key={i} style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 4,
+                      fontSize: 11, background: '#f1f5f9', borderRadius: 5, padding: '3px 8px',
+                    }}>
+                      📎 {f.name}
+                      <button onClick={() => setFormFiles(prev => prev.filter((_, j) => j !== i))}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 12, padding: 0, lineHeight: 1 }}>✕</button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                onClick={handleCreate}
+                disabled={submitting}
+                style={{
+                  padding: '8px 20px', borderRadius: 8, border: 'none',
+                  background: submitting ? '#a5b4fc' : '#6366f1', color: '#fff',
+                  fontSize: 13, fontWeight: 600, cursor: submitting ? 'not-allowed' : 'pointer',
+                }}
+              >{submitting ? '저장 중...' : '추가'}</button>
+            </div>
+          )}
+
+          {/* ── 내역 리스트 ── */}
+          {loadingList ? (
+            <div style={{ textAlign: 'center', padding: 32, color: '#94a3b8' }}>불러오는 중...</div>
+          ) : billings.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 48, color: '#cbd5e1', fontSize: 14 }}>
+              아직 등록된 billing 내역이 없습니다.
+            </div>
+          ) : (
+            <>
+              {/* 합계 뱃지 */}
+              <div style={{
+                display: 'flex', justifyContent: 'flex-end', marginBottom: 10,
+              }}>
+                <div style={{
+                  padding: '6px 16px', borderRadius: 20,
+                  background: '#ede9fe', color: '#6d28d9', fontSize: 13, fontWeight: 700,
+                  border: '1px solid #c4b5fd',
+                }}>
+                  합계 Quantity: {totalQty.toLocaleString()}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {billings.map(b => (
+                  <div key={b.id} style={{
+                    background: '#fff', border: '1px solid #e2e8f0',
+                    borderRadius: 10, padding: '14px 16px',
+                    boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+                  }}>
+                    {editingId === b.id ? (
+                      /* 수정 모드 */
+                      <div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                          <div>
+                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>프로젝트명</label>
+                            <input className="form-input" style={{ fontSize: 12 }} value={editForm.projectName}
+                              onChange={e => setEditForm(f => ({ ...f, projectName: e.target.value }))} />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>대상 페이지</label>
+                            <input className="form-input" style={{ fontSize: 12 }} value={editForm.targetPage}
+                              onChange={e => setEditForm(f => ({ ...f, targetPage: e.target.value }))} />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>사이트 코드 수</label>
+                            <input className="form-input" style={{ fontSize: 12 }} type="number" min="0" value={editForm.siteCount}
+                              onChange={e => setEditForm(f => ({ ...f, siteCount: e.target.value }))} />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>페이지 수</label>
+                            <input className="form-input" style={{ fontSize: 12 }} type="number" min="1" value={editForm.pageCount}
+                              onChange={e => setEditForm(f => ({ ...f, pageCount: e.target.value }))} />
+                          </div>
+                        </div>
+                        <div style={{ marginBottom: 8 }}>
+                          <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>비고</label>
+                          <input className="form-input" style={{ fontSize: 12 }} value={editForm.note}
+                            onChange={e => setEditForm(f => ({ ...f, note: e.target.value }))} />
+                        </div>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button className="btn-sm" onClick={() => saveEdit(b.id)} style={{ background: '#6366f1', color: '#fff', border: 'none' }}>저장</button>
+                          <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setEditingId(null)}>취소</button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* 보기 모드 */
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 700, fontSize: 14, color: '#1e293b', marginBottom: 4 }}>{b.project_name}</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', fontSize: 12, color: '#64748b', marginBottom: b.note ? 6 : 0 }}>
+                              <span>📄 {b.target_page}</span>
+                              <span>🌐 {b.site_count} 사이트</span>
+                              <span>📃 {b.page_count} 페이지</span>
+                              <span style={{ fontWeight: 700, color: '#7c3aed' }}>✦ {(b.quantity || 0).toLocaleString()} qty</span>
+                              <span>👤 {b.created_by}</span>
+                              <span>🗓 {b.created_at?.slice(0, 10)}</span>
+                            </div>
+                            {b.note && <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>📝 {b.note}</div>}
+
+                            {/* 첨부파일 */}
+                            {b.files?.length > 0 && (
+                              <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                                {b.files.map(f => (
+                                  <span key={f.id} style={{
+                                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                                    fontSize: 11, background: '#f1f5f9', borderRadius: 5, padding: '3px 8px',
+                                    border: '1px solid #e2e8f0',
+                                  }}>
+                                    <button
+                                      onClick={() => downloadFile(f.id, f.name)}
+                                      disabled={downloading === f.id}
+                                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6366f1', fontSize: 11, padding: 0 }}
+                                    >{downloading === f.id ? '⏳' : `📎 ${f.name}`}</button>
+                                    {isRegular && (
+                                      <button onClick={() => deleteFile(b.id, f.id)}
+                                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 11, padding: 0, lineHeight: 1 }}>✕</button>
+                                    )}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {isRegular && (
+                            <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
+                              <button onClick={() => startEdit(b)}
+                                style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 6, padding: '4px 8px', cursor: 'pointer', fontSize: 11, color: '#64748b' }}
+                                onMouseEnter={e => { e.currentTarget.style.borderColor = '#6366f1'; e.currentTarget.style.color = '#6366f1' }}
+                                onMouseLeave={e => { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.color = '#64748b' }}
+                              >✏️ 수정</button>
+                              <button onClick={() => handleDelete(b.id)}
+                                style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 6, padding: '4px 8px', cursor: 'pointer', fontSize: 11, color: '#ef4444' }}
+                                onMouseEnter={e => e.currentTarget.style.background = '#fef2f2'}
+                                onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                              >🗑 삭제</button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── 페이지 상세 뷰 ────────────────────────────────────────────
 function PageDetail({ page, onBack, onUpdate }) {
   const { user } = useAuth()
@@ -948,6 +1402,7 @@ function PageDetail({ page, onBack, onUpdate }) {
   const [showAddCountry, setShowAddCountry] = useState(false)
   const [search, setSearch] = useState('')
   const [loadingDetail, setLoadingDetail] = useState(true)
+  const [showBilling, setShowBilling] = useState(false)
   const dropRef = useRef(null)
 
   // ── 페이지 진입 시 DB에서 상태+파일 히스토리 로드 ──────────
@@ -1269,6 +1724,7 @@ function PageDetail({ page, onBack, onUpdate }) {
 
   return (
     <div className="cst-page-detail">
+      {showBilling && <BillingModal page={page} onClose={() => setShowBilling(false)} />}
       <div className="cst-detail-header">
         <button className="cst-back-btn" onClick={onBack}>← 페이지 목록</button>
         
@@ -1276,10 +1732,25 @@ function PageDetail({ page, onBack, onUpdate }) {
           <h2 className="cst-detail-title">{page.name}</h2>
           
           <span className="cst-detail-date">생성: {page.createdAt?.slice(0, 10)}</span>
-          <button className="btn-export" onClick={() => exportStatusXLSX(page)}
-          style={{ marginLeft: 'auto', display: 'block' }}>
-          ⬇ 엑셀 추출
-        </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+            {user?.position === 'regular' && (
+              <button
+                onClick={() => setShowBilling(true)}
+                style={{
+                  background: '#3b0764', color: '#fff', border: 'none',
+                  borderRadius: 'var(--r-sm)', padding: '6px 13px', fontSize: 12,
+                  fontFamily: "'Noto Sans KR', sans-serif", fontWeight: 500,
+                  cursor: 'pointer', transition: 'opacity .15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.opacity = '0.85'}
+                onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+              >💰 Billing Track</button>
+            )}
+            <button
+              className="btn-export"
+              onClick={() => exportStatusXLSX(page)}
+            >⬇ 엑셀 추출</button>
+          </div>
         </div>
 
         <div className="cst-status-summary">
