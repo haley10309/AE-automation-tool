@@ -1733,17 +1733,19 @@ function PageDetail({ page, onBack, onUpdate }) {
           
           <span className="cst-detail-date">생성: {page.createdAt?.slice(0, 10)}</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-            <button
-              onClick={() => setShowBilling(true)}
-              style={{
-                background: '#3b0764', color: '#fff', border: 'none',
-                borderRadius: 'var(--r-sm)', padding: '6px 13px', fontSize: 12,
-                fontFamily: "'Noto Sans KR', sans-serif", fontWeight: 500,
-                cursor: 'pointer', transition: 'opacity .15s',
-              }}
-              onMouseEnter={e => e.currentTarget.style.opacity = '0.85'}
-              onMouseLeave={e => e.currentTarget.style.opacity = '1'}
-            >💰 Billing Track</button>
+            {user?.position === 'regular' && (
+              <button
+                onClick={() => setShowBilling(true)}
+                style={{
+                  background: '#3b0764', color: '#fff', border: 'none',
+                  borderRadius: 'var(--r-sm)', padding: '6px 13px', fontSize: 12,
+                  fontFamily: "'Noto Sans KR', sans-serif", fontWeight: 500,
+                  cursor: 'pointer', transition: 'opacity .15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.opacity = '0.85'}
+                onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+              >💰 Billing Track</button>
+            )}
             <button
               className="btn-export"
               onClick={() => exportStatusXLSX(page)}
