@@ -31,6 +31,11 @@ export const api = window.electronAPI || {
   deleteProduct:    (id)       => call('DELETE', `/api/products/${id}`),
   getProductHistory:(id)       => call('GET',    `/api/products/${id}/history`),
 
+  // [신규] 제품 Preorder 상태
+  getPreorders:     ()                       => call('GET', '/api/products/preorder'),
+  updatePreorder:   (productId, siteCode, isPreorder, updatedBy) =>
+    call('PUT', `/api/products/${productId}/preorder/${siteCode}`, { isPreorder, updatedBy }),
+
   // 국가별 카피 프로젝트 CRUD (CC)
   ccListProjects:   ()         => call('GET',    '/api/cc/projects'),
   ccCreateProject:  (body)     => call('POST',   '/api/cc/projects', body),
@@ -83,6 +88,15 @@ export const api = window.electronAPI || {
   updateBranchNote:    (id, body) => call('PUT', `/api/tracker/branches/${id}/note`, body),
   closeBranch:         (body)     => call('PUT',    '/api/tracker/branches/close', body),
   deleteBranch:        (body)     => call('DELETE', '/api/tracker/branches', body),
+
+  // ── Billing ──────────────────────────────────────────────────
+  getBillings:         (pageId)        => call('GET',    `/api/tracker/billing/${pageId}`),
+  createBilling:       (body)          => call('POST',   '/api/tracker/billing', body),
+  updateBilling:       (id, body)      => call('PUT',    `/api/tracker/billing/${id}`, body),
+  deleteBilling:       (id)            => call('DELETE', `/api/tracker/billing/${id}`),
+  uploadBillingFile:   (billingId, body) => call('POST', `/api/tracker/billing/${billingId}/files`, body),
+  getBillingFileData:  (fileId)        => call('GET',    `/api/tracker/billing/files/${fileId}/data`),
+  deleteBillingFile:   (fileId)        => call('DELETE', `/api/tracker/billing/files/${fileId}`),
 
   // ── 서비스 운영 현황 ──────────────────────────────────────────
   getServices:          ()              => call('GET',  '/api/services'),
