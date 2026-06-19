@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, memo, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import { useDB } from '../DBContext.jsx'
@@ -2063,16 +2064,49 @@ function PageDetail({ page, onBack, onUpdate }) {
 // ── 공용 점 세 개 컨텍스트 메뉴 ─────────────────────────────────
 function DotsMenu({ items }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef(null)
+  const [pos, setPos] = useState(null) // { top, left } 화면 기준 고정 좌표
+  const btnRef = useRef(null)
+  const menuRef = useRef(null)
+
+  // 메뉴 열 때 버튼 위치 기준으로 좌표 계산 (뷰포트 밖으로 안 나가게 보정)
+  const openMenu = () => {
+    const r = btnRef.current.getBoundingClientRect()
+    const MENU_W = 170
+    const MENU_MAX_H = 320
+    let left = r.right - MENU_W
+    let top = r.bottom + 4
+    if (left < 4) left = 4
+    if (left + MENU_W > window.innerWidth - 4) left = window.innerWidth - MENU_W - 4
+    if (top + MENU_MAX_H > window.innerHeight - 4) top = r.top - MENU_MAX_H - 4 // 아래 공간 부족하면 위로 띄움
+    if (top < 4) top = 4
+    setPos({ top, left })
+    setOpen(true)
+  }
+
   useEffect(() => {
-    function handle(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    if (open) document.addEventListener('mousedown', handle)
-    return () => document.removeEventListener('mousedown', handle)
+    if (!open) return
+    function handle(e) {
+      if (
+        btnRef.current && !btnRef.current.contains(e.target) &&
+        menuRef.current && !menuRef.current.contains(e.target)
+      ) setOpen(false)
+    }
+    function handleScrollResize() { setOpen(false) }
+    document.addEventListener('mousedown', handle)
+    window.addEventListener('scroll', handleScrollResize, true)
+    window.addEventListener('resize', handleScrollResize)
+    return () => {
+      document.removeEventListener('mousedown', handle)
+      window.removeEventListener('scroll', handleScrollResize, true)
+      window.removeEventListener('resize', handleScrollResize)
+    }
   }, [open])
+
   return (
-    <div ref={ref} style={{ position: 'relative' }} onClick={e => e.stopPropagation()}>
+    <div style={{ position: 'relative', display: 'inline-block' }} onClick={e => e.stopPropagation()}>
       <button
-        onClick={() => setOpen(v => !v)}
+        ref={btnRef}
+        onClick={() => (open ? setOpen(false) : openMenu())}
         style={{
           background: 'none', border: 'none', cursor: 'pointer',
           padding: '3px 5px', borderRadius: 5, lineHeight: 1,
@@ -2083,12 +2117,16 @@ function DotsMenu({ items }) {
         onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#9ca3af' }}
         title="옵션"
       >⋯</button>
-      {open && (
-        <div style={{
-          position: 'absolute', right: 0, top: 'calc(100% + 4px)', zIndex: 200,
-          background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
-          boxShadow: '0 8px 24px rgba(0,0,0,0.13)', minWidth: 170, padding: '4px 0',
-        }}>
+      {open && pos && createPortal(
+        <div
+          ref={menuRef}
+          style={{
+            position: 'fixed', top: pos.top, left: pos.left, zIndex: 9999,
+            background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.13)', minWidth: 170, padding: '4px 0',
+            maxHeight: 320, overflowY: 'auto',
+          }}
+        >
           {items.map((item, i) => item === 'divider' ? (
             <div key={i} style={{ height: 1, background: '#f1f5f9', margin: '3px 0' }} />
           ) : (
@@ -2109,7 +2147,8 @@ function DotsMenu({ items }) {
               {item.sub && <span style={{ marginLeft: 'auto', fontSize: 11, color: '#94a3b8' }}>{item.sub}</span>}
             </div>
           ))}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )
@@ -2137,8 +2176,9 @@ function InlineRename({ value, onSave, onCancel }) {
   )
 }
 
-function PageCard({ page, onSelect, onDelete, onRename, user, folders, onMoveToFolder }) {
+function PageCard({ page, onSelect, onDelete, onRename, onDuplicate, user, folders, onMoveToFolder }) {
   const [renaming, setRenaming] = useState(false)
+  const [duplicating, setDuplicating] = useState(false)
 
   const total = page.countries.length
   const stepSum = page.countries.reduce((sum, c) => {
@@ -2158,6 +2198,14 @@ function PageCard({ page, onSelect, onDelete, onRename, user, folders, onMoveToF
     {
       icon: '✏️', label: '이름 바꾸기',
       action: () => setRenaming(true),
+    },
+    {
+      icon: '📑', label: duplicating ? '복사 중...' : '프로젝트 복제',
+      action: async () => {
+        if (duplicating) return
+        setDuplicating(true)
+        try { await onDuplicate(page) } finally { setDuplicating(false) }
+      },
     },
     'divider',
     {
@@ -2239,7 +2287,7 @@ function PageCard({ page, onSelect, onDelete, onRename, user, folders, onMoveToF
 }
 
 // ── 폴더 컴포넌트 ─────────────────────────────────────────────
-function FolderBlock({ folder, pages, onSelect, onDelete, onRename, user, folders, onMoveToFolder, onRenameFolder, onDeleteFolder, isRegular }) {
+function FolderBlock({ folder, pages, onSelect, onDelete, onRename, onDuplicate, user, folders, onMoveToFolder, onRenameFolder, onDeleteFolder, isRegular }) {
   const [isOpen, setIsOpen] = useState(true)
   const [renaming, setRenaming] = useState(false)
 
@@ -2306,6 +2354,7 @@ function FolderBlock({ folder, pages, onSelect, onDelete, onRename, user, folder
                   onSelect={onSelect}
                   onDelete={onDelete}
                   onRename={onRename}
+                  onDuplicate={onDuplicate}
                   user={user}
                   folders={folders}
                   onMoveToFolder={onMoveToFolder}
@@ -2472,11 +2521,19 @@ export default function StatusTab() {
   }
 
   const renamePage = useCallback(async (pageId, newTitle) => {
+    // 같은 이름의 다른 프로젝트가 이미 있으면 끝에 (1), (2)... 번호를 붙여 중복 방지
+    const existingNames = new Set(pages.filter(p => p.id !== pageId).map(p => p.name))
+    let finalTitle = newTitle
+    if (existingNames.has(finalTitle)) {
+      let n = 1
+      while (existingNames.has(`${newTitle} (${n})`)) n++
+      finalTitle = `${newTitle} (${n})`
+    }
     try {
-      await api.updateTrackerPage(pageId, { title: newTitle })
-      setPages(prev => prev.map(p => p.id === pageId ? { ...p, name: newTitle } : p))
+      await api.updateTrackerPage(pageId, { title: finalTitle })
+      setPages(prev => prev.map(p => p.id === pageId ? { ...p, name: finalTitle } : p))
     } catch (e) { console.error('[DB] 페이지 이름 수정 실패:', e?.message || e) }
-  }, [])
+  }, [pages])
 
   const deletePage = useCallback(async (page, e) => {
     e.stopPropagation()
@@ -2499,6 +2556,155 @@ export default function StatusTab() {
     })
     if (selectedPageId === page.id) setSelectedPageId(null)
   }, [selectedPageId, user])
+
+  // ── 프로젝트(페이지) 복사 ─────────────────────────────────────
+  const duplicatePage = useCallback(async (page) => {
+    if (user?.position !== 'regular') { alert('정규직만 프로젝트를 복사할 수 있습니다.'); return }
+
+    const newPageId = String(Date.now())
+
+    // 같은 이름의 프로젝트가 이미 있으면 끝에 (1), (2)... 번호를 붙여 중복 방지
+    const existingNames = new Set(pages.map(p => p.name))
+    const baseName = `${page.name} (복사본)`
+    let newPageName = baseName
+    if (existingNames.has(newPageName)) {
+      let n = 1
+      while (existingNames.has(`${baseName} (${n})`)) n++
+      newPageName = `${baseName} (${n})`
+    }
+
+    try {
+      const res = await api.createTrackerPage({ id: newPageId, title: newPageName })
+      if (!res?.ok) {
+        alert('복사에 실패했습니다: ' + (res?.message || '서버 오류'))
+        return
+      }
+      if (page.folder_id) {
+        await api.movePageToFolder(newPageId, { folderId: page.folder_id })
+      }
+
+      // 원본 프로젝트의 최신 전체 데이터(상태/메모/파일/분기)를 DB에서 다시 조회
+      // (page.countries는 화면에 캐시된 값이라 file dataUrl이 비어있을 수 있어 신뢰하지 않음)
+      const detail = await api.getTrackerDetail(String(page.id))
+      const statuses = detail?.statuses || []
+      const files = detail?.files || []
+      const branches = detail?.branches || []
+      const branchStatuses = detail?.branchStatuses || []
+
+      // 1. 국가별 상태·메모 복사
+      await Promise.allSettled(
+        statuses.map(s =>
+          api.updateTrackerStatus({
+            pageId: newPageId,
+            siteCode: s.site_code,
+            status: s.status || '',
+            note: s.note || '',
+          })
+        )
+      )
+
+      // 2. 첨부 파일(히스토리) 복사 — 각 파일의 실제 data_url을 서버에서 단건 조회한 뒤 새 페이지에 저장
+      await Promise.allSettled(
+        files.map(async f => {
+          let dataUrl = null
+          try {
+            const fr = await fetch(`http://localhost:4000/api/files/${f.id}/data`)
+            const fd = await fr.json()
+            dataUrl = fd?.ok ? (fd.data?.data_url || null) : null
+          } catch (e) { console.warn('파일 데이터 조회 실패', f.id, e) }
+          if (!dataUrl) return // 원본 데이터를 못 가져오면 해당 파일은 건너뜀
+          await api.saveFile({
+            pageId: newPageId,
+            siteCode: f.site_code,
+            name: f.name,
+            size: f.size,
+            status: f.status || '',
+            noteAtUpload: f.note_at_upload || '',
+            uploadedAt: f.uploaded_at,
+            dataUrl,
+            uploadedBy: f.uploaded_by || null,
+          })
+        })
+      )
+
+      // 3. 분기(브랜치) 이력 복사
+      const closedSet = new Set(
+        branchStatuses.filter(s => s.is_closed).map(s => `${s.site_code}::${s.branch_name}`)
+      )
+      await Promise.allSettled(
+        branches.map(b =>
+          api.createTrackerBranch({
+            pageId: newPageId,
+            siteCode: b.site_code,
+            branchName: b.branch_name,
+            status: b.status || '',
+            note: b.note || '',
+            fileName: b.file_name || null,
+            dataUrl: b.data_url || null,
+          })
+        )
+      )
+      // 닫혀있던 분기는 복사본에서도 닫힌 상태로 맞춰줌
+      await Promise.allSettled(
+        [...closedSet].map(key => {
+          const [siteCode, branchName] = key.split('::')
+          return api.closeBranch({ pageId: newPageId, siteCode, branchName, isClosed: true })
+        })
+      )
+
+      // 4. Billing Track(정산) 항목 + 첨부파일 복사
+      const billingRes = await api.getBillings(page.id)
+      const billingItems = billingRes?.ok ? (billingRes.data || []) : []
+      await Promise.allSettled(
+        billingItems.map(async b => {
+          const created = await api.createBilling({
+            pageId: newPageId,
+            projectName: b.project_name,
+            targetPage: b.target_page,
+            siteCount: b.site_count,
+            pageCount: b.page_count,
+            note: b.note || '',
+          })
+          if (!created?.ok) return
+          const newBillingId = created.id
+          for (const f of (b.files || [])) {
+            try {
+              const fd = await api.getBillingFileData(f.id)
+              const dataUrl = fd?.ok ? (fd.data?.data_url || null) : null
+              if (!dataUrl) continue
+              await api.uploadBillingFile(newBillingId, { name: f.name, size: f.size, dataUrl })
+            } catch (e) { console.warn('정산 첨부파일 복사 실패', f.id, e) }
+          }
+        })
+      )
+    } catch (e) {
+      console.error('[DB] 프로젝트 복사 실패:', e?.message || e)
+      alert('복사 중 오류가 발생했습니다: ' + (e?.message || e))
+      return
+    }
+
+    const newPage = {
+      id: newPageId,
+      name: newPageName,
+      folder_id: page.folder_id ?? null,
+      createdAt: new Date().toISOString(),
+      // 상세 데이터(파일/분기 포함)는 페이지를 열 때 getTrackerDetail로 다시 로드되므로
+      // 여기서는 목록 표시에 필요한 최소 정보만 채워둔다.
+      countries: page.countries.map(c => ({
+        code: c.code,
+        status: c.status || '',
+        note: c.note || '',
+        file: null,
+        fileHistory: [],
+        branches: [],
+      })),
+    }
+    setPages(prev => {
+      const next = [...prev, newPage]
+      saveToStorage({ pages: next })
+      return next
+    })
+  }, [user, pages])
 
   const updatePage = useCallback((updated, persistToStorage = false) => {
     setPages(prev => {
@@ -2528,6 +2734,7 @@ export default function StatusTab() {
     onSelect: setSelectedPageId,
     onDelete: deletePage,
     onRename: renamePage,
+    onDuplicate: duplicatePage,
     user,
     folders,
     onMoveToFolder: movePageToFolderHandler,
