@@ -958,6 +958,130 @@ mark.diff-ins {
 .cst-note-input:focus { border-color: #3b82f6; background: #fff; }
 .cst-note-input::placeholder { color: #d1d5db; }
 
+/* ── [신규] 일괄 상태 변경 (체크박스 다중 선택 + 텍스트 붙여넣기) ── */
+.cst-checkbox {
+  width: 15px;
+  height: 15px;
+  accent-color: #6366f1;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.cst-th-check, .cst-td-check { width: 36px; text-align: center; }
+
+.cst-row.cst-row-selected .cst-td { background: #f5f3ff; }
+
+.cst-bulk-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: 'Noto Sans KR', sans-serif;
+  color: #6b7280;
+  cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.cst-bulk-toggle-btn:hover { border-color: #6366f1; color: #6366f1; }
+.cst-bulk-toggle-btn.active { background: #6366f1; border-color: #6366f1; color: #fff; }
+.cst-bulk-toggle-count {
+  background: #eef2ff; color: #6366f1;
+  border-radius: 99px; padding: 0 6px;
+  font-size: 10px; font-weight: 700;
+}
+.cst-bulk-toggle-btn.active .cst-bulk-toggle-count { background: rgba(255,255,255,.25); color: #fff; }
+
+@keyframes cst-bulk-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+
+.cst-bulk-panel {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-top: 3px solid #6366f1;
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 4px 16px rgba(99,102,241,.08);
+  animation: cst-bulk-in .18s ease;
+}
+.cst-bulk-section { display: flex; flex-direction: column; gap: 8px; }
+.cst-bulk-section-label {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 700; color: #374151;
+}
+.cst-bulk-section-hint { font-size: 11px; font-weight: 400; color: #9ca3af; }
+.cst-bulk-count-badge {
+  font-size: 11px; font-weight: 700; color: #6366f1;
+  background: #eef2ff; border-radius: 99px; padding: 1px 9px;
+}
+.cst-bulk-divider { border: none; border-top: 1px dashed #e5e7eb; margin: 0; }
+
+.cst-bulk-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.cst-bulk-select {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #374151;
+  background: #fff;
+  cursor: pointer;
+  outline: none;
+  min-width: 170px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.cst-bulk-select:focus { border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99,102,241,.15); }
+
+.cst-bulk-apply-btn {
+  background: #6366f1; color: #fff; border: none; border-radius: 6px;
+  padding: 7px 16px; font-size: 12px; font-weight: 600;
+  font-family: 'Noto Sans KR', sans-serif; cursor: pointer; white-space: nowrap;
+  transition: background .15s, transform .1s;
+}
+.cst-bulk-apply-btn:hover:not(:disabled) { background: #4f46e5; }
+.cst-bulk-apply-btn:active:not(:disabled) { transform: translateY(1px); }
+.cst-bulk-apply-btn:disabled { background: #d6d3fa; cursor: not-allowed; }
+
+.cst-bulk-clear-btn {
+  background: none; border: 1px solid #d1d5db; border-radius: 6px;
+  padding: 6px 12px; font-size: 12px; color: #6b7280; cursor: pointer;
+  font-family: 'Noto Sans KR', sans-serif;
+  transition: border-color .15s, color .15s;
+}
+.cst-bulk-clear-btn:hover { border-color: #ef4444; color: #ef4444; }
+
+.cst-bulk-textarea {
+  width: 100%;
+  min-height: 64px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #f9fafb;
+  color: #111827;
+  resize: vertical;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s, background .15s;
+}
+.cst-bulk-textarea:focus { border-color: #6366f1; background: #fff; box-shadow: 0 0 0 2px rgba(99,102,241,.12); }
+.cst-bulk-textarea::placeholder { color: #b8c0cc; font-family: 'Noto Sans KR', sans-serif; }
+
+.cst-bulk-result {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  font-size: 11px; padding: 6px 10px; border-radius: 6px;
+  background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0;
+  animation: cst-bulk-in .18s ease;
+}
+.cst-bulk-result.has-warn { background: #fffbeb; color: #92400e; border-color: #fde68a; }
+.cst-bulk-result-warn-text { color: #b45309; font-weight: 600; }
+
 
 /* ── 추출·조회 통합 레이아웃 ──────────────────────────────── */
 .extract-layout {
