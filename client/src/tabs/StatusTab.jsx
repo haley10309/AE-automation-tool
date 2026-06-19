@@ -882,13 +882,23 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
 }
 
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular }) => {
+const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox }) => {
   const [isExpanded, setIsExpanded] = useState(false)
   const branches = entry?.branches || []
 
   return (
     <>
-      <tr className="cst-row">
+      <tr className={`cst-row${selected ? ' cst-row-selected' : ''}`}>
+        {showCheckbox && (
+          <td className="cst-td cst-td-check">
+            <input
+              type="checkbox"
+              className="cst-checkbox"
+              checked={!!selected}
+              onChange={() => onToggleSelect(site.code)}
+            />
+          </td>
+        )}
         <td className="cst-td">
           <div className="cst-country-cell">
             <span className="cst-flag">{site.flag}</span>
@@ -932,7 +942,7 @@ const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, han
       </tr>
       {isExpanded && (
         <tr>
-          <td colSpan="5" style={{ padding: 0 }}>
+          <td colSpan="6" style={{ padding: 0 }}>
             <BranchTimeline branches={branches} branchStatuses={entry?.branchStatuses || []} onCreateBranch={(data) => handleBranchCreate(site.code, data)} onUpdateBranchNote={(id, note) => handleBranchNoteUpdate(site.code, id, note)} onCloseBranch={(siteCode, bName, isClosed) => handleBranchClose(siteCode, bName, isClosed)} onDeleteBranch={(siteCode, bName) => handleBranchDelete(siteCode, bName)} />
           </td>
         </tr>
@@ -1405,6 +1415,17 @@ function PageDetail({ page, onBack, onUpdate }) {
   const [showBilling, setShowBilling] = useState(false)
   const dropRef = useRef(null)
 
+  // ── [신규] 일괄 상태 변경 (체크박스 다중 선택 + 텍스트 일괄 입력) ──
+  const [showBulkPanel, setShowBulkPanel] = useState(false)
+  const [selectedCodes, setSelectedCodes] = useState(() => new Set())
+  const [bulkStatus, setBulkStatus] = useState('')
+  const [bulkApplying, setBulkApplying] = useState(false)
+  const [bulkSelectResult, setBulkSelectResult] = useState(null)
+  const [bulkText, setBulkText] = useState('')
+  const [bulkTextStatus, setBulkTextStatus] = useState('')
+  const [bulkTextApplying, setBulkTextApplying] = useState(false)
+  const [bulkTextResult, setBulkTextResult] = useState(null)
+
   // ── 페이지 진입 시 DB에서 상태+파일 히스토리 로드 ──────────
   // ── 페이지 진입 시 DB에서 상태+파일+분기 히스토리 로드 ──────────
   useEffect(() => {
@@ -1518,6 +1539,82 @@ function PageDetail({ page, onBack, onUpdate }) {
     .filter(s => !activeSiteCodes.includes(s.code))
     .filter(s => !search || s.name.includes(search) || s.code.toLowerCase().includes(search.toLowerCase()))
     .filter(s => regionFilter === 'ALL' || s.region === regionFilter)
+
+  // ── 체크박스 선택 토글 ───────────────────────────────────────
+  const toggleSelect = useCallback((code) => {
+    setBulkSelectResult(null)
+    setSelectedCodes(prev => {
+      const next = new Set(prev)
+      if (next.has(code)) next.delete(code)
+      else next.add(code)
+      return next
+    })
+  }, [])
+
+  const toggleSelectAll = useCallback(() => {
+    setBulkSelectResult(null)
+    setSelectedCodes(prev => {
+      const allSelected = filtered.length > 0 && filtered.every(s => prev.has(s.code))
+      return allSelected ? new Set() : new Set(filtered.map(s => s.code))
+    })
+  }, [filtered])
+
+  // ── 코드 목록을 받아 해당 국가들의 상태를 한 번에 변경 (체크박스/텍스트 공용) ──
+  const applyStatusToCodes = useCallback(async (codes, newStatus) => {
+    const codeSet = new Set(codes.map(c => c.trim().toUpperCase()).filter(Boolean))
+    const matchedCountries = page.countries.filter(c => codeSet.has(c.code.toUpperCase()))
+    if (matchedCountries.length === 0) {
+      return { matchedCodes: [], unmatchedCodes: [...codeSet] }
+    }
+
+    const updatedCountries = page.countries.map(c =>
+      codeSet.has(c.code.toUpperCase()) ? { ...c, status: newStatus } : c
+    )
+    onUpdate({ ...page, countries: updatedCountries }, true)
+
+    // DB 저장 (병렬, 실패해도 UI는 유지)
+    await Promise.allSettled(
+      matchedCountries.map(c =>
+        api.updateTrackerStatus({
+          pageId: page.id,
+          siteCode: c.code,
+          status: newStatus,
+          note: c.note || '',
+        })
+      )
+    )
+
+    const matchedCodes = matchedCountries.map(c => c.code.toUpperCase())
+    const unmatchedCodes = [...codeSet].filter(code => !matchedCodes.includes(code))
+    return { matchedCodes, unmatchedCodes }
+  }, [page, onUpdate])
+
+  const handleBulkApplySelected = useCallback(async () => {
+    if (!bulkStatus || selectedCodes.size === 0) return
+    setBulkApplying(true)
+    setBulkSelectResult(null)
+    try {
+      const result = await applyStatusToCodes([...selectedCodes], bulkStatus)
+      setBulkSelectResult(result)
+      setSelectedCodes(new Set())
+      setBulkStatus('')
+    } finally {
+      setBulkApplying(false)
+    }
+  }, [applyStatusToCodes, bulkStatus, selectedCodes])
+
+  const handleBulkApplyText = useCallback(async () => {
+    if (!bulkTextStatus || !bulkText.trim()) return
+    const codes = bulkText.split(/[\s,;\n\r\t]+/).map(s => s.trim()).filter(Boolean)
+    if (codes.length === 0) return
+    setBulkTextApplying(true)
+    try {
+      const result = await applyStatusToCodes(codes, bulkTextStatus)
+      setBulkTextResult(result)
+    } finally {
+      setBulkTextApplying(false)
+    }
+  }, [applyStatusToCodes, bulkText, bulkTextStatus])
 
   const handleStatusChange = useCallback(async (siteCode, newStatus, note) => {
     const updated = { ...page }
@@ -1799,6 +1896,13 @@ function PageDetail({ page, onBack, onUpdate }) {
         </div>
 
         <div className="cst-add-country-wrap" ref={dropRef}>
+          <button
+            className={`cst-bulk-toggle-btn${showBulkPanel ? ' active' : ''}`}
+            onClick={() => setShowBulkPanel(v => !v)}
+          >
+            ☑ 일괄 변경
+            {selectedCodes.size > 0 && <span className="cst-bulk-toggle-count">{selectedCodes.size}</span>}
+          </button>
           <button className="btn-sm" onClick={() => setShowAddCountry(v => !v)}>+ 국가 추가</button>
           {showAddCountry && (
             <div className="cst-country-dropdown">
@@ -1817,6 +1921,89 @@ function PageDetail({ page, onBack, onUpdate }) {
         </div>
       </div>
 
+      {showBulkPanel && (
+        <div className="cst-bulk-panel">
+          {/* ① 체크박스로 선택한 국가 일괄 변경 */}
+          <div className="cst-bulk-section">
+            <div className="cst-bulk-section-label">
+              ✅ 선택한 국가 일괄 변경
+              <span className="cst-bulk-count-badge">{selectedCodes.size}개 선택</span>
+            </div>
+            <div className="cst-bulk-row">
+              <select
+                className="cst-bulk-select"
+                value={bulkStatus}
+                onChange={e => setBulkStatus(e.target.value)}
+              >
+                {COPY_STATUSES.map(s => (
+                  <option key={s.value} value={s.value}>{s.label}</option>
+                ))}
+              </select>
+              <button
+                className="cst-bulk-apply-btn"
+                disabled={selectedCodes.size === 0 || !bulkStatus || bulkApplying}
+                onClick={handleBulkApplySelected}
+              >{bulkApplying ? '적용 중...' : '선택 국가 일괄 변경'}</button>
+              {selectedCodes.size > 0 && (
+                <button className="cst-bulk-clear-btn" onClick={() => { setSelectedCodes(new Set()); setBulkSelectResult(null) }}>선택 해제</button>
+              )}
+            </div>
+            {bulkSelectResult && (
+              <div className={`cst-bulk-result${bulkSelectResult.unmatchedCodes.length > 0 ? ' has-warn' : ''}`}>
+                ✅ {bulkSelectResult.matchedCodes.length}개 적용됨
+                {bulkSelectResult.unmatchedCodes.length > 0 && (
+                  <span className="cst-bulk-result-warn-text">
+                    · ⚠ 찾을 수 없음: {bulkSelectResult.unmatchedCodes.join(', ')}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          <hr className="cst-bulk-divider" />
+
+          {/* ② 텍스트로 국가 코드 입력해서 일괄 변경 */}
+          <div className="cst-bulk-section">
+            <div className="cst-bulk-section-label">
+              ⌨️ 코드 붙여넣기로 일괄 변경
+              <span className="cst-bulk-section-hint">쉼표·줄바꿈·공백으로 구분</span>
+            </div>
+            <textarea
+              className="cst-bulk-textarea"
+              placeholder={'예) KR, US, JP\nDE\nFR'}
+              value={bulkText}
+              onChange={e => { setBulkText(e.target.value); setBulkTextResult(null) }}
+            />
+            <div className="cst-bulk-row">
+              <select
+                className="cst-bulk-select"
+                value={bulkTextStatus}
+                onChange={e => setBulkTextStatus(e.target.value)}
+              >
+                {COPY_STATUSES.map(s => (
+                  <option key={s.value} value={s.value}>{s.label}</option>
+                ))}
+              </select>
+              <button
+                className="cst-bulk-apply-btn"
+                disabled={!bulkText.trim() || !bulkTextStatus || bulkTextApplying}
+                onClick={handleBulkApplyText}
+              >{bulkTextApplying ? '적용 중...' : '텍스트 목록 일괄 변경'}</button>
+            </div>
+            {bulkTextResult && (
+              <div className={`cst-bulk-result${bulkTextResult.unmatchedCodes.length > 0 ? ' has-warn' : ''}`}>
+                ✅ {bulkTextResult.matchedCodes.length}개 적용됨
+                {bulkTextResult.unmatchedCodes.length > 0 && (
+                  <span className="cst-bulk-result-warn-text">
+                    · ⚠ 찾을 수 없음: {bulkTextResult.unmatchedCodes.join(', ')}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {loadingDetail ? (
         <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>DB에서 불러오는 중...</div>
       ) : (
@@ -1824,6 +2011,16 @@ function PageDetail({ page, onBack, onUpdate }) {
         <table className="result-table cst-table">
           <thead>
             <tr>
+              {showBulkPanel && (
+                <th className="cst-th cst-th-check">
+                  <input
+                    type="checkbox"
+                    className="cst-checkbox"
+                    checked={filtered.length > 0 && filtered.every(s => selectedCodes.has(s.code))}
+                    onChange={toggleSelectAll}
+                  />
+                </th>
+              )}
               <th className="cst-th" style={{ width: 160 }}>국가</th>
               <th className="cst-th" style={{ width: 220 }}>카피 작업 상태</th>
               <th className="cst-th">첨부 파일 (업로드 당시 상태 기록)</th>
@@ -1839,6 +2036,9 @@ function PageDetail({ page, onBack, onUpdate }) {
                 key={site.code}
                 site={site}
                 entry={entry}
+                selected={selectedCodes.has(site.code)}
+                onToggleSelect={toggleSelect}
+                showCheckbox={showBulkPanel}
                 handleStatusChange={handleStatusChange}
                 handleFileUpload={handleFileUpload}
                 handleHistoryNoteUpdate={handleHistoryNoteUpdate}
