@@ -1899,7 +1899,18 @@ function PageDetail({ page, onBack, onUpdate }) {
         <div className="cst-add-country-wrap" ref={dropRef}>
           <button
             className={`cst-bulk-toggle-btn${showBulkPanel ? ' active' : ''}`}
-            onClick={() => setShowBulkPanel(v => !v)}
+            onClick={() => setShowBulkPanel(v => {
+              if (v) {
+                // 패널 닫을 때 전체 초기화
+                setSelectedCodes(new Set())
+                setBulkStatus('')
+                setBulkSelectResult(null)
+                setBulkText('')
+                setBulkTextStatus('')
+                setBulkTextResult(null)
+              }
+              return !v
+            })}
           >
             ☑ 일괄 변경
             {selectedCodes.size > 0 && <span className="cst-bulk-toggle-count">{selectedCodes.size}</span>}
