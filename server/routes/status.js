@@ -133,15 +133,50 @@ router.delete('/tracker/status', async (req, res) => {
     res.json({ ok: true })
   } catch (err) { res.json({ ok: false, message: err.message }) }
 })
-router.post('/tracker/status', async (req, res) => {
+router.post('/tracker/status', authMiddleware, async (req, res) => {
   try {
     const { pageId, siteCode, status, note } = req.body;
-    await getPool().execute(
-      `INSERT INTO tracker_site_status (page_id, site_code, status, note, deleted) VALUES (?, ?, ?, ?, 0)
-       ON DUPLICATE KEY UPDATE status = VALUES(status), note = VALUES(note), deleted = 0`,
-      [pageId, siteCode, status || '', note || '']
+    const changedBy = req.user?.name || null;
+
+    // 변경 전 상태 조회 (히스토리용)
+    const [[prev]] = await getPool().execute(
+      `SELECT status FROM tracker_site_status WHERE page_id = ? AND site_code = ? AND deleted = 0`,
+      [pageId, siteCode]
     );
+    const fromStatus = prev?.status ?? null;
+
+    // 상태 업데이트
+    await getPool().execute(
+      `INSERT INTO tracker_site_status (page_id, site_code, status, note, updated_by, deleted) VALUES (?, ?, ?, ?, ?, 0)
+       ON DUPLICATE KEY UPDATE status = VALUES(status), note = VALUES(note), updated_by = VALUES(updated_by), deleted = 0`,
+      [pageId, siteCode, status || '', note || '', changedBy]
+    );
+
+    // 상태값이 실제로 바뀐 경우에만 히스토리 기록
+    if (status !== undefined && fromStatus !== (status || '')) {
+      await getPool().execute(
+        `INSERT INTO tracker_status_history (page_id, site_code, from_status, to_status, changed_by) VALUES (?, ?, ?, ?, ?)`,
+        [pageId, siteCode, fromStatus, status || '', changedBy]
+      );
+    }
+
     res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// 카피 작업 상태 변경 이력 조회
+router.get('/tracker/status-history', async (req, res) => {
+  try {
+    const { pageId, siteCode } = req.query;
+    if (!pageId || !siteCode) return res.json({ ok: false, message: 'pageId, siteCode 필요' });
+    const [rows] = await getPool().execute(
+      `SELECT id, from_status, to_status, changed_by, changed_at
+       FROM tracker_status_history
+       WHERE page_id = ? AND site_code = ?
+       ORDER BY changed_at DESC`,
+      [pageId, siteCode]
+    );
+    res.json({ ok: true, data: rows });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 

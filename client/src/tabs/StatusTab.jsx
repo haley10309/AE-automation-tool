@@ -6,7 +6,6 @@ import { useDB } from '../DBContext.jsx'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
 import * as XLSX from 'xlsx'
 
-
 // ── 상태 정의 (0=미설정, 1~15=단계) ─────────────────────────
 const COPY_STATUSES = [
   { value: '',                  label: '— 미설정 —',          color: '#9ca3af', bg: '#f9fafb',  step: 0  },
@@ -391,7 +390,6 @@ function CountryStatusCell({ siteCode, entry, onStatusChange }) {
 // ── 파일 셀 (히스토리에 상태 기록 포함) ──────────────────────────
 function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
   const fileRef = useRef(null)
-  const [showHistory, setShowHistory] = useState(false)
   const [uploading, setUploading] = useState(false)
 
   const handleChange = async (e) => {
@@ -462,30 +460,7 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
             <button className="cst-file-replace" onClick={() => fileRef.current?.click()} disabled={uploading}>
               {uploading ? '⏳' : '↑ 교체'}
             </button>
-            {entry.fileHistory?.length > 0 && (
-              <button className="cst-file-history-btn" onClick={() => setShowHistory(v => !v)}>
-                히스토리 ({entry.fileHistory.length})
-              </button>
-            )}
           </div>
-          
-          {showHistory && (
-            <div className="cst-file-history">
-              {/* 히스토리는 역순으로 보여주되 인덱스 계산을 위해 원본 배열 활용 */}
-              {[...entry.fileHistory].reverse().map((f, revIdx) => {
-                const originalIdx = entry.fileHistory.length - 1 - revIdx;
-                return (
-                  <HistoryItem 
-                    key={originalIdx}
-                    file={f}
-                    index={originalIdx}
-                    download={download}
-                    onUpdateNote={(idx, newNote) => onUpdateHistoryNote(siteCode, idx, newNote)}
-                  />
-                )
-              })}
-            </div>
-          )}
         </div>
       ) : (
         <button className="cst-upload-btn" onClick={() => fileRef.current?.click()}>+ 파일 첨부</button>
@@ -883,9 +858,48 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
 }
 
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox }) => {
+const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId }) => {
   const [isExpanded, setIsExpanded] = useState(false)
+  const [showUnifiedHistory, setShowUnifiedHistory] = useState(false)
+  const [statusHistory, setStatusHistory] = useState(null) // null = 미로딩
   const branches = entry?.branches || []
+
+  const fetchStatusHistory = async () => {
+    try {
+      const res = await fetch(`http://localhost:4000/api/tracker/status-history?pageId=${pageId}&siteCode=${site.code}`)
+      const data = await res.json()
+      setStatusHistory(data.ok ? data.data : [])
+    } catch { setStatusHistory([]) }
+  }
+
+  // 상태 변경 시 이력 갱신 (패널 열려있으면 즉시, 닫혀있으면 캐시 초기화)
+  const handleStatusChangeWithRefresh = async (siteCode, newStatus, note) => {
+    await handleStatusChange(siteCode, newStatus, note)
+    if (showUnifiedHistory) await fetchStatusHistory()
+    else setStatusHistory(null)
+  }
+
+  const toggleUnifiedHistory = async () => {
+    if (!showUnifiedHistory) await fetchStatusHistory()
+    setShowUnifiedHistory(v => !v)
+  }
+
+  // 상태 이력 + 파일 이력을 시간순으로 머지
+  const mergedHistory = (() => {
+    const statusItems = (statusHistory || []).map(h => ({
+      type: 'status',
+      time: new Date(h.changed_at).getTime(),
+      data: h,
+    }))
+    const fileItems = (entry?.fileHistory || []).map((f, idx) => ({
+      type: 'file',
+      time: new Date(f.uploadedAt).getTime(),
+      data: { ...f, _idx: idx },
+    }))
+    return [...statusItems, ...fileItems].sort((a, b) => b.time - a.time) // 최신순
+  })()
+
+  const colSpan = showCheckbox ? 6 : 5
 
   return (
     <>
@@ -900,7 +914,7 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
             />
           </td>
         )}
-        <td className="cst-td">
+        <td className="cst-td cst-td-country">
           <div className="cst-country-cell">
             <span className="cst-flag">{site.flag}</span>
             <div className="cst-country-info">
@@ -908,32 +922,44 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
               <span className="cst-country-code" style={{ color: REGION_COLORS[site.region] }}>{site.code}</span>
             </div>
           </div>
-          <button 
-            onClick={() => setIsExpanded(!isExpanded)} 
-            style={{ 
-              marginTop: 6, fontSize: 11, background: isExpanded ? '#e0e7ff' : '#f1f5f9', 
-              border: 'none', padding: '3px 8px', borderRadius: 4, cursor: 'pointer', color: '#4f46e5'
-            }}
-          >
-            {isExpanded ? '▼ 닫기' : '▶ 분기 관리'} {branches.length > 0 && `(${new Set(branches.map(b => b.branch_name)).size})`}
-          </button>
         </td>
         <td className="cst-td">
-          <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChange} />
+          <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChangeWithRefresh} />
         </td>
         <td className="cst-td">
-          <FileCell 
-            siteCode={site.code} 
-            entry={entry} 
-            onFileUpload={handleFileUpload} 
+          <FileCell
+            siteCode={site.code}
+            entry={entry}
+            onFileUpload={handleFileUpload}
             onUpdateHistoryNote={handleHistoryNoteUpdate}
           />
         </td>
-        <td className="cst-td">
-          <NoteInput 
-            initialNote={entry?.note} 
-            onSave={(note) => handleStatusChange(site.code, entry?.status, note)} 
-          />
+        <td className="cst-td cst-td-note">
+          <div className="cst-note-cell">
+            <NoteInput
+              initialNote={entry?.note}
+              onSave={(note) => handleStatusChange(site.code, entry?.status, note)}
+            />
+            <div className="cst-row-actions">
+              <button
+                className={`cst-row-action-btn${isExpanded ? ' active' : ''}`}
+                onClick={() => setIsExpanded(!isExpanded)}
+              >
+                {isExpanded ? '▼ 닫기' : '▶ 분기 관리'} {branches.length > 0 && `(${new Set(branches.map(b => b.branch_name)).size})`}
+              </button>
+              <button
+                className={`cst-row-action-btn cst-history-action${showUnifiedHistory ? ' active' : ''}`}
+                onClick={toggleUnifiedHistory}
+              >
+                {showUnifiedHistory ? '▼ 이력 닫기' : '▶ 전체 이력'}
+                {(entry?.fileHistory?.length > 0 || statusHistory?.length > 0) && (
+                  <span className="cst-row-action-count">
+                    {(entry?.fileHistory?.length || 0) + (statusHistory?.length || 0)}
+                  </span>
+                )}
+              </button>
+            </div>
+          </div>
         </td>
         <td className="cst-td">
           {isRegular && (
@@ -941,9 +967,68 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
           )}
         </td>
       </tr>
+      {showUnifiedHistory && (
+        <tr className="cst-unified-history-row">
+          <td colSpan={colSpan} style={{ padding: 0 }}>
+            <div className="cst-unified-history-panel">
+              <div className="cst-unified-history-title">
+                📋 전체 이력 — {site.name} ({site.code})
+              </div>
+              {statusHistory === null ? (
+                <div className="cst-unified-history-loading">불러오는 중...</div>
+              ) : mergedHistory.length === 0 ? (
+                <div className="cst-unified-history-empty">이력이 없습니다.</div>
+              ) : (
+                mergedHistory.map((item, i) => {
+                  if (item.type === 'status') {
+                    const h = item.data
+                    const fromStyle = getStatusStyle(h.from_status || '')
+                    const toStyle   = getStatusStyle(h.to_status   || '')
+                    const fromLabel = fromStyle.label
+                    const toLabel   = toStyle.label
+                    return (
+                      <div key={`s-${h.id}`} className="cst-unified-item">
+                        <span className="cst-unified-item-icon">🔄</span>
+                        <div className="cst-unified-item-body">
+                          <div className="cst-unified-item-row">
+                            <span className="cst-sh-badge" style={{ color: fromStyle.color, background: fromStyle.bg }}>{fromLabel}</span>
+                            <span className="cst-sh-arrow">→</span>
+                            <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toLabel}</span>
+                            <span className="cst-unified-item-time">{formatDateTime(h.changed_at)}</span>
+                          </div>
+                          {h.changed_by && <div className="cst-unified-item-meta">👤 {h.changed_by}</div>}
+                        </div>
+                      </div>
+                    )
+                  } else {
+                    const f = item.data
+                    const statusStyle = getStatusStyle(f.statusAtUpload || '')
+                    return (
+                      <div key={`f-${f._idx}`} className="cst-unified-item">
+                        <span className="cst-unified-item-icon">📎</span>
+                        <div className="cst-unified-item-body">
+                          <div className="cst-unified-item-row">
+                            <span style={{ fontWeight: 500, color: '#334155' }}>{f.name}</span>
+                            <span className="cst-sh-badge" style={{ color: statusStyle.color, background: statusStyle.bg }}>{statusStyle.label}</span>
+                            <span className="cst-unified-item-time">{formatDateTime(f.uploadedAt)}</span>
+                          </div>
+                          <div className="cst-unified-item-meta">
+                            {f.uploadedBy && `👤 ${f.uploadedBy}`}
+                            {f.noteAtUpload && ` · 📝 ${f.noteAtUpload}`}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  }
+                })
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
       {isExpanded && (
         <tr>
-          <td colSpan="6" style={{ padding: 0 }}>
+          <td colSpan={colSpan} style={{ padding: 0 }}>
             <BranchTimeline branches={branches} branchStatuses={entry?.branchStatuses || []} onCreateBranch={(data) => handleBranchCreate(site.code, data)} onUpdateBranchNote={(id, note) => handleBranchNoteUpdate(site.code, id, note)} onCloseBranch={(siteCode, bName, isClosed) => handleBranchClose(siteCode, bName, isClosed)} onDeleteBranch={(siteCode, bName) => handleBranchDelete(siteCode, bName)} />
           </td>
         </tr>
@@ -1632,9 +1717,10 @@ function PageDetail({ page, onBack, onUpdate }) {
         siteCode,
         status: newStatus ?? existing?.status ?? '',
         note: note ?? existing?.note ?? '',
+        changedBy: user?.name || null,
       })
     } catch (e) { console.warn('status DB 저장 실패', e) }
-  }, [page, onUpdate])
+  }, [page, onUpdate, user])
 
   const handleBranchCreate = useCallback(async (siteCode, branchData) => {
     try {
@@ -2060,6 +2146,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 handleBranchDelete={handleBranchDelete}
                 removeCountry={removeCountry}
                 isRegular={user?.position === 'regular'}
+                pageId={page.id}
               />
             )
           })}
