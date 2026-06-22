@@ -858,10 +858,10 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
 }
 
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId }) => {
+const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId, initialStatusHistory }) => {
   const [isExpanded, setIsExpanded] = useState(false)
   const [showUnifiedHistory, setShowUnifiedHistory] = useState(false)
-  const [statusHistory, setStatusHistory] = useState(null) // null = 미로딩
+  const [statusHistory, setStatusHistory] = useState(initialStatusHistory ?? null) // null = 미로딩
   const branches = entry?.branches || []
 
   const fetchStatusHistory = async () => {
@@ -952,7 +952,7 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                 onClick={toggleUnifiedHistory}
               >
                 {showUnifiedHistory ? '▼ 이력 닫기' : '▶ 전체 이력'}
-                {(entry?.fileHistory?.length > 0 || statusHistory?.length > 0) && (
+                {((entry?.fileHistory?.length || 0) + (statusHistory?.length || 0)) > 0 && (
                   <span className="cst-row-action-count">
                     {(entry?.fileHistory?.length || 0) + (statusHistory?.length || 0)}
                   </span>
@@ -1561,6 +1561,13 @@ function PageDetail({ page, onBack, onUpdate }) {
           branchStatusMap[s.site_code].push(s)
         }
 
+        // statusHistory를 site_code별로 그룹핑 (count 표시 및 초기 로딩용)
+        const statusHistoryMap = {}
+        for (const h of (res.statusHistory || [])) {
+          if (!statusHistoryMap[h.site_code]) statusHistoryMap[h.site_code] = []
+          statusHistoryMap[h.site_code].push(h)
+        }
+
         // 5. 기본 배열에 DB 데이터를 최종 병합 (mergedCountries 단일 선언)
         const mergedCountries = baseCountries.map(c => {
           const st = statusMap[c.code]
@@ -1573,6 +1580,7 @@ function PageDetail({ page, onBack, onUpdate }) {
             file: history.length ? history[history.length - 1] : c.file,
             branches: branchMap[c.code] || [], // 분기 배열 연결
             branchStatuses: branchStatusMap[c.code] || [],
+            statusHistoryItems: statusHistoryMap[c.code] || [],
           }
         })
 
@@ -1589,6 +1597,7 @@ function PageDetail({ page, onBack, onUpdate }) {
               file: history.length ? history[history.length - 1] : null,
               branches: branchMap[code] || [], // 분기 배열 연결
               branchStatuses: branchStatusMap[code] || [],
+              statusHistoryItems: statusHistoryMap[code] || [],
             })
           }
         }
@@ -2147,6 +2156,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 removeCountry={removeCountry}
                 isRegular={user?.position === 'regular'}
                 pageId={page.id}
+                initialStatusHistory={entry?.statusHistoryItems ?? null}
               />
             )
           })}
@@ -2688,8 +2698,9 @@ export default function StatusTab() {
       const files = detail?.files || []
       const branches = detail?.branches || []
       const branchStatuses = detail?.branchStatuses || []
+      const statusHistory = detail?.statusHistory || []
 
-      // 1. 국가별 상태·메모 복사
+      // 1. 국가별 상태·메모 복사 (skipHistory=true: 복제이므로 별도 이력 기록 안 함)
       await Promise.allSettled(
         statuses.map(s =>
           api.updateTrackerStatus({
@@ -2697,6 +2708,7 @@ export default function StatusTab() {
             siteCode: s.site_code,
             status: s.status || '',
             note: s.note || '',
+            skipHistory: true,
           })
         )
       )
@@ -2775,6 +2787,11 @@ export default function StatusTab() {
           }
         })
       )
+
+      // 5. 카피 상태 변경 이력 복사 (원본 타임스탬프 그대로 bulk insert)
+      if (statusHistory.length > 0) {
+        await api.bulkInsertStatusHistory({ pageId: newPageId, rows: statusHistory })
+      }
     } catch (e) {
       console.error('[DB] 프로젝트 복사 실패:', e?.message || e)
       alert('복사 중 오류가 발생했습니다: ' + (e?.message || e))
