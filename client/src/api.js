@@ -80,6 +80,8 @@ export const api = window.electronAPI || {
   
   // [신규] 히스토리 내 개별 파일 메모만 수정
   updateHistoryNote: (id, body) => call('PUT',   `/api/files/${id}/note`, body),
+  // 카피 상태 변경 이력 일괄 삽입 (프로젝트 복제용)
+  bulkInsertStatusHistory: (body) => call('POST', '/api/tracker/status-history/bulk', body),
   createTrackerPage: (body)     => call('POST',  '/api/tracker/pages', body),
   updateTrackerPage: (id, body) => call('PUT',   `/api/tracker/pages/${id}`, body),
   deleteTrackerPage: (id)       => call('DELETE', `/api/tracker/pages/${id}`),
@@ -96,6 +98,7 @@ export const api = window.electronAPI || {
   deleteBilling:       (id)            => call('DELETE', `/api/tracker/billing/${id}`),
   uploadBillingFile:   (billingId, body) => call('POST', `/api/tracker/billing/${billingId}/files`, body),
   getBillingFileData:  (fileId)        => call('GET',    `/api/tracker/billing/files/${fileId}/data`),
+  getFileData:         (fileId)        => call('GET',    `/api/files/${fileId}/data`),
   deleteBillingFile:   (fileId)        => call('DELETE', `/api/tracker/billing/files/${fileId}`),
 
   // ── 서비스 운영 현황 ──────────────────────────────────────────

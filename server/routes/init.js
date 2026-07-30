@@ -200,6 +200,23 @@ router.post('/init', checkDbConnection, async (req, res) => {
       PRIMARY KEY (page_id, site_code),
       FOREIGN KEY (page_id) REFERENCES tracker_pages(id) ON DELETE CASCADE)`);
 
+    // 기존 tracker_site_status에 updated_by 컬럼 추가 (이미 있으면 무시)
+    try {
+      await getPool().execute(`ALTER TABLE tracker_site_status ADD COLUMN updated_by VARCHAR(100) DEFAULT NULL COMMENT '최종 수정자' AFTER note`);
+    } catch (_) { /* 이미 존재하면 무시 */ }
+
+    // 카피 작업 상태 변경 이력 테이블
+    await getPool().execute(`CREATE TABLE IF NOT EXISTS tracker_status_history (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      page_id VARCHAR(100) NOT NULL,
+      site_code VARCHAR(50) NOT NULL,
+      from_status VARCHAR(100) COMMENT '변경 전 상태',
+      to_status VARCHAR(100) COMMENT '변경 후 상태',
+      changed_by VARCHAR(100) COMMENT '변경자',
+      changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_status_hist (page_id, site_code)
+    ) COMMENT='카피 작업 상태 변경 이력'`);
+
     await getPool().execute(`CREATE TABLE IF NOT EXISTS page_files (
       id INT AUTO_INCREMENT PRIMARY KEY, page_id VARCHAR(100) NOT NULL,
       site_code VARCHAR(50) NOT NULL, name VARCHAR(500) NOT NULL,

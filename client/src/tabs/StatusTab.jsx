@@ -1,10 +1,10 @@
 import { useState, useCallback, useEffect, useRef, memo, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import { useDB } from '../DBContext.jsx'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
 import * as XLSX from 'xlsx'
-
 
 // ── 상태 정의 (0=미설정, 1~15=단계) ─────────────────────────
 const COPY_STATUSES = [
@@ -390,7 +390,6 @@ function CountryStatusCell({ siteCode, entry, onStatusChange }) {
 // ── 파일 셀 (히스토리에 상태 기록 포함) ──────────────────────────
 function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
   const fileRef = useRef(null)
-  const [showHistory, setShowHistory] = useState(false)
   const [uploading, setUploading] = useState(false)
 
   const handleChange = async (e) => {
@@ -461,30 +460,7 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
             <button className="cst-file-replace" onClick={() => fileRef.current?.click()} disabled={uploading}>
               {uploading ? '⏳' : '↑ 교체'}
             </button>
-            {entry.fileHistory?.length > 0 && (
-              <button className="cst-file-history-btn" onClick={() => setShowHistory(v => !v)}>
-                히스토리 ({entry.fileHistory.length})
-              </button>
-            )}
           </div>
-          
-          {showHistory && (
-            <div className="cst-file-history">
-              {/* 히스토리는 역순으로 보여주되 인덱스 계산을 위해 원본 배열 활용 */}
-              {[...entry.fileHistory].reverse().map((f, revIdx) => {
-                const originalIdx = entry.fileHistory.length - 1 - revIdx;
-                return (
-                  <HistoryItem 
-                    key={originalIdx}
-                    file={f}
-                    index={originalIdx}
-                    download={download}
-                    onUpdateNote={(idx, newNote) => onUpdateHistoryNote(siteCode, idx, newNote)}
-                  />
-                )
-              })}
-            </div>
-          )}
         </div>
       ) : (
         <button className="cst-upload-btn" onClick={() => fileRef.current?.click()}>+ 파일 첨부</button>
@@ -882,9 +858,64 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
 }
 
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox }) => {
+const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId, initialStatusHistory }) => {
   const [isExpanded, setIsExpanded] = useState(false)
+  const [showUnifiedHistory, setShowUnifiedHistory] = useState(false)
+  const [statusHistory, setStatusHistory] = useState(initialStatusHistory ?? null) // null = 미로딩
   const branches = entry?.branches || []
+
+  const fetchStatusHistory = async () => {
+    try {
+      const res = await fetch(`http://localhost:4000/api/tracker/status-history?pageId=${pageId}&siteCode=${site.code}`)
+      const data = await res.json()
+      setStatusHistory(data.ok ? data.data : [])
+    } catch { setStatusHistory([]) }
+  }
+
+  // 상태 변경 시 이력 갱신 (패널 열려있으면 즉시, 닫혀있으면 캐시 초기화)
+  const handleStatusChangeWithRefresh = async (siteCode, newStatus, note) => {
+    await handleStatusChange(siteCode, newStatus, note)
+    if (showUnifiedHistory) await fetchStatusHistory()
+    else setStatusHistory(null)
+  }
+
+  const toggleUnifiedHistory = async () => {
+    if (!showUnifiedHistory) await fetchStatusHistory()
+    setShowUnifiedHistory(v => !v)
+  }
+
+  // 상태 이력 + 파일 이력을 시간순으로 머지
+  const mergedHistory = (() => {
+    const statusItems = (statusHistory || []).map(h => ({
+      type: 'status',
+      time: new Date(h.changed_at).getTime(),
+      data: h,
+    }))
+    const fileItems = (entry?.fileHistory || []).map((f, idx) => ({
+      type: 'file',
+      time: new Date(f.uploadedAt).getTime(),
+      data: { ...f, _idx: idx },
+    }))
+    return [...statusItems, ...fileItems].sort((a, b) => b.time - a.time) // 최신순
+  })()
+
+  const [downloadingId, setDownloadingId] = useState(null)
+
+  const downloadHistoryFile = async (dbId, name) => {
+    if (!dbId || downloadingId) return
+    setDownloadingId(dbId)
+    try {
+      const res = await api.getFileData(dbId)
+      if (!res?.ok || !res.data?.data_url) { alert('파일 데이터를 가져올 수 없습니다.'); return }
+      const a = document.createElement('a')
+      a.href = res.data.data_url
+      a.download = name
+      a.click()
+    } catch (e) { alert('다운로드 실패: ' + (e?.message || e)) }
+    finally { setDownloadingId(null) }
+  }
+
+  const colSpan = showCheckbox ? 6 : 5
 
   return (
     <>
@@ -899,7 +930,7 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
             />
           </td>
         )}
-        <td className="cst-td">
+        <td className="cst-td cst-td-country">
           <div className="cst-country-cell">
             <span className="cst-flag">{site.flag}</span>
             <div className="cst-country-info">
@@ -907,32 +938,44 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
               <span className="cst-country-code" style={{ color: REGION_COLORS[site.region] }}>{site.code}</span>
             </div>
           </div>
-          <button 
-            onClick={() => setIsExpanded(!isExpanded)} 
-            style={{ 
-              marginTop: 6, fontSize: 11, background: isExpanded ? '#e0e7ff' : '#f1f5f9', 
-              border: 'none', padding: '3px 8px', borderRadius: 4, cursor: 'pointer', color: '#4f46e5'
-            }}
-          >
-            {isExpanded ? '▼ 닫기' : '▶ 분기 관리'} {branches.length > 0 && `(${new Set(branches.map(b => b.branch_name)).size})`}
-          </button>
         </td>
         <td className="cst-td">
-          <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChange} />
+          <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChangeWithRefresh} />
         </td>
         <td className="cst-td">
-          <FileCell 
-            siteCode={site.code} 
-            entry={entry} 
-            onFileUpload={handleFileUpload} 
+          <FileCell
+            siteCode={site.code}
+            entry={entry}
+            onFileUpload={handleFileUpload}
             onUpdateHistoryNote={handleHistoryNoteUpdate}
           />
         </td>
-        <td className="cst-td">
-          <NoteInput 
-            initialNote={entry?.note} 
-            onSave={(note) => handleStatusChange(site.code, entry?.status, note)} 
-          />
+        <td className="cst-td cst-td-note">
+          <div className="cst-note-cell">
+            <NoteInput
+              initialNote={entry?.note}
+              onSave={(note) => handleStatusChange(site.code, entry?.status, note)}
+            />
+            <div className="cst-row-actions">
+              <button
+                className={`cst-row-action-btn${isExpanded ? ' active' : ''}`}
+                onClick={() => setIsExpanded(!isExpanded)}
+              >
+                {isExpanded ? '▼ 닫기' : '▶ 분기 관리'} {branches.length > 0 && `(${new Set(branches.map(b => b.branch_name)).size})`}
+              </button>
+              <button
+                className={`cst-row-action-btn cst-history-action${showUnifiedHistory ? ' active' : ''}`}
+                onClick={toggleUnifiedHistory}
+              >
+                {showUnifiedHistory ? '▼ 이력 닫기' : '▶ 전체 이력'}
+                {((entry?.fileHistory?.length || 0) + (statusHistory?.length || 0)) > 0 && (
+                  <span className="cst-row-action-count">
+                    {(entry?.fileHistory?.length || 0) + (statusHistory?.length || 0)}
+                  </span>
+                )}
+              </button>
+            </div>
+          </div>
         </td>
         <td className="cst-td">
           {isRegular && (
@@ -940,9 +983,78 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
           )}
         </td>
       </tr>
+      {showUnifiedHistory && (
+        <tr className="cst-unified-history-row">
+          <td colSpan={colSpan} style={{ padding: 0 }}>
+            <div className="cst-unified-history-panel">
+              <div className="cst-unified-history-title">
+                📋 전체 이력 — {site.name} ({site.code})
+              </div>
+              {statusHistory === null ? (
+                <div className="cst-unified-history-loading">불러오는 중...</div>
+              ) : mergedHistory.length === 0 ? (
+                <div className="cst-unified-history-empty">이력이 없습니다.</div>
+              ) : (
+                mergedHistory.map((item, i) => {
+                  if (item.type === 'status') {
+                    const h = item.data
+                    const fromStyle = getStatusStyle(h.from_status || '')
+                    const toStyle   = getStatusStyle(h.to_status   || '')
+                    const fromLabel = fromStyle.label
+                    const toLabel   = toStyle.label
+                    return (
+                      <div key={`s-${h.id}`} className="cst-unified-item">
+                        <span className="cst-unified-item-icon">🔄</span>
+                        <div className="cst-unified-item-body">
+                          <div className="cst-unified-item-row">
+                            <span className="cst-sh-badge" style={{ color: fromStyle.color, background: fromStyle.bg }}>{fromLabel}</span>
+                            <span className="cst-sh-arrow">→</span>
+                            <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toLabel}</span>
+                            <span className="cst-unified-item-time">{formatDateTime(h.changed_at)}</span>
+                          </div>
+                          {h.changed_by && <div className="cst-unified-item-meta">👤 {h.changed_by}</div>}
+                        </div>
+                      </div>
+                    )
+                  } else {
+                    const f = item.data
+                    const statusStyle = getStatusStyle(f.statusAtUpload || '')
+                    return (
+                      <div key={`f-${f._idx}`} className="cst-unified-item">
+                        <span className="cst-unified-item-icon">📎</span>
+                        <div className="cst-unified-item-body">
+                          <div className="cst-unified-item-row">
+                            <span style={{ fontWeight: 500, color: '#334155' }}>{f.name}</span>
+                            <span className="cst-sh-badge" style={{ color: statusStyle.color, background: statusStyle.bg }}>{statusStyle.label}</span>
+                            {f.dbId && (
+                              <button
+                                className="cst-unified-download-btn"
+                                onClick={() => downloadHistoryFile(f.dbId, f.name)}
+                                disabled={downloadingId === f.dbId}
+                                title="파일 다운로드"
+                              >
+                                {downloadingId === f.dbId ? '⏳' : '⬇'}
+                              </button>
+                            )}
+                            <span className="cst-unified-item-time">{formatDateTime(f.uploadedAt)}</span>
+                          </div>
+                          <div className="cst-unified-item-meta">
+                            {f.uploadedBy && `👤 ${f.uploadedBy}`}
+                            {f.noteAtUpload && ` · 📝 ${f.noteAtUpload}`}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  }
+                })
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
       {isExpanded && (
         <tr>
-          <td colSpan="6" style={{ padding: 0 }}>
+          <td colSpan={colSpan} style={{ padding: 0 }}>
             <BranchTimeline branches={branches} branchStatuses={entry?.branchStatuses || []} onCreateBranch={(data) => handleBranchCreate(site.code, data)} onUpdateBranchNote={(id, note) => handleBranchNoteUpdate(site.code, id, note)} onCloseBranch={(siteCode, bName, isClosed) => handleBranchClose(siteCode, bName, isClosed)} onDeleteBranch={(siteCode, bName) => handleBranchDelete(siteCode, bName)} />
           </td>
         </tr>
@@ -978,6 +1090,153 @@ function exportBillingXLSX(billings, pageName) {
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, 'Billing')
   XLSX.writeFile(wb, `billing_${pageName}_${new Date().toISOString().slice(0, 10)}.xlsx`)
+}
+
+
+// ── 복제 옵션 선택 모달 ───────────────────────────────────────
+function DuplicateModal({ page, onConfirm, onClose }) {
+  const [opts, setOpts] = useState({
+    countries:   true,   // 국가 수 (항상 필요 — 비활성화)
+    status:      true,   // 국가별 카피 작업 상태
+    files:       true,   // 첨부파일
+    statusHistory: true, // 카피 변경 이력
+    branches:    true,   // 국가별 분기 히스토리
+    billing:     false,  // 정산(Billing) — 기본 off
+  })
+  const [running, setRunning] = useState(false)
+
+  const toggle = (key) => {
+    if (key === 'countries') return // 국가 수는 항상 복제
+    setOpts(prev => {
+      const next = { ...prev, [key]: !prev[key] }
+      // 상태가 꺼지면 이력도 강제로 끔 (이력만 있으면 의미 없음)
+      if (key === 'status' && !next.status) next.statusHistory = false
+      return next
+    })
+  }
+
+  const items = [
+    { key: 'countries',     icon: '🌍', label: '국가 수',              desc: '원본과 동일한 국가 목록',          disabled: true },
+    { key: 'status',        icon: '🏷️', label: '카피 작업 상태 & 메모', desc: '각 국가의 현재 상태와 메모',        disabled: false },
+    { key: 'statusHistory', icon: '🔄', label: '카피 상태 변경 이력',   desc: '상태가 바뀐 전체 히스토리',         disabled: !opts.status },
+    { key: 'files',         icon: '📎', label: '첨부파일',              desc: '각 국가에 업로드된 파일',           disabled: false },
+    { key: 'branches',      icon: '🌿', label: '분기(Branch) 히스토리', desc: '국가별 작업 분기 전체',             disabled: false },
+    { key: 'billing',       icon: '🧾', label: '정산(Billing) 항목',    desc: '정산 내역 및 첨부파일 포함',        disabled: false },
+  ]
+
+  const handleConfirm = async () => {
+    setRunning(true)
+    try { await onConfirm(page, opts) } finally { setRunning(false) }
+  }
+
+  return createPortal(
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 9999,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: '#fff', borderRadius: 14, padding: '28px 28px 22px',
+          width: 420, maxWidth: '92vw', boxShadow: '0 20px 60px rgba(0,0,0,0.18)',
+        }}
+      >
+        {/* 헤더 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+          <span style={{ fontSize: 22 }}>📑</span>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: '#111' }}>프로젝트 복제</div>
+            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+              복제할 항목을 선택하세요
+            </div>
+          </div>
+        </div>
+
+        {/* 원본 프로젝트명 */}
+        <div style={{
+          background: '#f3f4f6', borderRadius: 8, padding: '8px 12px',
+          fontSize: 13, color: '#374151', marginBottom: 18, marginTop: 10,
+        }}>
+          📄 <strong>{page.name}</strong>
+        </div>
+
+        {/* 옵션 리스트 */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {items.map(item => {
+            const checked = opts[item.key]
+            const isDisabled = item.disabled
+            return (
+              <label
+                key={item.key}
+                onClick={() => !isDisabled && toggle(item.key)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '10px 12px', borderRadius: 8, cursor: isDisabled ? 'default' : 'pointer',
+                  background: checked ? '#eff6ff' : '#f9fafb',
+                  border: `1px solid ${checked ? '#93c5fd' : '#e5e7eb'}`,
+                  opacity: isDisabled ? 0.55 : 1,
+                  transition: 'all 0.15s',
+                  userSelect: 'none',
+                }}
+              >
+                {/* 커스텀 체크박스 */}
+                <div style={{
+                  width: 18, height: 18, borderRadius: 5, flexShrink: 0,
+                  border: `2px solid ${checked ? '#3b82f6' : '#d1d5db'}`,
+                  background: checked ? '#3b82f6' : '#fff',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  transition: 'all 0.15s',
+                }}>
+                  {checked && <span style={{ color: '#fff', fontSize: 11, lineHeight: 1 }}>✓</span>}
+                </div>
+                <span style={{ fontSize: 16, flexShrink: 0 }}>{item.icon}</span>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#1f2937' }}>{item.label}</div>
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1 }}>{item.desc}</div>
+                </div>
+              </label>
+            )
+          })}
+        </div>
+
+        {/* 버튼 */}
+        <div style={{ display: 'flex', gap: 8, marginTop: 20, justifyContent: 'flex-end' }}>
+          <button
+            onClick={onClose}
+            disabled={running}
+            style={{
+              padding: '8px 16px', borderRadius: 8, border: '1px solid #e5e7eb',
+              background: '#fff', color: '#6b7280', fontSize: 13, cursor: 'pointer', fontWeight: 500,
+            }}
+          >
+            취소
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={running}
+            style={{
+              padding: '8px 20px', borderRadius: 8, border: 'none',
+              background: running ? '#93c5fd' : '#3b82f6', color: '#fff',
+              fontSize: 13, cursor: running ? 'not-allowed' : 'pointer', fontWeight: 600,
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}
+          >
+            {running ? (
+              <>
+                <span style={{ display: 'inline-block', width: 14, height: 14, border: '2px solid rgba(255,255,255,0.5)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+                복제 중...
+              </>
+            ) : '복제 시작'}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
 }
 
 // ── BillingModal 컴포넌트 ──────────────────────────────────────
@@ -1475,6 +1734,13 @@ function PageDetail({ page, onBack, onUpdate }) {
           branchStatusMap[s.site_code].push(s)
         }
 
+        // statusHistory를 site_code별로 그룹핑 (count 표시 및 초기 로딩용)
+        const statusHistoryMap = {}
+        for (const h of (res.statusHistory || [])) {
+          if (!statusHistoryMap[h.site_code]) statusHistoryMap[h.site_code] = []
+          statusHistoryMap[h.site_code].push(h)
+        }
+
         // 5. 기본 배열에 DB 데이터를 최종 병합 (mergedCountries 단일 선언)
         const mergedCountries = baseCountries.map(c => {
           const st = statusMap[c.code]
@@ -1487,6 +1753,7 @@ function PageDetail({ page, onBack, onUpdate }) {
             file: history.length ? history[history.length - 1] : c.file,
             branches: branchMap[c.code] || [], // 분기 배열 연결
             branchStatuses: branchStatusMap[c.code] || [],
+            statusHistoryItems: statusHistoryMap[c.code] || [],
           }
         })
 
@@ -1503,6 +1770,7 @@ function PageDetail({ page, onBack, onUpdate }) {
               file: history.length ? history[history.length - 1] : null,
               branches: branchMap[code] || [], // 분기 배열 연결
               branchStatuses: branchStatusMap[code] || [],
+              statusHistoryItems: statusHistoryMap[code] || [],
             })
           }
         }
@@ -1631,9 +1899,10 @@ function PageDetail({ page, onBack, onUpdate }) {
         siteCode,
         status: newStatus ?? existing?.status ?? '',
         note: note ?? existing?.note ?? '',
+        changedBy: user?.name || null,
       })
     } catch (e) { console.warn('status DB 저장 실패', e) }
-  }, [page, onUpdate])
+  }, [page, onUpdate, user])
 
   const handleBranchCreate = useCallback(async (siteCode, branchData) => {
     try {
@@ -1898,7 +2167,18 @@ function PageDetail({ page, onBack, onUpdate }) {
         <div className="cst-add-country-wrap" ref={dropRef}>
           <button
             className={`cst-bulk-toggle-btn${showBulkPanel ? ' active' : ''}`}
-            onClick={() => setShowBulkPanel(v => !v)}
+            onClick={() => setShowBulkPanel(v => {
+              if (v) {
+                // 패널 닫을 때 전체 초기화
+                setSelectedCodes(new Set())
+                setBulkStatus('')
+                setBulkSelectResult(null)
+                setBulkText('')
+                setBulkTextStatus('')
+                setBulkTextResult(null)
+              }
+              return !v
+            })}
           >
             ☑ 일괄 변경
             {selectedCodes.size > 0 && <span className="cst-bulk-toggle-count">{selectedCodes.size}</span>}
@@ -2048,6 +2328,8 @@ function PageDetail({ page, onBack, onUpdate }) {
                 handleBranchDelete={handleBranchDelete}
                 removeCountry={removeCountry}
                 isRegular={user?.position === 'regular'}
+                pageId={page.id}
+                initialStatusHistory={entry?.statusHistoryItems ?? null}
               />
             )
           })}
@@ -2063,16 +2345,49 @@ function PageDetail({ page, onBack, onUpdate }) {
 // ── 공용 점 세 개 컨텍스트 메뉴 ─────────────────────────────────
 function DotsMenu({ items }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef(null)
+  const [pos, setPos] = useState(null) // { top, left } 화면 기준 고정 좌표
+  const btnRef = useRef(null)
+  const menuRef = useRef(null)
+
+  // 메뉴 열 때 버튼 위치 기준으로 좌표 계산 (뷰포트 밖으로 안 나가게 보정)
+  const openMenu = () => {
+    const r = btnRef.current.getBoundingClientRect()
+    const MENU_W = 170
+    const MENU_MAX_H = 320
+    let left = r.right - MENU_W
+    let top = r.bottom + 4
+    if (left < 4) left = 4
+    if (left + MENU_W > window.innerWidth - 4) left = window.innerWidth - MENU_W - 4
+    if (top + MENU_MAX_H > window.innerHeight - 4) top = r.top - MENU_MAX_H - 4 // 아래 공간 부족하면 위로 띄움
+    if (top < 4) top = 4
+    setPos({ top, left })
+    setOpen(true)
+  }
+
   useEffect(() => {
-    function handle(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    if (open) document.addEventListener('mousedown', handle)
-    return () => document.removeEventListener('mousedown', handle)
+    if (!open) return
+    function handle(e) {
+      if (
+        btnRef.current && !btnRef.current.contains(e.target) &&
+        menuRef.current && !menuRef.current.contains(e.target)
+      ) setOpen(false)
+    }
+    function handleScrollResize() { setOpen(false) }
+    document.addEventListener('mousedown', handle)
+    window.addEventListener('scroll', handleScrollResize, true)
+    window.addEventListener('resize', handleScrollResize)
+    return () => {
+      document.removeEventListener('mousedown', handle)
+      window.removeEventListener('scroll', handleScrollResize, true)
+      window.removeEventListener('resize', handleScrollResize)
+    }
   }, [open])
+
   return (
-    <div ref={ref} style={{ position: 'relative' }} onClick={e => e.stopPropagation()}>
+    <div style={{ position: 'relative', display: 'inline-block' }} onClick={e => e.stopPropagation()}>
       <button
-        onClick={() => setOpen(v => !v)}
+        ref={btnRef}
+        onClick={() => (open ? setOpen(false) : openMenu())}
         style={{
           background: 'none', border: 'none', cursor: 'pointer',
           padding: '3px 5px', borderRadius: 5, lineHeight: 1,
@@ -2083,12 +2398,16 @@ function DotsMenu({ items }) {
         onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#9ca3af' }}
         title="옵션"
       >⋯</button>
-      {open && (
-        <div style={{
-          position: 'absolute', right: 0, top: 'calc(100% + 4px)', zIndex: 200,
-          background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
-          boxShadow: '0 8px 24px rgba(0,0,0,0.13)', minWidth: 170, padding: '4px 0',
-        }}>
+      {open && pos && createPortal(
+        <div
+          ref={menuRef}
+          style={{
+            position: 'fixed', top: pos.top, left: pos.left, zIndex: 9999,
+            background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.13)', minWidth: 170, padding: '4px 0',
+            maxHeight: 320, overflowY: 'auto',
+          }}
+        >
           {items.map((item, i) => item === 'divider' ? (
             <div key={i} style={{ height: 1, background: '#f1f5f9', margin: '3px 0' }} />
           ) : (
@@ -2109,7 +2428,8 @@ function DotsMenu({ items }) {
               {item.sub && <span style={{ marginLeft: 'auto', fontSize: 11, color: '#94a3b8' }}>{item.sub}</span>}
             </div>
           ))}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )
@@ -2137,8 +2457,9 @@ function InlineRename({ value, onSave, onCancel }) {
   )
 }
 
-function PageCard({ page, onSelect, onDelete, onRename, user, folders, onMoveToFolder }) {
+function PageCard({ page, onSelect, onDelete, onRename, onRequestDuplicate, user, folders, onMoveToFolder }) {
   const [renaming, setRenaming] = useState(false)
+  const [duplicating, setDuplicating] = useState(false)
 
   const total = page.countries.length
   const stepSum = page.countries.reduce((sum, c) => {
@@ -2158,6 +2479,14 @@ function PageCard({ page, onSelect, onDelete, onRename, user, folders, onMoveToF
     {
       icon: '✏️', label: '이름 바꾸기',
       action: () => setRenaming(true),
+    },
+    {
+      icon: '📑', label: duplicating ? '복사 중...' : '프로젝트 복제',
+      action: async () => {
+        if (duplicating) return
+        setDuplicating(true)
+        try { onRequestDuplicate(page) } finally { setDuplicating(false) }
+      },
     },
     'divider',
     {
@@ -2239,7 +2568,7 @@ function PageCard({ page, onSelect, onDelete, onRename, user, folders, onMoveToF
 }
 
 // ── 폴더 컴포넌트 ─────────────────────────────────────────────
-function FolderBlock({ folder, pages, onSelect, onDelete, onRename, user, folders, onMoveToFolder, onRenameFolder, onDeleteFolder, isRegular }) {
+function FolderBlock({ folder, pages, onSelect, onDelete, onRename, onRequestDuplicate, user, folders, onMoveToFolder, onRenameFolder, onDeleteFolder, isRegular }) {
   const [isOpen, setIsOpen] = useState(true)
   const [renaming, setRenaming] = useState(false)
 
@@ -2306,6 +2635,7 @@ function FolderBlock({ folder, pages, onSelect, onDelete, onRename, user, folder
                   onSelect={onSelect}
                   onDelete={onDelete}
                   onRename={onRename}
+                  onRequestDuplicate={onRequestDuplicate}
                   user={user}
                   folders={folders}
                   onMoveToFolder={onMoveToFolder}
@@ -2335,6 +2665,7 @@ export default function StatusTab() {
   const [viewMode, setViewMode] = useState('folder') // 'folder' | 'flat'
   const [showNewFolder, setShowNewFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+  const [duplicateTarget, setDuplicateTarget] = useState(null) // 복제 모달 대상 페이지
 
   // ── 초기 로드: DB 우선, 실패 시 localStorage fallback ──────
   // ── 초기 로드: 목록 화면에서도 전체 상태(Status)를 한 번에 파악 ──────
@@ -2472,11 +2803,19 @@ export default function StatusTab() {
   }
 
   const renamePage = useCallback(async (pageId, newTitle) => {
+    // 같은 이름의 다른 프로젝트가 이미 있으면 끝에 (1), (2)... 번호를 붙여 중복 방지
+    const existingNames = new Set(pages.filter(p => p.id !== pageId).map(p => p.name))
+    let finalTitle = newTitle
+    if (existingNames.has(finalTitle)) {
+      let n = 1
+      while (existingNames.has(`${newTitle} (${n})`)) n++
+      finalTitle = `${newTitle} (${n})`
+    }
     try {
-      await api.updateTrackerPage(pageId, { title: newTitle })
-      setPages(prev => prev.map(p => p.id === pageId ? { ...p, name: newTitle } : p))
+      await api.updateTrackerPage(pageId, { title: finalTitle })
+      setPages(prev => prev.map(p => p.id === pageId ? { ...p, name: finalTitle } : p))
     } catch (e) { console.error('[DB] 페이지 이름 수정 실패:', e?.message || e) }
-  }, [])
+  }, [pages])
 
   const deletePage = useCallback(async (page, e) => {
     e.stopPropagation()
@@ -2499,6 +2838,186 @@ export default function StatusTab() {
     })
     if (selectedPageId === page.id) setSelectedPageId(null)
   }, [selectedPageId, user])
+
+  // ── 프로젝트(페이지) 복사 ─────────────────────────────────────
+  const duplicatePage = useCallback(async (page, options = {}) => {
+    if (user?.position !== 'regular') { alert('정규직만 프로젝트를 복사할 수 있습니다.'); return }
+    // options 기본값: 전부 true (기존 직접 호출 호환)
+    const opt = {
+      countries: true, status: true, files: true, statusHistory: true, branches: true, billing: true,
+      ...options,
+    }
+
+    const newPageId = String(Date.now())
+
+    // 같은 이름의 프로젝트가 이미 있으면 끝에 (1), (2)... 번호를 붙여 중복 방지
+    const existingNames = new Set(pages.map(p => p.name))
+    const baseName = `${page.name} (복사본)`
+    let newPageName = baseName
+    if (existingNames.has(newPageName)) {
+      let n = 1
+      while (existingNames.has(`${baseName} (${n})`)) n++
+      newPageName = `${baseName} (${n})`
+    }
+
+    try {
+      const res = await api.createTrackerPage({ id: newPageId, title: newPageName })
+      if (!res?.ok) {
+        alert('복사에 실패했습니다: ' + (res?.message || '서버 오류'))
+        return
+      }
+      if (page.folder_id) {
+        await api.movePageToFolder(newPageId, { folderId: page.folder_id })
+      }
+
+      // 원본 프로젝트의 최신 전체 데이터(상태/메모/파일/분기)를 DB에서 다시 조회
+      // (page.countries는 화면에 캐시된 값이라 file dataUrl이 비어있을 수 있어 신뢰하지 않음)
+      const detail = await api.getTrackerDetail(String(page.id))
+      const statuses = detail?.statuses || []
+      const files = detail?.files || []
+      const branches = detail?.branches || []
+      const branchStatuses = detail?.branchStatuses || []
+      const statusHistory = detail?.statusHistory || []
+
+      // 1. 국가 목록 등록 — status·메모와 무관하게 항상 실행 (tracker_site_status가 국가 목록 역할)
+      await Promise.allSettled(
+        statuses.map(s =>
+          api.updateTrackerStatus({
+            pageId: newPageId,
+            siteCode: s.site_code,
+            status: opt.status ? (s.status || '') : '',
+            note:   opt.status ? (s.note   || '') : '',
+            skipHistory: true,
+          })
+        )
+      )
+
+      // 2. 첨부 파일(히스토리) 복사
+      if (opt.files) {
+        await Promise.allSettled(
+          files.map(async f => {
+            let dataUrl = null
+            try {
+              const fr = await fetch(`http://localhost:4000/api/files/${f.id}/data`)
+              const fd = await fr.json()
+              dataUrl = fd?.ok ? (fd.data?.data_url || null) : null
+            } catch (e) { console.warn('파일 데이터 조회 실패', f.id, e) }
+            if (!dataUrl) return
+            await api.saveFile({
+              pageId: newPageId,
+              siteCode: f.site_code,
+              name: f.name,
+              size: f.size,
+              status: f.status || '',
+              noteAtUpload: f.note_at_upload || '',
+              uploadedAt: f.uploaded_at,
+              dataUrl,
+              uploadedBy: f.uploaded_by || null,
+            })
+          })
+        )
+      }
+
+      // 3. 분기(브랜치) 이력 복사
+      if (opt.branches) {
+        const closedSet = new Set(
+          branchStatuses.filter(s => s.is_closed).map(s => `${s.site_code}::${s.branch_name}`)
+        )
+        await Promise.allSettled(
+          branches.map(b =>
+            api.createTrackerBranch({
+              pageId: newPageId,
+              siteCode: b.site_code,
+              branchName: b.branch_name,
+              status: b.status || '',
+              note: b.note || '',
+              fileName: b.file_name || null,
+              dataUrl: b.data_url || null,
+            })
+          )
+        )
+        await Promise.allSettled(
+          [...closedSet].map(key => {
+            const [siteCode, branchName] = key.split('::')
+            return api.closeBranch({ pageId: newPageId, siteCode, branchName, isClosed: true })
+          })
+        )
+      }
+
+      // 3-1. 카피 변경 이력(tracker_status_history) 복사
+      if (opt.statusHistory && statusHistory.length > 0) {
+        await api.bulkInsertStatusHistory({
+          pageId: newPageId,
+          records: statusHistory.map(h => ({
+            site_code:   h.site_code,
+            from_status: h.from_status ?? null,
+            to_status:   h.to_status   ?? '',
+            changed_by:  h.changed_by  ?? null,
+            changed_at:  h.changed_at,
+          })),
+        })
+      }
+
+      // 4. Billing Track(정산) 항목 + 첨부파일 복사
+      if (opt.billing) {
+        const billingRes = await api.getBillings(page.id)
+        const billingItems = billingRes?.ok ? (billingRes.data || []) : []
+        await Promise.allSettled(
+          billingItems.map(async b => {
+            const created = await api.createBilling({
+              pageId: newPageId,
+              projectName: b.project_name,
+              targetPage: b.target_page,
+              siteCount: b.site_count,
+              pageCount: b.page_count,
+              note: b.note || '',
+            })
+            if (!created?.ok) return
+            const newBillingId = created.id
+            for (const f of (b.files || [])) {
+              try {
+                const fd = await api.getBillingFileData(f.id)
+                const dataUrl = fd?.ok ? (fd.data?.data_url || null) : null
+                if (!dataUrl) continue
+                await api.uploadBillingFile(newBillingId, { name: f.name, size: f.size, dataUrl })
+              } catch (e) { console.warn('정산 첨부파일 복사 실패', f.id, e) }
+            }
+          })
+        )
+      }
+
+      // 5. 카피 상태 변경 이력 복사 (원본 타임스탬프 그대로 bulk insert)
+      if (opt.statusHistory && statusHistory.length > 0) {
+        await api.bulkInsertStatusHistory({ pageId: newPageId, rows: statusHistory })
+      }
+    } catch (e) {
+      console.error('[DB] 프로젝트 복사 실패:', e?.message || e)
+      alert('복사 중 오류가 발생했습니다: ' + (e?.message || e))
+      return
+    }
+
+    const newPage = {
+      id: newPageId,
+      name: newPageName,
+      folder_id: page.folder_id ?? null,
+      createdAt: new Date().toISOString(),
+      // 상세 데이터(파일/분기 포함)는 페이지를 열 때 getTrackerDetail로 다시 로드되므로
+      // 여기서는 목록 표시에 필요한 최소 정보만 채워둔다.
+      countries: page.countries.map(c => ({
+        code: c.code,
+        status: c.status || '',
+        note: c.note || '',
+        file: null,
+        fileHistory: [],
+        branches: [],
+      })),
+    }
+    setPages(prev => {
+      const next = [...prev, newPage]
+      saveToStorage({ pages: next })
+      return next
+    })
+  }, [user, pages])
 
   const updatePage = useCallback((updated, persistToStorage = false) => {
     setPages(prev => {
@@ -2528,6 +3047,7 @@ export default function StatusTab() {
     onSelect: setSelectedPageId,
     onDelete: deletePage,
     onRename: renamePage,
+    onRequestDuplicate: (page) => setDuplicateTarget(page),
     user,
     folders,
     onMoveToFolder: movePageToFolderHandler,
@@ -2652,6 +3172,17 @@ export default function StatusTab() {
             )}
           </div>
         </div>
+      )}
+      {/* 복제 옵션 선택 모달 */}
+      {duplicateTarget && (
+        <DuplicateModal
+          page={duplicateTarget}
+          onConfirm={async (page, opts) => {
+            setDuplicateTarget(null)
+            await duplicatePage(page, opts)
+          }}
+          onClose={() => setDuplicateTarget(null)}
+        />
       )}
     </div>
   )

@@ -103,7 +103,15 @@ router.get('/tracker/pages/:id', async (req, res) => {
     const [branchStatuses] = await getPool().execute(
       `SELECT site_code, branch_name, is_closed, closed_by, closed_at FROM tracker_branch_status WHERE page_id = ?`, [pageId]
     );
-    res.json({ ok: true, statuses, files, branches, branchStatuses });
+    // 카피 상태 변경 이력 전체 조회 (복제 등에서 활용)
+    const [statusHistory] = await getPool().execute(
+      `SELECT site_code, from_status, to_status, changed_by, changed_at
+       FROM tracker_status_history
+       WHERE page_id = ?
+       ORDER BY changed_at ASC`,
+      [pageId]
+    );
+    res.json({ ok: true, statuses, files, branches, branchStatuses, statusHistory });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
@@ -133,13 +141,75 @@ router.delete('/tracker/status', async (req, res) => {
     res.json({ ok: true })
   } catch (err) { res.json({ ok: false, message: err.message }) }
 })
-router.post('/tracker/status', async (req, res) => {
+router.post('/tracker/status', authMiddleware, async (req, res) => {
   try {
-    const { pageId, siteCode, status, note } = req.body;
+    const { pageId, siteCode, status, note, skipHistory } = req.body;
+    const changedBy = req.user?.name || null;
+
+    // 변경 전 상태 조회 (히스토리용)
+    const [[prev]] = await getPool().execute(
+      `SELECT status FROM tracker_site_status WHERE page_id = ? AND site_code = ? AND deleted = 0`,
+      [pageId, siteCode]
+    );
+    const fromStatus = prev?.status ?? null;
+
+    // 상태 업데이트
     await getPool().execute(
-      `INSERT INTO tracker_site_status (page_id, site_code, status, note, deleted) VALUES (?, ?, ?, ?, 0)
-       ON DUPLICATE KEY UPDATE status = VALUES(status), note = VALUES(note), deleted = 0`,
-      [pageId, siteCode, status || '', note || '']
+      `INSERT INTO tracker_site_status (page_id, site_code, status, note, updated_by, deleted) VALUES (?, ?, ?, ?, ?, 0)
+       ON DUPLICATE KEY UPDATE status = VALUES(status), note = VALUES(note), updated_by = VALUES(updated_by), deleted = 0`,
+      [pageId, siteCode, status || '', note || '', changedBy]
+    );
+
+    // 상태값이 실제로 바뀐 경우에만 히스토리 기록 (복제 시 skipHistory=true로 건너뜀)
+    if (!skipHistory && status !== undefined && fromStatus !== (status || '')) {
+      await getPool().execute(
+        `INSERT INTO tracker_status_history (page_id, site_code, from_status, to_status, changed_by) VALUES (?, ?, ?, ?, ?)`,
+        [pageId, siteCode, fromStatus, status || '', changedBy]
+      );
+    }
+
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// 카피 작업 상태 변경 이력 조회
+router.get('/tracker/status-history', async (req, res) => {
+  try {
+    const { pageId, siteCode } = req.query;
+    if (!pageId || !siteCode) return res.json({ ok: false, message: 'pageId, siteCode 필요' });
+    const [rows] = await getPool().execute(
+      `SELECT id, from_status, to_status, changed_by, changed_at
+       FROM tracker_status_history
+       WHERE page_id = ? AND site_code = ?
+       ORDER BY changed_at DESC`,
+      [pageId, siteCode]
+    );
+    res.json({ ok: true, data: rows });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// 카피 상태 변경 이력 일괄 삽입 (프로젝트 복제용)
+router.post('/tracker/status-history/bulk', async (req, res) => {
+  try {
+    const { pageId, rows } = req.body;
+    if (!pageId || !Array.isArray(rows) || rows.length === 0) {
+      return res.json({ ok: false, message: 'pageId와 rows[]가 필요합니다.' });
+    }
+    const pool = getPool();
+    // ISO 문자열 → MySQL DATETIME 포맷 변환 (MySQL은 'T' 구분자와 밀리초를 지원하지 않음)
+    const toMysqlDatetime = (val) => {
+      if (!val) return null;
+      try { return new Date(val).toISOString().slice(0, 19).replace('T', ' '); } catch { return null; }
+    };
+    // changed_at을 원본 시각 그대로 유지하기 위해 명시적으로 INSERT
+    await Promise.all(
+      rows.map(r =>
+        pool.execute(
+          `INSERT INTO tracker_status_history (page_id, site_code, from_status, to_status, changed_by, changed_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [pageId, r.site_code, r.from_status ?? null, r.to_status ?? '', r.changed_by ?? null, toMysqlDatetime(r.changed_at)]
+        )
+      )
     );
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
