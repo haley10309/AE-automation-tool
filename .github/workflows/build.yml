@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:    # 수동 실행도 가능하게
 
+permissions:
+  contents: write
+
 jobs:
   build-win:
     runs-on: windows-latest
