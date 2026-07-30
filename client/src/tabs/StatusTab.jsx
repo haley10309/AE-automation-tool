@@ -2844,7 +2844,7 @@ export default function StatusTab() {
     if (user?.position !== 'regular') { alert('정규직만 프로젝트를 복사할 수 있습니다.'); return }
     // options 기본값: 전부 true (기존 직접 호출 호환)
     const opt = {
-      status: true, files: true, statusHistory: true, branches: true, billing: true,
+      countries: true, status: true, files: true, statusHistory: true, branches: true, billing: true,
       ...options,
     }
 
@@ -2879,20 +2879,18 @@ export default function StatusTab() {
       const branchStatuses = detail?.branchStatuses || []
       const statusHistory = detail?.statusHistory || []
 
-      // 1. 국가별 상태·메모 복사
-      if (opt.status) {
-        await Promise.allSettled(
-          statuses.map(s =>
-            api.updateTrackerStatus({
-              pageId: newPageId,
-              siteCode: s.site_code,
-              status: s.status || '',
-              note: s.note || '',
-              skipHistory: true,
-            })
-          )
+      // 1. 국가 목록 등록 — status·메모와 무관하게 항상 실행 (tracker_site_status가 국가 목록 역할)
+      await Promise.allSettled(
+        statuses.map(s =>
+          api.updateTrackerStatus({
+            pageId: newPageId,
+            siteCode: s.site_code,
+            status: opt.status ? (s.status || '') : '',
+            note:   opt.status ? (s.note   || '') : '',
+            skipHistory: true,
+          })
         )
-      }
+      )
 
       // 2. 첨부 파일(히스토리) 복사
       if (opt.files) {
