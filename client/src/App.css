@@ -912,35 +912,6 @@ mark.diff-ins {
   color: #6b7280;
 }
 .cst-file-replace:hover { border-color: #3b82f6; color: #3b82f6; }
-.cst-file-history-btn {
-  background: none;
-  border: 1px solid #d1d5db;
-  border-radius: 4px;
-  padding: 2px 7px;
-  font-size: 11px;
-  cursor: pointer;
-  color: #6b7280;
-}
-.cst-file-history-btn:hover { border-color: #6b7280; }
-
-.cst-file-history {
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  padding: 8px;
-  margin-top: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.cst-file-history-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: #6b7280;
-}
 
 /* 메모 입력 */
 .cst-note-input {
@@ -957,6 +928,263 @@ mark.diff-ins {
 }
 .cst-note-input:focus { border-color: #3b82f6; background: #fff; }
 .cst-note-input::placeholder { color: #d1d5db; }
+
+/* ── [신규] 일괄 상태 변경 (체크박스 다중 선택 + 텍스트 붙여넣기) ── */
+.cst-checkbox {
+  width: 15px;
+  height: 15px;
+  accent-color: #6366f1;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.cst-th-check, .cst-td-check { width: 36px; text-align: center; }
+
+.cst-row.cst-row-selected .cst-td { background: #f5f3ff; }
+
+.cst-bulk-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: 'Noto Sans KR', sans-serif;
+  color: #6b7280;
+  cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.cst-bulk-toggle-btn:hover { border-color: #6366f1; color: #6366f1; }
+.cst-bulk-toggle-btn.active { background: #6366f1; border-color: #6366f1; color: #fff; }
+.cst-bulk-toggle-count {
+  background: #eef2ff; color: #6366f1;
+  border-radius: 99px; padding: 0 6px;
+  font-size: 10px; font-weight: 700;
+}
+.cst-bulk-toggle-btn.active .cst-bulk-toggle-count { background: rgba(255,255,255,.25); color: #fff; }
+
+@keyframes cst-bulk-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+
+.cst-bulk-panel {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-top: 3px solid #6366f1;
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 4px 16px rgba(99,102,241,.08);
+  animation: cst-bulk-in .18s ease;
+}
+.cst-bulk-section { display: flex; flex-direction: column; gap: 8px; }
+.cst-bulk-section-label {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 700; color: #374151;
+}
+.cst-bulk-section-hint { font-size: 11px; font-weight: 400; color: #9ca3af; }
+.cst-bulk-count-badge {
+  font-size: 11px; font-weight: 700; color: #6366f1;
+  background: #eef2ff; border-radius: 99px; padding: 1px 9px;
+}
+.cst-bulk-divider { border: none; border-top: 1px dashed #e5e7eb; margin: 0; }
+
+.cst-bulk-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.cst-bulk-select {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #374151;
+  background: #fff;
+  cursor: pointer;
+  outline: none;
+  min-width: 170px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.cst-bulk-select:focus { border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99,102,241,.15); }
+
+.cst-bulk-apply-btn {
+  background: #6366f1; color: #fff; border: none; border-radius: 6px;
+  padding: 7px 16px; font-size: 12px; font-weight: 600;
+  font-family: 'Noto Sans KR', sans-serif; cursor: pointer; white-space: nowrap;
+  transition: background .15s, transform .1s;
+}
+.cst-bulk-apply-btn:hover:not(:disabled) { background: #4f46e5; }
+.cst-bulk-apply-btn:active:not(:disabled) { transform: translateY(1px); }
+.cst-bulk-apply-btn:disabled { background: #d6d3fa; cursor: not-allowed; }
+
+.cst-bulk-clear-btn {
+  background: none; border: 1px solid #d1d5db; border-radius: 6px;
+  padding: 6px 12px; font-size: 12px; color: #6b7280; cursor: pointer;
+  font-family: 'Noto Sans KR', sans-serif;
+  transition: border-color .15s, color .15s;
+}
+.cst-bulk-clear-btn:hover { border-color: #ef4444; color: #ef4444; }
+
+.cst-bulk-textarea {
+  width: 100%;
+  min-height: 64px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #f9fafb;
+  color: #111827;
+  resize: vertical;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s, background .15s;
+}
+.cst-bulk-textarea:focus { border-color: #6366f1; background: #fff; box-shadow: 0 0 0 2px rgba(99,102,241,.12); }
+.cst-bulk-textarea::placeholder { color: #b8c0cc; font-family: 'Noto Sans KR', sans-serif; }
+
+.cst-bulk-result {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  font-size: 11px; padding: 6px 10px; border-radius: 6px;
+  background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0;
+  animation: cst-bulk-in .18s ease;
+}
+.cst-bulk-result.has-warn { background: #fffbeb; color: #92400e; border-color: #fde68a; }
+.cst-bulk-result-warn-text { color: #b45309; font-weight: 600; }
+
+/* ════════════════════════════════════════════════════════════
+   StatusRow 행 액션 버튼 (분기 관리 / 전체 이력 토글)
+   ════════════════════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════
+   메모 셀 (메모는 좁게, 분기 관리 / 전체 이력 버튼을 세로로 쌓아
+   메모와 삭제(✕) 버튼 사이에 배치)
+   ════════════════════════════════════════════════════════════ */
+.cst-td-note {
+  overflow: hidden;
+  width: 220px;
+}
+.cst-note-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+.cst-note-cell .cst-note-input { flex: 0 1 110px; min-width: 80px; }
+
+.cst-row-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.cst-row-action-btn {
+  font-size: 11px;
+  background: #f1f5f9;
+  border: none;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #4f46e5;
+  font-family: 'Noto Sans KR', sans-serif;
+  transition: background .15s, color .15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.cst-row-action-btn:hover { background: #e0e7ff; }
+.cst-row-action-btn.active {
+  background: #e0e7ff;
+}
+.cst-row-action-btn.cst-history-action.active {
+  background: #fef3c7;
+  color: #b45309;
+}
+.cst-row-action-count {
+  font-size: 10px;
+  background: #fde68a;
+  color: #92400e;
+  border-radius: 8px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+/* ════════════════════════════════════════════════════════════
+   통합 이력 패널 (상태 변경 이력 + 파일 업로드 이력 병합)
+   StatusRow에서 별도 <tr>로 렌더링, 분기 관리 패널과 같은 톤
+   ════════════════════════════════════════════════════════════ */
+.cst-unified-history-row td { padding: 0; }
+.cst-unified-history-panel {
+  background: #f8fafc;
+  border-top: 3px solid #f59e0b;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: cst-bulk-in .18s ease;
+}
+.cst-unified-history-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #374151;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cst-unified-history-loading,
+.cst-unified-history-empty {
+  font-size: 11px;
+  color: #9ca3af;
+  padding: 4px 0;
+}
+
+.cst-unified-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  font-size: 11px;
+  transition: border-color .15s;
+}
+.cst-unified-item:hover { border-color: #d1d5db; }
+.cst-unified-item-icon { font-size: 13px; flex-shrink: 0; margin-top: 1px; }
+.cst-unified-item-body { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cst-unified-item-row  { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cst-unified-item-meta { font-size: 10px; color: #9ca3af; }
+.cst-unified-item-time { font-size: 10px; color: #9ca3af; margin-left: auto; white-space: nowrap; }
+
+.cst-sh-badge {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.cst-sh-arrow { font-size: 11px; color: #9ca3af; }
+
+.cst-unified-download-btn {
+  background: none;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  cursor: pointer;
+  color: #6b7280;
+  line-height: 1.4;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.cst-unified-download-btn:hover:not(:disabled) {
+  border-color: #3b82f6;
+  color: #3b82f6;
+  background: #eff6ff;
+}
+.cst-unified-download-btn:disabled { opacity: .5; cursor: default; }
 
 
 /* ── 추출·조회 통합 레이아웃 ──────────────────────────────── */

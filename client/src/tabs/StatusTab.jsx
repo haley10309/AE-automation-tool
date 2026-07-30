@@ -1,10 +1,10 @@
 import { useState, useCallback, useEffect, useRef, memo, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import { useDB } from '../DBContext.jsx'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
 import * as XLSX from 'xlsx'
-
 
 // ── 상태 정의 (0=미설정, 1~15=단계) ─────────────────────────
 const COPY_STATUSES = [
@@ -390,7 +390,6 @@ function CountryStatusCell({ siteCode, entry, onStatusChange }) {
 // ── 파일 셀 (히스토리에 상태 기록 포함) ──────────────────────────
 function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
   const fileRef = useRef(null)
-  const [showHistory, setShowHistory] = useState(false)
   const [uploading, setUploading] = useState(false)
 
   const handleChange = async (e) => {
@@ -461,30 +460,7 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
             <button className="cst-file-replace" onClick={() => fileRef.current?.click()} disabled={uploading}>
               {uploading ? '⏳' : '↑ 교체'}
             </button>
-            {entry.fileHistory?.length > 0 && (
-              <button className="cst-file-history-btn" onClick={() => setShowHistory(v => !v)}>
-                히스토리 ({entry.fileHistory.length})
-              </button>
-            )}
           </div>
-          
-          {showHistory && (
-            <div className="cst-file-history">
-              {/* 히스토리는 역순으로 보여주되 인덱스 계산을 위해 원본 배열 활용 */}
-              {[...entry.fileHistory].reverse().map((f, revIdx) => {
-                const originalIdx = entry.fileHistory.length - 1 - revIdx;
-                return (
-                  <HistoryItem 
-                    key={originalIdx}
-                    file={f}
-                    index={originalIdx}
-                    download={download}
-                    onUpdateNote={(idx, newNote) => onUpdateHistoryNote(siteCode, idx, newNote)}
-                  />
-                )
-              })}
-            </div>
-          )}
         </div>
       ) : (
         <button className="cst-upload-btn" onClick={() => fileRef.current?.click()}>+ 파일 첨부</button>
@@ -882,14 +858,79 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
 }
 
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular }) => {
+const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId, initialStatusHistory }) => {
   const [isExpanded, setIsExpanded] = useState(false)
+  const [showUnifiedHistory, setShowUnifiedHistory] = useState(false)
+  const [statusHistory, setStatusHistory] = useState(initialStatusHistory ?? null) // null = 미로딩
   const branches = entry?.branches || []
+
+  const fetchStatusHistory = async () => {
+    try {
+      const res = await fetch(`http://localhost:4000/api/tracker/status-history?pageId=${pageId}&siteCode=${site.code}`)
+      const data = await res.json()
+      setStatusHistory(data.ok ? data.data : [])
+    } catch { setStatusHistory([]) }
+  }
+
+  // 상태 변경 시 이력 갱신 (패널 열려있으면 즉시, 닫혀있으면 캐시 초기화)
+  const handleStatusChangeWithRefresh = async (siteCode, newStatus, note) => {
+    await handleStatusChange(siteCode, newStatus, note)
+    if (showUnifiedHistory) await fetchStatusHistory()
+    else setStatusHistory(null)
+  }
+
+  const toggleUnifiedHistory = async () => {
+    if (!showUnifiedHistory) await fetchStatusHistory()
+    setShowUnifiedHistory(v => !v)
+  }
+
+  // 상태 이력 + 파일 이력을 시간순으로 머지
+  const mergedHistory = (() => {
+    const statusItems = (statusHistory || []).map(h => ({
+      type: 'status',
+      time: new Date(h.changed_at).getTime(),
+      data: h,
+    }))
+    const fileItems = (entry?.fileHistory || []).map((f, idx) => ({
+      type: 'file',
+      time: new Date(f.uploadedAt).getTime(),
+      data: { ...f, _idx: idx },
+    }))
+    return [...statusItems, ...fileItems].sort((a, b) => b.time - a.time) // 최신순
+  })()
+
+  const [downloadingId, setDownloadingId] = useState(null)
+
+  const downloadHistoryFile = async (dbId, name) => {
+    if (!dbId || downloadingId) return
+    setDownloadingId(dbId)
+    try {
+      const res = await api.getFileData(dbId)
+      if (!res?.ok || !res.data?.data_url) { alert('파일 데이터를 가져올 수 없습니다.'); return }
+      const a = document.createElement('a')
+      a.href = res.data.data_url
+      a.download = name
+      a.click()
+    } catch (e) { alert('다운로드 실패: ' + (e?.message || e)) }
+    finally { setDownloadingId(null) }
+  }
+
+  const colSpan = showCheckbox ? 6 : 5
 
   return (
     <>
-      <tr className="cst-row">
-        <td className="cst-td">
+      <tr className={`cst-row${selected ? ' cst-row-selected' : ''}`}>
+        {showCheckbox && (
+          <td className="cst-td cst-td-check">
+            <input
+              type="checkbox"
+              className="cst-checkbox"
+              checked={!!selected}
+              onChange={() => onToggleSelect(site.code)}
+            />
+          </td>
+        )}
+        <td className="cst-td cst-td-country">
           <div className="cst-country-cell">
             <span className="cst-flag">{site.flag}</span>
             <div className="cst-country-info">
@@ -897,32 +938,44 @@ const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, han
               <span className="cst-country-code" style={{ color: REGION_COLORS[site.region] }}>{site.code}</span>
             </div>
           </div>
-          <button 
-            onClick={() => setIsExpanded(!isExpanded)} 
-            style={{ 
-              marginTop: 6, fontSize: 11, background: isExpanded ? '#e0e7ff' : '#f1f5f9', 
-              border: 'none', padding: '3px 8px', borderRadius: 4, cursor: 'pointer', color: '#4f46e5'
-            }}
-          >
-            {isExpanded ? '▼ 닫기' : '▶ 분기 관리'} {branches.length > 0 && `(${new Set(branches.map(b => b.branch_name)).size})`}
-          </button>
         </td>
         <td className="cst-td">
-          <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChange} />
+          <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChangeWithRefresh} />
         </td>
         <td className="cst-td">
-          <FileCell 
-            siteCode={site.code} 
-            entry={entry} 
-            onFileUpload={handleFileUpload} 
+          <FileCell
+            siteCode={site.code}
+            entry={entry}
+            onFileUpload={handleFileUpload}
             onUpdateHistoryNote={handleHistoryNoteUpdate}
           />
         </td>
-        <td className="cst-td">
-          <NoteInput 
-            initialNote={entry?.note} 
-            onSave={(note) => handleStatusChange(site.code, entry?.status, note)} 
-          />
+        <td className="cst-td cst-td-note">
+          <div className="cst-note-cell">
+            <NoteInput
+              initialNote={entry?.note}
+              onSave={(note) => handleStatusChange(site.code, entry?.status, note)}
+            />
+            <div className="cst-row-actions">
+              <button
+                className={`cst-row-action-btn${isExpanded ? ' active' : ''}`}
+                onClick={() => setIsExpanded(!isExpanded)}
+              >
+                {isExpanded ? '▼ 닫기' : '▶ 분기 관리'} {branches.length > 0 && `(${new Set(branches.map(b => b.branch_name)).size})`}
+              </button>
+              <button
+                className={`cst-row-action-btn cst-history-action${showUnifiedHistory ? ' active' : ''}`}
+                onClick={toggleUnifiedHistory}
+              >
+                {showUnifiedHistory ? '▼ 이력 닫기' : '▶ 전체 이력'}
+                {((entry?.fileHistory?.length || 0) + (statusHistory?.length || 0)) > 0 && (
+                  <span className="cst-row-action-count">
+                    {(entry?.fileHistory?.length || 0) + (statusHistory?.length || 0)}
+                  </span>
+                )}
+              </button>
+            </div>
+          </div>
         </td>
         <td className="cst-td">
           {isRegular && (
@@ -930,9 +983,78 @@ const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, han
           )}
         </td>
       </tr>
+      {showUnifiedHistory && (
+        <tr className="cst-unified-history-row">
+          <td colSpan={colSpan} style={{ padding: 0 }}>
+            <div className="cst-unified-history-panel">
+              <div className="cst-unified-history-title">
+                📋 전체 이력 — {site.name} ({site.code})
+              </div>
+              {statusHistory === null ? (
+                <div className="cst-unified-history-loading">불러오는 중...</div>
+              ) : mergedHistory.length === 0 ? (
+                <div className="cst-unified-history-empty">이력이 없습니다.</div>
+              ) : (
+                mergedHistory.map((item, i) => {
+                  if (item.type === 'status') {
+                    const h = item.data
+                    const fromStyle = getStatusStyle(h.from_status || '')
+                    const toStyle   = getStatusStyle(h.to_status   || '')
+                    const fromLabel = fromStyle.label
+                    const toLabel   = toStyle.label
+                    return (
+                      <div key={`s-${h.id}`} className="cst-unified-item">
+                        <span className="cst-unified-item-icon">🔄</span>
+                        <div className="cst-unified-item-body">
+                          <div className="cst-unified-item-row">
+                            <span className="cst-sh-badge" style={{ color: fromStyle.color, background: fromStyle.bg }}>{fromLabel}</span>
+                            <span className="cst-sh-arrow">→</span>
+                            <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toLabel}</span>
+                            <span className="cst-unified-item-time">{formatDateTime(h.changed_at)}</span>
+                          </div>
+                          {h.changed_by && <div className="cst-unified-item-meta">👤 {h.changed_by}</div>}
+                        </div>
+                      </div>
+                    )
+                  } else {
+                    const f = item.data
+                    const statusStyle = getStatusStyle(f.statusAtUpload || '')
+                    return (
+                      <div key={`f-${f._idx}`} className="cst-unified-item">
+                        <span className="cst-unified-item-icon">📎</span>
+                        <div className="cst-unified-item-body">
+                          <div className="cst-unified-item-row">
+                            <span style={{ fontWeight: 500, color: '#334155' }}>{f.name}</span>
+                            <span className="cst-sh-badge" style={{ color: statusStyle.color, background: statusStyle.bg }}>{statusStyle.label}</span>
+                            {f.dbId && (
+                              <button
+                                className="cst-unified-download-btn"
+                                onClick={() => downloadHistoryFile(f.dbId, f.name)}
+                                disabled={downloadingId === f.dbId}
+                                title="파일 다운로드"
+                              >
+                                {downloadingId === f.dbId ? '⏳' : '⬇'}
+                              </button>
+                            )}
+                            <span className="cst-unified-item-time">{formatDateTime(f.uploadedAt)}</span>
+                          </div>
+                          <div className="cst-unified-item-meta">
+                            {f.uploadedBy && `👤 ${f.uploadedBy}`}
+                            {f.noteAtUpload && ` · 📝 ${f.noteAtUpload}`}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  }
+                })
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
       {isExpanded && (
         <tr>
-          <td colSpan="5" style={{ padding: 0 }}>
+          <td colSpan={colSpan} style={{ padding: 0 }}>
             <BranchTimeline branches={branches} branchStatuses={entry?.branchStatuses || []} onCreateBranch={(data) => handleBranchCreate(site.code, data)} onUpdateBranchNote={(id, note) => handleBranchNoteUpdate(site.code, id, note)} onCloseBranch={(siteCode, bName, isClosed) => handleBranchClose(siteCode, bName, isClosed)} onDeleteBranch={(siteCode, bName) => handleBranchDelete(siteCode, bName)} />
           </td>
         </tr>
@@ -941,6 +1063,607 @@ const StatusRow = memo(({ site, entry, handleStatusChange, handleFileUpload, han
   )
 })
 
+// ── Billing 엑셀 추출 함수 ────────────────────────────────────
+function exportBillingXLSX(billings, pageName) {
+  const aoa = [['#', '프로젝트명', '대상 페이지', '사이트 코드 수', '페이지 수', 'Quantity', '비고', '작성자', '작성일']]
+  billings.forEach((b, i) => {
+    aoa.push([
+      i + 1,
+      b.project_name,
+      b.target_page,
+      b.site_count,
+      b.page_count,
+      b.quantity,
+      b.note || '',
+      b.created_by || '',
+      b.created_at ? b.created_at.slice(0, 10) : '',
+    ])
+  })
+  // 합계 행
+  const totalQty = billings.reduce((s, b) => s + (b.quantity || 0), 0)
+  aoa.push(['', '', '', '', '합계', totalQty, '', '', ''])
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa)
+  ws['!cols'] = [
+    { wch: 4 }, { wch: 30 }, { wch: 30 }, { wch: 16 }, { wch: 10 }, { wch: 12 }, { wch: 30 }, { wch: 14 }, { wch: 12 }
+  ]
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Billing')
+  XLSX.writeFile(wb, `billing_${pageName}_${new Date().toISOString().slice(0, 10)}.xlsx`)
+}
+
+
+// ── 복제 옵션 선택 모달 ───────────────────────────────────────
+function DuplicateModal({ page, onConfirm, onClose }) {
+  const [opts, setOpts] = useState({
+    countries:   true,   // 국가 수 (항상 필요 — 비활성화)
+    status:      true,   // 국가별 카피 작업 상태
+    files:       true,   // 첨부파일
+    statusHistory: true, // 카피 변경 이력
+    branches:    true,   // 국가별 분기 히스토리
+    billing:     false,  // 정산(Billing) — 기본 off
+  })
+  const [running, setRunning] = useState(false)
+
+  const toggle = (key) => {
+    if (key === 'countries') return // 국가 수는 항상 복제
+    setOpts(prev => {
+      const next = { ...prev, [key]: !prev[key] }
+      // 상태가 꺼지면 이력도 강제로 끔 (이력만 있으면 의미 없음)
+      if (key === 'status' && !next.status) next.statusHistory = false
+      return next
+    })
+  }
+
+  const items = [
+    { key: 'countries',     icon: '🌍', label: '국가 수',              desc: '원본과 동일한 국가 목록',          disabled: true },
+    { key: 'status',        icon: '🏷️', label: '카피 작업 상태 & 메모', desc: '각 국가의 현재 상태와 메모',        disabled: false },
+    { key: 'statusHistory', icon: '🔄', label: '카피 상태 변경 이력',   desc: '상태가 바뀐 전체 히스토리',         disabled: !opts.status },
+    { key: 'files',         icon: '📎', label: '첨부파일',              desc: '각 국가에 업로드된 파일',           disabled: false },
+    { key: 'branches',      icon: '🌿', label: '분기(Branch) 히스토리', desc: '국가별 작업 분기 전체',             disabled: false },
+    { key: 'billing',       icon: '🧾', label: '정산(Billing) 항목',    desc: '정산 내역 및 첨부파일 포함',        disabled: false },
+  ]
+
+  const handleConfirm = async () => {
+    setRunning(true)
+    try { await onConfirm(page, opts) } finally { setRunning(false) }
+  }
+
+  return createPortal(
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 9999,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: '#fff', borderRadius: 14, padding: '28px 28px 22px',
+          width: 420, maxWidth: '92vw', boxShadow: '0 20px 60px rgba(0,0,0,0.18)',
+        }}
+      >
+        {/* 헤더 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+          <span style={{ fontSize: 22 }}>📑</span>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: '#111' }}>프로젝트 복제</div>
+            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+              복제할 항목을 선택하세요
+            </div>
+          </div>
+        </div>
+
+        {/* 원본 프로젝트명 */}
+        <div style={{
+          background: '#f3f4f6', borderRadius: 8, padding: '8px 12px',
+          fontSize: 13, color: '#374151', marginBottom: 18, marginTop: 10,
+        }}>
+          📄 <strong>{page.name}</strong>
+        </div>
+
+        {/* 옵션 리스트 */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {items.map(item => {
+            const checked = opts[item.key]
+            const isDisabled = item.disabled
+            return (
+              <label
+                key={item.key}
+                onClick={() => !isDisabled && toggle(item.key)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '10px 12px', borderRadius: 8, cursor: isDisabled ? 'default' : 'pointer',
+                  background: checked ? '#eff6ff' : '#f9fafb',
+                  border: `1px solid ${checked ? '#93c5fd' : '#e5e7eb'}`,
+                  opacity: isDisabled ? 0.55 : 1,
+                  transition: 'all 0.15s',
+                  userSelect: 'none',
+                }}
+              >
+                {/* 커스텀 체크박스 */}
+                <div style={{
+                  width: 18, height: 18, borderRadius: 5, flexShrink: 0,
+                  border: `2px solid ${checked ? '#3b82f6' : '#d1d5db'}`,
+                  background: checked ? '#3b82f6' : '#fff',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  transition: 'all 0.15s',
+                }}>
+                  {checked && <span style={{ color: '#fff', fontSize: 11, lineHeight: 1 }}>✓</span>}
+                </div>
+                <span style={{ fontSize: 16, flexShrink: 0 }}>{item.icon}</span>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#1f2937' }}>{item.label}</div>
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1 }}>{item.desc}</div>
+                </div>
+              </label>
+            )
+          })}
+        </div>
+
+        {/* 버튼 */}
+        <div style={{ display: 'flex', gap: 8, marginTop: 20, justifyContent: 'flex-end' }}>
+          <button
+            onClick={onClose}
+            disabled={running}
+            style={{
+              padding: '8px 16px', borderRadius: 8, border: '1px solid #e5e7eb',
+              background: '#fff', color: '#6b7280', fontSize: 13, cursor: 'pointer', fontWeight: 500,
+            }}
+          >
+            취소
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={running}
+            style={{
+              padding: '8px 20px', borderRadius: 8, border: 'none',
+              background: running ? '#93c5fd' : '#3b82f6', color: '#fff',
+              fontSize: 13, cursor: running ? 'not-allowed' : 'pointer', fontWeight: 600,
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}
+          >
+            {running ? (
+              <>
+                <span style={{ display: 'inline-block', width: 14, height: 14, border: '2px solid rgba(255,255,255,0.5)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+                복제 중...
+              </>
+            ) : '복제 시작'}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+// ── BillingModal 컴포넌트 ──────────────────────────────────────
+function BillingModal({ page, onClose }) {
+  const { user } = useAuth()
+  const isRegular = user?.position === 'regular'
+
+  // 폼 상태
+  const [form, setForm] = useState({
+    projectName: '',
+    targetPage: page.name,   // 현재 프로젝트 자동 입력
+    siteCount: page.countries?.length ?? 0,  // 현재 국가 수 자동 입력
+    pageCount: '',
+    note: '',
+  })
+  const [formFiles, setFormFiles] = useState([])  // 새 항목에 첨부할 파일들
+  const formFileRef = useRef(null)
+
+  // 목록 상태
+  const [billings, setBillings] = useState([])
+  const [loadingList, setLoadingList] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
+  const [editingId, setEditingId] = useState(null)
+  const [editForm, setEditForm] = useState({})
+  const [downloading, setDownloading] = useState(null)
+
+  const quantity = form.siteCount && form.pageCount
+    ? Number(form.siteCount) * Number(form.pageCount) : 0
+
+  // 목록 로드
+  useEffect(() => {
+    async function load() {
+      setLoadingList(true)
+      try {
+        const res = await api.getBillings(page.id)
+        if (res.ok) setBillings(res.data || [])
+      } catch (e) { console.warn('billing 로드 실패', e) }
+      finally { setLoadingList(false) }
+    }
+    load()
+  }, [page.id])
+
+  // 파일 선택 핸들러 (폼용)
+  const handleFormFileChange = (e) => {
+    const files = Array.from(e.target.files || [])
+    files.forEach(file => {
+      const reader = new FileReader()
+      reader.onload = ev => {
+        setFormFiles(prev => [...prev, { name: file.name, size: file.size, dataUrl: ev.target.result }])
+      }
+      reader.readAsDataURL(file)
+    })
+    e.target.value = ''
+  }
+
+  // 항목 생성
+  const handleCreate = async () => {
+    if (!form.projectName.trim()) return alert('프로젝트명을 입력하세요.')
+    if (!form.pageCount || Number(form.pageCount) < 1) return alert('페이지 수를 입력하세요.')
+    setSubmitting(true)
+    try {
+      const res = await api.createBilling({
+        pageId: page.id,
+        projectName: form.projectName.trim(),
+        targetPage: form.targetPage,
+        siteCount: Number(form.siteCount),
+        pageCount: Number(form.pageCount),
+        note: form.note,
+      })
+      if (!res.ok) return alert(res.message || '생성 실패')
+      const newId = res.id
+      // 첨부파일 업로드
+      const uploadedFiles = []
+      for (const f of formFiles) {
+        const fr = await api.uploadBillingFile(newId, { name: f.name, size: f.size, dataUrl: f.dataUrl })
+        if (fr.ok) uploadedFiles.push({ id: fr.id, name: f.name, size: f.size, uploaded_by: user?.name, uploaded_at: new Date().toISOString() })
+      }
+      const newRecord = {
+        id: newId,
+        project_name: form.projectName.trim(),
+        target_page: form.targetPage,
+        site_count: Number(form.siteCount),
+        page_count: Number(form.pageCount),
+        quantity: Number(form.siteCount) * Number(form.pageCount),
+        note: form.note,
+        created_by: user?.name,
+        created_at: new Date().toISOString(),
+        files: uploadedFiles,
+      }
+      setBillings(prev => [newRecord, ...prev])
+      setForm({ projectName: '', targetPage: page.name, siteCount: page.countries?.length ?? 0, pageCount: '', note: '' })
+      setFormFiles([])
+    } catch (e) { alert('오류: ' + e.message) }
+    finally { setSubmitting(false) }
+  }
+
+  // 항목 삭제
+  const handleDelete = async (id) => {
+    if (!window.confirm('이 항목을 삭제하시겠습니까?')) return
+    try {
+      await api.deleteBilling(id)
+      setBillings(prev => prev.filter(b => b.id !== id))
+    } catch (e) { alert('삭제 실패: ' + e.message) }
+  }
+
+  // 항목 수정 시작
+  const startEdit = (b) => {
+    setEditingId(b.id)
+    setEditForm({ projectName: b.project_name, targetPage: b.target_page, siteCount: b.site_count, pageCount: b.page_count, note: b.note || '' })
+  }
+
+  // 항목 수정 저장
+  const saveEdit = async (id) => {
+    try {
+      await api.updateBilling(id, {
+        projectName: editForm.projectName,
+        targetPage: editForm.targetPage,
+        siteCount: Number(editForm.siteCount),
+        pageCount: Number(editForm.pageCount),
+        note: editForm.note,
+      })
+      setBillings(prev => prev.map(b => b.id === id ? {
+        ...b,
+        project_name: editForm.projectName,
+        target_page: editForm.targetPage,
+        site_count: Number(editForm.siteCount),
+        page_count: Number(editForm.pageCount),
+        quantity: Number(editForm.siteCount) * Number(editForm.pageCount),
+        note: editForm.note,
+      } : b))
+      setEditingId(null)
+    } catch (e) { alert('수정 실패: ' + e.message) }
+  }
+
+  // 파일 다운로드
+  const downloadFile = async (fileId, fileName) => {
+    setDownloading(fileId)
+    try {
+      const res = await api.getBillingFileData(fileId)
+      if (res.ok && res.data?.data_url) {
+        const a = document.createElement('a')
+        a.href = res.data.data_url; a.download = fileName
+        document.body.appendChild(a); a.click(); document.body.removeChild(a)
+      }
+    } catch (e) { alert('다운로드 실패') }
+    finally { setDownloading(null) }
+  }
+
+  // 파일 삭제
+  const deleteFile = async (billingId, fileId) => {
+    if (!window.confirm('첨부파일을 삭제하시겠습니까?')) return
+    try {
+      await api.deleteBillingFile(fileId)
+      setBillings(prev => prev.map(b => b.id === billingId
+        ? { ...b, files: b.files.filter(f => f.id !== fileId) }
+        : b
+      ))
+    } catch (e) { alert('파일 삭제 실패') }
+  }
+
+  const totalQty = billings.reduce((s, b) => s + (b.quantity || 0), 0)
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={onClose}>
+      <div style={{
+        background: '#fff', borderRadius: 16, width: '90%', maxWidth: 900,
+        maxHeight: '90vh', display: 'flex', flexDirection: 'column',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+      }} onClick={e => e.stopPropagation()}>
+
+        {/* ── 모달 헤더 ── */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '18px 24px 14px', borderBottom: '1px solid #f1f5f9', flexShrink: 0,
+        }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#1e293b' }}>💰 Billing Track</h3>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{page.name}</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => billings.length > 0 && exportBillingXLSX(billings, page.name)}
+              disabled={billings.length === 0}
+              style={{
+                background: '#166534', color: '#fff', border: 'none',
+                borderRadius: 'var(--r-sm)', padding: '6px 13px', fontSize: 12,
+                fontFamily: "'Noto Sans KR', sans-serif", fontWeight: 500,
+                cursor: billings.length > 0 ? 'pointer' : 'not-allowed',
+                transition: 'opacity .15s', opacity: billings.length === 0 ? 0.4 : 1,
+              }}
+              onMouseEnter={e => { if (billings.length > 0) e.currentTarget.style.opacity = '0.85' }}
+              onMouseLeave={e => e.currentTarget.style.opacity = billings.length === 0 ? '0.4' : '1'}
+            >⬇ 엑셀 추출</button>
+            <button onClick={onClose} style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              fontSize: 20, color: '#94a3b8', lineHeight: 1, padding: 4,
+            }}>✕</button>
+          </div>
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, padding: '20px 24px' }}>
+
+          {/* ── 입력 폼 ── */}
+          {isRegular && (
+            <div style={{
+              background: '#f8fafc', borderRadius: 12, padding: 16, marginBottom: 24,
+              border: '1px solid #e2e8f0',
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 12 }}>+ 새 항목 추가</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                <div>
+                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>프로젝트명 *</label>
+                  <input className="form-input" placeholder="예: Galaxy S25 Ultra" value={form.projectName}
+                    onChange={e => setForm(f => ({ ...f, projectName: e.target.value }))} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>대상 페이지</label>
+                  <input className="form-input" value={form.targetPage}
+                    onChange={e => setForm(f => ({ ...f, targetPage: e.target.value }))} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>
+                    사이트 코드 수 <span style={{ color: '#6366f1', fontSize: 10 }}>자동입력</span>
+                  </label>
+                  <input className="form-input" type="number" min="0" value={form.siteCount}
+                    onChange={e => setForm(f => ({ ...f, siteCount: e.target.value }))} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>페이지 수 *</label>
+                  <input className="form-input" type="number" min="1" placeholder="직접 입력"
+                    value={form.pageCount} onChange={e => setForm(f => ({ ...f, pageCount: e.target.value }))} />
+                </div>
+              </div>
+
+              {/* Quantity 미리보기 */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+                background: quantity > 0 ? '#ede9fe' : '#f1f5f9', borderRadius: 8, marginBottom: 10,
+                border: `1px solid ${quantity > 0 ? '#c4b5fd' : '#e2e8f0'}`,
+              }}>
+                <span style={{ fontSize: 12, color: '#64748b' }}>Quantity =</span>
+                <span style={{ fontSize: 12, color: '#64748b' }}>{form.siteCount || 0} 사이트 × {form.pageCount || 0} 페이지</span>
+                <span style={{ fontSize: 16, fontWeight: 700, color: quantity > 0 ? '#7c3aed' : '#94a3b8', marginLeft: 'auto' }}>
+                  {quantity.toLocaleString()}
+                </span>
+              </div>
+
+              {/* 비고 */}
+              <div style={{ marginBottom: 10 }}>
+                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>비고</label>
+                <input className="form-input" placeholder="메모 (선택)" value={form.note}
+                  onChange={e => setForm(f => ({ ...f, note: e.target.value }))} />
+              </div>
+
+              {/* 파일 첨부 */}
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>첨부파일</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={() => formFileRef.current?.click()}
+                    style={{
+                      padding: '5px 12px', borderRadius: 6, border: '1px dashed #cbd5e1',
+                      background: '#fff', fontSize: 12, cursor: 'pointer', color: '#64748b',
+                    }}
+                  >+ 파일 선택</button>
+                  <input ref={formFileRef} type="file" multiple style={{ display: 'none' }} onChange={handleFormFileChange} />
+                  {formFiles.map((f, i) => (
+                    <span key={i} style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 4,
+                      fontSize: 11, background: '#f1f5f9', borderRadius: 5, padding: '3px 8px',
+                    }}>
+                      📎 {f.name}
+                      <button onClick={() => setFormFiles(prev => prev.filter((_, j) => j !== i))}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 12, padding: 0, lineHeight: 1 }}>✕</button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                onClick={handleCreate}
+                disabled={submitting}
+                style={{
+                  padding: '8px 20px', borderRadius: 8, border: 'none',
+                  background: submitting ? '#a5b4fc' : '#6366f1', color: '#fff',
+                  fontSize: 13, fontWeight: 600, cursor: submitting ? 'not-allowed' : 'pointer',
+                }}
+              >{submitting ? '저장 중...' : '추가'}</button>
+            </div>
+          )}
+
+          {/* ── 내역 리스트 ── */}
+          {loadingList ? (
+            <div style={{ textAlign: 'center', padding: 32, color: '#94a3b8' }}>불러오는 중...</div>
+          ) : billings.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 48, color: '#cbd5e1', fontSize: 14 }}>
+              아직 등록된 billing 내역이 없습니다.
+            </div>
+          ) : (
+            <>
+              {/* 합계 뱃지 */}
+              <div style={{
+                display: 'flex', justifyContent: 'flex-end', marginBottom: 10,
+              }}>
+                <div style={{
+                  padding: '6px 16px', borderRadius: 20,
+                  background: '#ede9fe', color: '#6d28d9', fontSize: 13, fontWeight: 700,
+                  border: '1px solid #c4b5fd',
+                }}>
+                  합계 Quantity: {totalQty.toLocaleString()}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {billings.map(b => (
+                  <div key={b.id} style={{
+                    background: '#fff', border: '1px solid #e2e8f0',
+                    borderRadius: 10, padding: '14px 16px',
+                    boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+                  }}>
+                    {editingId === b.id ? (
+                      /* 수정 모드 */
+                      <div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                          <div>
+                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>프로젝트명</label>
+                            <input className="form-input" style={{ fontSize: 12 }} value={editForm.projectName}
+                              onChange={e => setEditForm(f => ({ ...f, projectName: e.target.value }))} />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>대상 페이지</label>
+                            <input className="form-input" style={{ fontSize: 12 }} value={editForm.targetPage}
+                              onChange={e => setEditForm(f => ({ ...f, targetPage: e.target.value }))} />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>사이트 코드 수</label>
+                            <input className="form-input" style={{ fontSize: 12 }} type="number" min="0" value={editForm.siteCount}
+                              onChange={e => setEditForm(f => ({ ...f, siteCount: e.target.value }))} />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>페이지 수</label>
+                            <input className="form-input" style={{ fontSize: 12 }} type="number" min="1" value={editForm.pageCount}
+                              onChange={e => setEditForm(f => ({ ...f, pageCount: e.target.value }))} />
+                          </div>
+                        </div>
+                        <div style={{ marginBottom: 8 }}>
+                          <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>비고</label>
+                          <input className="form-input" style={{ fontSize: 12 }} value={editForm.note}
+                            onChange={e => setEditForm(f => ({ ...f, note: e.target.value }))} />
+                        </div>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button className="btn-sm" onClick={() => saveEdit(b.id)} style={{ background: '#6366f1', color: '#fff', border: 'none' }}>저장</button>
+                          <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setEditingId(null)}>취소</button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* 보기 모드 */
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 700, fontSize: 14, color: '#1e293b', marginBottom: 4 }}>{b.project_name}</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', fontSize: 12, color: '#64748b', marginBottom: b.note ? 6 : 0 }}>
+                              <span>📄 {b.target_page}</span>
+                              <span>🌐 {b.site_count} 사이트</span>
+                              <span>📃 {b.page_count} 페이지</span>
+                              <span style={{ fontWeight: 700, color: '#7c3aed' }}>✦ {(b.quantity || 0).toLocaleString()} qty</span>
+                              <span>👤 {b.created_by}</span>
+                              <span>🗓 {b.created_at?.slice(0, 10)}</span>
+                            </div>
+                            {b.note && <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>📝 {b.note}</div>}
+
+                            {/* 첨부파일 */}
+                            {b.files?.length > 0 && (
+                              <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                                {b.files.map(f => (
+                                  <span key={f.id} style={{
+                                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                                    fontSize: 11, background: '#f1f5f9', borderRadius: 5, padding: '3px 8px',
+                                    border: '1px solid #e2e8f0',
+                                  }}>
+                                    <button
+                                      onClick={() => downloadFile(f.id, f.name)}
+                                      disabled={downloading === f.id}
+                                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6366f1', fontSize: 11, padding: 0 }}
+                                    >{downloading === f.id ? '⏳' : `📎 ${f.name}`}</button>
+                                    {isRegular && (
+                                      <button onClick={() => deleteFile(b.id, f.id)}
+                                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 11, padding: 0, lineHeight: 1 }}>✕</button>
+                                    )}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {isRegular && (
+                            <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
+                              <button onClick={() => startEdit(b)}
+                                style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 6, padding: '4px 8px', cursor: 'pointer', fontSize: 11, color: '#64748b' }}
+                                onMouseEnter={e => { e.currentTarget.style.borderColor = '#6366f1'; e.currentTarget.style.color = '#6366f1' }}
+                                onMouseLeave={e => { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.color = '#64748b' }}
+                              >✏️ 수정</button>
+                              <button onClick={() => handleDelete(b.id)}
+                                style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 6, padding: '4px 8px', cursor: 'pointer', fontSize: 11, color: '#ef4444' }}
+                                onMouseEnter={e => e.currentTarget.style.background = '#fef2f2'}
+                                onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                              >🗑 삭제</button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── 페이지 상세 뷰 ────────────────────────────────────────────
 function PageDetail({ page, onBack, onUpdate }) {
   const { user } = useAuth()
@@ -948,7 +1671,19 @@ function PageDetail({ page, onBack, onUpdate }) {
   const [showAddCountry, setShowAddCountry] = useState(false)
   const [search, setSearch] = useState('')
   const [loadingDetail, setLoadingDetail] = useState(true)
+  const [showBilling, setShowBilling] = useState(false)
   const dropRef = useRef(null)
+
+  // ── [신규] 일괄 상태 변경 (체크박스 다중 선택 + 텍스트 일괄 입력) ──
+  const [showBulkPanel, setShowBulkPanel] = useState(false)
+  const [selectedCodes, setSelectedCodes] = useState(() => new Set())
+  const [bulkStatus, setBulkStatus] = useState('')
+  const [bulkApplying, setBulkApplying] = useState(false)
+  const [bulkSelectResult, setBulkSelectResult] = useState(null)
+  const [bulkText, setBulkText] = useState('')
+  const [bulkTextStatus, setBulkTextStatus] = useState('')
+  const [bulkTextApplying, setBulkTextApplying] = useState(false)
+  const [bulkTextResult, setBulkTextResult] = useState(null)
 
   // ── 페이지 진입 시 DB에서 상태+파일 히스토리 로드 ──────────
   // ── 페이지 진입 시 DB에서 상태+파일+분기 히스토리 로드 ──────────
@@ -999,6 +1734,13 @@ function PageDetail({ page, onBack, onUpdate }) {
           branchStatusMap[s.site_code].push(s)
         }
 
+        // statusHistory를 site_code별로 그룹핑 (count 표시 및 초기 로딩용)
+        const statusHistoryMap = {}
+        for (const h of (res.statusHistory || [])) {
+          if (!statusHistoryMap[h.site_code]) statusHistoryMap[h.site_code] = []
+          statusHistoryMap[h.site_code].push(h)
+        }
+
         // 5. 기본 배열에 DB 데이터를 최종 병합 (mergedCountries 단일 선언)
         const mergedCountries = baseCountries.map(c => {
           const st = statusMap[c.code]
@@ -1011,6 +1753,7 @@ function PageDetail({ page, onBack, onUpdate }) {
             file: history.length ? history[history.length - 1] : c.file,
             branches: branchMap[c.code] || [], // 분기 배열 연결
             branchStatuses: branchStatusMap[c.code] || [],
+            statusHistoryItems: statusHistoryMap[c.code] || [],
           }
         })
 
@@ -1027,6 +1770,7 @@ function PageDetail({ page, onBack, onUpdate }) {
               file: history.length ? history[history.length - 1] : null,
               branches: branchMap[code] || [], // 분기 배열 연결
               branchStatuses: branchStatusMap[code] || [],
+              statusHistoryItems: statusHistoryMap[code] || [],
             })
           }
         }
@@ -1064,6 +1808,82 @@ function PageDetail({ page, onBack, onUpdate }) {
     .filter(s => !search || s.name.includes(search) || s.code.toLowerCase().includes(search.toLowerCase()))
     .filter(s => regionFilter === 'ALL' || s.region === regionFilter)
 
+  // ── 체크박스 선택 토글 ───────────────────────────────────────
+  const toggleSelect = useCallback((code) => {
+    setBulkSelectResult(null)
+    setSelectedCodes(prev => {
+      const next = new Set(prev)
+      if (next.has(code)) next.delete(code)
+      else next.add(code)
+      return next
+    })
+  }, [])
+
+  const toggleSelectAll = useCallback(() => {
+    setBulkSelectResult(null)
+    setSelectedCodes(prev => {
+      const allSelected = filtered.length > 0 && filtered.every(s => prev.has(s.code))
+      return allSelected ? new Set() : new Set(filtered.map(s => s.code))
+    })
+  }, [filtered])
+
+  // ── 코드 목록을 받아 해당 국가들의 상태를 한 번에 변경 (체크박스/텍스트 공용) ──
+  const applyStatusToCodes = useCallback(async (codes, newStatus) => {
+    const codeSet = new Set(codes.map(c => c.trim().toUpperCase()).filter(Boolean))
+    const matchedCountries = page.countries.filter(c => codeSet.has(c.code.toUpperCase()))
+    if (matchedCountries.length === 0) {
+      return { matchedCodes: [], unmatchedCodes: [...codeSet] }
+    }
+
+    const updatedCountries = page.countries.map(c =>
+      codeSet.has(c.code.toUpperCase()) ? { ...c, status: newStatus } : c
+    )
+    onUpdate({ ...page, countries: updatedCountries }, true)
+
+    // DB 저장 (병렬, 실패해도 UI는 유지)
+    await Promise.allSettled(
+      matchedCountries.map(c =>
+        api.updateTrackerStatus({
+          pageId: page.id,
+          siteCode: c.code,
+          status: newStatus,
+          note: c.note || '',
+        })
+      )
+    )
+
+    const matchedCodes = matchedCountries.map(c => c.code.toUpperCase())
+    const unmatchedCodes = [...codeSet].filter(code => !matchedCodes.includes(code))
+    return { matchedCodes, unmatchedCodes }
+  }, [page, onUpdate])
+
+  const handleBulkApplySelected = useCallback(async () => {
+    if (!bulkStatus || selectedCodes.size === 0) return
+    setBulkApplying(true)
+    setBulkSelectResult(null)
+    try {
+      const result = await applyStatusToCodes([...selectedCodes], bulkStatus)
+      setBulkSelectResult(result)
+      setSelectedCodes(new Set())
+      setBulkStatus('')
+    } finally {
+      setBulkApplying(false)
+    }
+  }, [applyStatusToCodes, bulkStatus, selectedCodes])
+
+  const handleBulkApplyText = useCallback(async () => {
+    if (!bulkTextStatus || !bulkText.trim()) return
+    const codes = bulkText.split(/[\s,;\n\r\t]+/).map(s => s.trim()).filter(Boolean)
+    if (codes.length === 0) return
+    setBulkTextApplying(true)
+    try {
+      const result = await applyStatusToCodes(codes, bulkTextStatus)
+      setBulkTextResult(result)
+    } finally {
+      setBulkTextApplying(false)
+    }
+  }, [applyStatusToCodes, bulkText, bulkTextStatus])
+
   const handleStatusChange = useCallback(async (siteCode, newStatus, note) => {
     const updated = { ...page }
     const existing = updated.countries.find(c => c.code === siteCode)
@@ -1079,9 +1899,10 @@ function PageDetail({ page, onBack, onUpdate }) {
         siteCode,
         status: newStatus ?? existing?.status ?? '',
         note: note ?? existing?.note ?? '',
+        changedBy: user?.name || null,
       })
     } catch (e) { console.warn('status DB 저장 실패', e) }
-  }, [page, onUpdate])
+  }, [page, onUpdate, user])
 
   const handleBranchCreate = useCallback(async (siteCode, branchData) => {
     try {
@@ -1269,6 +2090,7 @@ function PageDetail({ page, onBack, onUpdate }) {
 
   return (
     <div className="cst-page-detail">
+      {showBilling && <BillingModal page={page} onClose={() => setShowBilling(false)} />}
       <div className="cst-detail-header">
         <button className="cst-back-btn" onClick={onBack}>← 페이지 목록</button>
         
@@ -1276,10 +2098,25 @@ function PageDetail({ page, onBack, onUpdate }) {
           <h2 className="cst-detail-title">{page.name}</h2>
           
           <span className="cst-detail-date">생성: {page.createdAt?.slice(0, 10)}</span>
-          <button className="btn-export" onClick={() => exportStatusXLSX(page)}
-          style={{ marginLeft: 'auto', display: 'block' }}>
-          ⬇ 엑셀 추출
-        </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+            {user?.position === 'regular' && (
+              <button
+                onClick={() => setShowBilling(true)}
+                style={{
+                  background: '#3b0764', color: '#fff', border: 'none',
+                  borderRadius: 'var(--r-sm)', padding: '6px 13px', fontSize: 12,
+                  fontFamily: "'Noto Sans KR', sans-serif", fontWeight: 500,
+                  cursor: 'pointer', transition: 'opacity .15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.opacity = '0.85'}
+                onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+              >💰 Billing Track</button>
+            )}
+            <button
+              className="btn-export"
+              onClick={() => exportStatusXLSX(page)}
+            >⬇ 엑셀 추출</button>
+          </div>
         </div>
 
         <div className="cst-status-summary">
@@ -1328,6 +2165,24 @@ function PageDetail({ page, onBack, onUpdate }) {
         </div>
 
         <div className="cst-add-country-wrap" ref={dropRef}>
+          <button
+            className={`cst-bulk-toggle-btn${showBulkPanel ? ' active' : ''}`}
+            onClick={() => setShowBulkPanel(v => {
+              if (v) {
+                // 패널 닫을 때 전체 초기화
+                setSelectedCodes(new Set())
+                setBulkStatus('')
+                setBulkSelectResult(null)
+                setBulkText('')
+                setBulkTextStatus('')
+                setBulkTextResult(null)
+              }
+              return !v
+            })}
+          >
+            ☑ 일괄 변경
+            {selectedCodes.size > 0 && <span className="cst-bulk-toggle-count">{selectedCodes.size}</span>}
+          </button>
           <button className="btn-sm" onClick={() => setShowAddCountry(v => !v)}>+ 국가 추가</button>
           {showAddCountry && (
             <div className="cst-country-dropdown">
@@ -1346,6 +2201,89 @@ function PageDetail({ page, onBack, onUpdate }) {
         </div>
       </div>
 
+      {showBulkPanel && (
+        <div className="cst-bulk-panel">
+          {/* ① 체크박스로 선택한 국가 일괄 변경 */}
+          <div className="cst-bulk-section">
+            <div className="cst-bulk-section-label">
+              ✅ 선택한 국가 일괄 변경
+              <span className="cst-bulk-count-badge">{selectedCodes.size}개 선택</span>
+            </div>
+            <div className="cst-bulk-row">
+              <select
+                className="cst-bulk-select"
+                value={bulkStatus}
+                onChange={e => setBulkStatus(e.target.value)}
+              >
+                {COPY_STATUSES.map(s => (
+                  <option key={s.value} value={s.value}>{s.label}</option>
+                ))}
+              </select>
+              <button
+                className="cst-bulk-apply-btn"
+                disabled={selectedCodes.size === 0 || !bulkStatus || bulkApplying}
+                onClick={handleBulkApplySelected}
+              >{bulkApplying ? '적용 중...' : '선택 국가 일괄 변경'}</button>
+              {selectedCodes.size > 0 && (
+                <button className="cst-bulk-clear-btn" onClick={() => { setSelectedCodes(new Set()); setBulkSelectResult(null) }}>선택 해제</button>
+              )}
+            </div>
+            {bulkSelectResult && (
+              <div className={`cst-bulk-result${bulkSelectResult.unmatchedCodes.length > 0 ? ' has-warn' : ''}`}>
+                ✅ {bulkSelectResult.matchedCodes.length}개 적용됨
+                {bulkSelectResult.unmatchedCodes.length > 0 && (
+                  <span className="cst-bulk-result-warn-text">
+                    · ⚠ 찾을 수 없음: {bulkSelectResult.unmatchedCodes.join(', ')}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          <hr className="cst-bulk-divider" />
+
+          {/* ② 텍스트로 국가 코드 입력해서 일괄 변경 */}
+          <div className="cst-bulk-section">
+            <div className="cst-bulk-section-label">
+              ⌨️ 코드 붙여넣기로 일괄 변경
+              <span className="cst-bulk-section-hint">쉼표·줄바꿈·공백으로 구분</span>
+            </div>
+            <textarea
+              className="cst-bulk-textarea"
+              placeholder={'예) KR, US, JP\nDE\nFR'}
+              value={bulkText}
+              onChange={e => { setBulkText(e.target.value); setBulkTextResult(null) }}
+            />
+            <div className="cst-bulk-row">
+              <select
+                className="cst-bulk-select"
+                value={bulkTextStatus}
+                onChange={e => setBulkTextStatus(e.target.value)}
+              >
+                {COPY_STATUSES.map(s => (
+                  <option key={s.value} value={s.value}>{s.label}</option>
+                ))}
+              </select>
+              <button
+                className="cst-bulk-apply-btn"
+                disabled={!bulkText.trim() || !bulkTextStatus || bulkTextApplying}
+                onClick={handleBulkApplyText}
+              >{bulkTextApplying ? '적용 중...' : '텍스트 목록 일괄 변경'}</button>
+            </div>
+            {bulkTextResult && (
+              <div className={`cst-bulk-result${bulkTextResult.unmatchedCodes.length > 0 ? ' has-warn' : ''}`}>
+                ✅ {bulkTextResult.matchedCodes.length}개 적용됨
+                {bulkTextResult.unmatchedCodes.length > 0 && (
+                  <span className="cst-bulk-result-warn-text">
+                    · ⚠ 찾을 수 없음: {bulkTextResult.unmatchedCodes.join(', ')}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {loadingDetail ? (
         <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>DB에서 불러오는 중...</div>
       ) : (
@@ -1353,6 +2291,16 @@ function PageDetail({ page, onBack, onUpdate }) {
         <table className="result-table cst-table">
           <thead>
             <tr>
+              {showBulkPanel && (
+                <th className="cst-th cst-th-check">
+                  <input
+                    type="checkbox"
+                    className="cst-checkbox"
+                    checked={filtered.length > 0 && filtered.every(s => selectedCodes.has(s.code))}
+                    onChange={toggleSelectAll}
+                  />
+                </th>
+              )}
               <th className="cst-th" style={{ width: 160 }}>국가</th>
               <th className="cst-th" style={{ width: 220 }}>카피 작업 상태</th>
               <th className="cst-th">첨부 파일 (업로드 당시 상태 기록)</th>
@@ -1368,6 +2316,9 @@ function PageDetail({ page, onBack, onUpdate }) {
                 key={site.code}
                 site={site}
                 entry={entry}
+                selected={selectedCodes.has(site.code)}
+                onToggleSelect={toggleSelect}
+                showCheckbox={showBulkPanel}
                 handleStatusChange={handleStatusChange}
                 handleFileUpload={handleFileUpload}
                 handleHistoryNoteUpdate={handleHistoryNoteUpdate}
@@ -1377,6 +2328,8 @@ function PageDetail({ page, onBack, onUpdate }) {
                 handleBranchDelete={handleBranchDelete}
                 removeCountry={removeCountry}
                 isRegular={user?.position === 'regular'}
+                pageId={page.id}
+                initialStatusHistory={entry?.statusHistoryItems ?? null}
               />
             )
           })}
@@ -1392,16 +2345,49 @@ function PageDetail({ page, onBack, onUpdate }) {
 // ── 공용 점 세 개 컨텍스트 메뉴 ─────────────────────────────────
 function DotsMenu({ items }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef(null)
+  const [pos, setPos] = useState(null) // { top, left } 화면 기준 고정 좌표
+  const btnRef = useRef(null)
+  const menuRef = useRef(null)
+
+  // 메뉴 열 때 버튼 위치 기준으로 좌표 계산 (뷰포트 밖으로 안 나가게 보정)
+  const openMenu = () => {
+    const r = btnRef.current.getBoundingClientRect()
+    const MENU_W = 170
+    const MENU_MAX_H = 320
+    let left = r.right - MENU_W
+    let top = r.bottom + 4
+    if (left < 4) left = 4
+    if (left + MENU_W > window.innerWidth - 4) left = window.innerWidth - MENU_W - 4
+    if (top + MENU_MAX_H > window.innerHeight - 4) top = r.top - MENU_MAX_H - 4 // 아래 공간 부족하면 위로 띄움
+    if (top < 4) top = 4
+    setPos({ top, left })
+    setOpen(true)
+  }
+
   useEffect(() => {
-    function handle(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    if (open) document.addEventListener('mousedown', handle)
-    return () => document.removeEventListener('mousedown', handle)
+    if (!open) return
+    function handle(e) {
+      if (
+        btnRef.current && !btnRef.current.contains(e.target) &&
+        menuRef.current && !menuRef.current.contains(e.target)
+      ) setOpen(false)
+    }
+    function handleScrollResize() { setOpen(false) }
+    document.addEventListener('mousedown', handle)
+    window.addEventListener('scroll', handleScrollResize, true)
+    window.addEventListener('resize', handleScrollResize)
+    return () => {
+      document.removeEventListener('mousedown', handle)
+      window.removeEventListener('scroll', handleScrollResize, true)
+      window.removeEventListener('resize', handleScrollResize)
+    }
   }, [open])
+
   return (
-    <div ref={ref} style={{ position: 'relative' }} onClick={e => e.stopPropagation()}>
+    <div style={{ position: 'relative', display: 'inline-block' }} onClick={e => e.stopPropagation()}>
       <button
-        onClick={() => setOpen(v => !v)}
+        ref={btnRef}
+        onClick={() => (open ? setOpen(false) : openMenu())}
         style={{
           background: 'none', border: 'none', cursor: 'pointer',
           padding: '3px 5px', borderRadius: 5, lineHeight: 1,
@@ -1412,12 +2398,16 @@ function DotsMenu({ items }) {
         onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#9ca3af' }}
         title="옵션"
       >⋯</button>
-      {open && (
-        <div style={{
-          position: 'absolute', right: 0, top: 'calc(100% + 4px)', zIndex: 200,
-          background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
-          boxShadow: '0 8px 24px rgba(0,0,0,0.13)', minWidth: 170, padding: '4px 0',
-        }}>
+      {open && pos && createPortal(
+        <div
+          ref={menuRef}
+          style={{
+            position: 'fixed', top: pos.top, left: pos.left, zIndex: 9999,
+            background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.13)', minWidth: 170, padding: '4px 0',
+            maxHeight: 320, overflowY: 'auto',
+          }}
+        >
           {items.map((item, i) => item === 'divider' ? (
             <div key={i} style={{ height: 1, background: '#f1f5f9', margin: '3px 0' }} />
           ) : (
@@ -1438,7 +2428,8 @@ function DotsMenu({ items }) {
               {item.sub && <span style={{ marginLeft: 'auto', fontSize: 11, color: '#94a3b8' }}>{item.sub}</span>}
             </div>
           ))}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )
@@ -1466,8 +2457,9 @@ function InlineRename({ value, onSave, onCancel }) {
   )
 }
 
-function PageCard({ page, onSelect, onDelete, onRename, user, folders, onMoveToFolder }) {
+function PageCard({ page, onSelect, onDelete, onRename, onRequestDuplicate, user, folders, onMoveToFolder }) {
   const [renaming, setRenaming] = useState(false)
+  const [duplicating, setDuplicating] = useState(false)
 
   const total = page.countries.length
   const stepSum = page.countries.reduce((sum, c) => {
@@ -1487,6 +2479,14 @@ function PageCard({ page, onSelect, onDelete, onRename, user, folders, onMoveToF
     {
       icon: '✏️', label: '이름 바꾸기',
       action: () => setRenaming(true),
+    },
+    {
+      icon: '📑', label: duplicating ? '복사 중...' : '프로젝트 복제',
+      action: async () => {
+        if (duplicating) return
+        setDuplicating(true)
+        try { onRequestDuplicate(page) } finally { setDuplicating(false) }
+      },
     },
     'divider',
     {
@@ -1568,7 +2568,7 @@ function PageCard({ page, onSelect, onDelete, onRename, user, folders, onMoveToF
 }
 
 // ── 폴더 컴포넌트 ─────────────────────────────────────────────
-function FolderBlock({ folder, pages, onSelect, onDelete, onRename, user, folders, onMoveToFolder, onRenameFolder, onDeleteFolder, isRegular }) {
+function FolderBlock({ folder, pages, onSelect, onDelete, onRename, onRequestDuplicate, user, folders, onMoveToFolder, onRenameFolder, onDeleteFolder, isRegular }) {
   const [isOpen, setIsOpen] = useState(true)
   const [renaming, setRenaming] = useState(false)
 
@@ -1635,6 +2635,7 @@ function FolderBlock({ folder, pages, onSelect, onDelete, onRename, user, folder
                   onSelect={onSelect}
                   onDelete={onDelete}
                   onRename={onRename}
+                  onRequestDuplicate={onRequestDuplicate}
                   user={user}
                   folders={folders}
                   onMoveToFolder={onMoveToFolder}
@@ -1664,6 +2665,7 @@ export default function StatusTab() {
   const [viewMode, setViewMode] = useState('folder') // 'folder' | 'flat'
   const [showNewFolder, setShowNewFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+  const [duplicateTarget, setDuplicateTarget] = useState(null) // 복제 모달 대상 페이지
 
   // ── 초기 로드: DB 우선, 실패 시 localStorage fallback ──────
   // ── 초기 로드: 목록 화면에서도 전체 상태(Status)를 한 번에 파악 ──────
@@ -1801,11 +2803,19 @@ export default function StatusTab() {
   }
 
   const renamePage = useCallback(async (pageId, newTitle) => {
+    // 같은 이름의 다른 프로젝트가 이미 있으면 끝에 (1), (2)... 번호를 붙여 중복 방지
+    const existingNames = new Set(pages.filter(p => p.id !== pageId).map(p => p.name))
+    let finalTitle = newTitle
+    if (existingNames.has(finalTitle)) {
+      let n = 1
+      while (existingNames.has(`${newTitle} (${n})`)) n++
+      finalTitle = `${newTitle} (${n})`
+    }
     try {
-      await api.updateTrackerPage(pageId, { title: newTitle })
-      setPages(prev => prev.map(p => p.id === pageId ? { ...p, name: newTitle } : p))
+      await api.updateTrackerPage(pageId, { title: finalTitle })
+      setPages(prev => prev.map(p => p.id === pageId ? { ...p, name: finalTitle } : p))
     } catch (e) { console.error('[DB] 페이지 이름 수정 실패:', e?.message || e) }
-  }, [])
+  }, [pages])
 
   const deletePage = useCallback(async (page, e) => {
     e.stopPropagation()
@@ -1828,6 +2838,186 @@ export default function StatusTab() {
     })
     if (selectedPageId === page.id) setSelectedPageId(null)
   }, [selectedPageId, user])
+
+  // ── 프로젝트(페이지) 복사 ─────────────────────────────────────
+  const duplicatePage = useCallback(async (page, options = {}) => {
+    if (user?.position !== 'regular') { alert('정규직만 프로젝트를 복사할 수 있습니다.'); return }
+    // options 기본값: 전부 true (기존 직접 호출 호환)
+    const opt = {
+      countries: true, status: true, files: true, statusHistory: true, branches: true, billing: true,
+      ...options,
+    }
+
+    const newPageId = String(Date.now())
+
+    // 같은 이름의 프로젝트가 이미 있으면 끝에 (1), (2)... 번호를 붙여 중복 방지
+    const existingNames = new Set(pages.map(p => p.name))
+    const baseName = `${page.name} (복사본)`
+    let newPageName = baseName
+    if (existingNames.has(newPageName)) {
+      let n = 1
+      while (existingNames.has(`${baseName} (${n})`)) n++
+      newPageName = `${baseName} (${n})`
+    }
+
+    try {
+      const res = await api.createTrackerPage({ id: newPageId, title: newPageName })
+      if (!res?.ok) {
+        alert('복사에 실패했습니다: ' + (res?.message || '서버 오류'))
+        return
+      }
+      if (page.folder_id) {
+        await api.movePageToFolder(newPageId, { folderId: page.folder_id })
+      }
+
+      // 원본 프로젝트의 최신 전체 데이터(상태/메모/파일/분기)를 DB에서 다시 조회
+      // (page.countries는 화면에 캐시된 값이라 file dataUrl이 비어있을 수 있어 신뢰하지 않음)
+      const detail = await api.getTrackerDetail(String(page.id))
+      const statuses = detail?.statuses || []
+      const files = detail?.files || []
+      const branches = detail?.branches || []
+      const branchStatuses = detail?.branchStatuses || []
+      const statusHistory = detail?.statusHistory || []
+
+      // 1. 국가 목록 등록 — status·메모와 무관하게 항상 실행 (tracker_site_status가 국가 목록 역할)
+      await Promise.allSettled(
+        statuses.map(s =>
+          api.updateTrackerStatus({
+            pageId: newPageId,
+            siteCode: s.site_code,
+            status: opt.status ? (s.status || '') : '',
+            note:   opt.status ? (s.note   || '') : '',
+            skipHistory: true,
+          })
+        )
+      )
+
+      // 2. 첨부 파일(히스토리) 복사
+      if (opt.files) {
+        await Promise.allSettled(
+          files.map(async f => {
+            let dataUrl = null
+            try {
+              const fr = await fetch(`http://localhost:4000/api/files/${f.id}/data`)
+              const fd = await fr.json()
+              dataUrl = fd?.ok ? (fd.data?.data_url || null) : null
+            } catch (e) { console.warn('파일 데이터 조회 실패', f.id, e) }
+            if (!dataUrl) return
+            await api.saveFile({
+              pageId: newPageId,
+              siteCode: f.site_code,
+              name: f.name,
+              size: f.size,
+              status: f.status || '',
+              noteAtUpload: f.note_at_upload || '',
+              uploadedAt: f.uploaded_at,
+              dataUrl,
+              uploadedBy: f.uploaded_by || null,
+            })
+          })
+        )
+      }
+
+      // 3. 분기(브랜치) 이력 복사
+      if (opt.branches) {
+        const closedSet = new Set(
+          branchStatuses.filter(s => s.is_closed).map(s => `${s.site_code}::${s.branch_name}`)
+        )
+        await Promise.allSettled(
+          branches.map(b =>
+            api.createTrackerBranch({
+              pageId: newPageId,
+              siteCode: b.site_code,
+              branchName: b.branch_name,
+              status: b.status || '',
+              note: b.note || '',
+              fileName: b.file_name || null,
+              dataUrl: b.data_url || null,
+            })
+          )
+        )
+        await Promise.allSettled(
+          [...closedSet].map(key => {
+            const [siteCode, branchName] = key.split('::')
+            return api.closeBranch({ pageId: newPageId, siteCode, branchName, isClosed: true })
+          })
+        )
+      }
+
+      // 3-1. 카피 변경 이력(tracker_status_history) 복사
+      if (opt.statusHistory && statusHistory.length > 0) {
+        await api.bulkInsertStatusHistory({
+          pageId: newPageId,
+          records: statusHistory.map(h => ({
+            site_code:   h.site_code,
+            from_status: h.from_status ?? null,
+            to_status:   h.to_status   ?? '',
+            changed_by:  h.changed_by  ?? null,
+            changed_at:  h.changed_at,
+          })),
+        })
+      }
+
+      // 4. Billing Track(정산) 항목 + 첨부파일 복사
+      if (opt.billing) {
+        const billingRes = await api.getBillings(page.id)
+        const billingItems = billingRes?.ok ? (billingRes.data || []) : []
+        await Promise.allSettled(
+          billingItems.map(async b => {
+            const created = await api.createBilling({
+              pageId: newPageId,
+              projectName: b.project_name,
+              targetPage: b.target_page,
+              siteCount: b.site_count,
+              pageCount: b.page_count,
+              note: b.note || '',
+            })
+            if (!created?.ok) return
+            const newBillingId = created.id
+            for (const f of (b.files || [])) {
+              try {
+                const fd = await api.getBillingFileData(f.id)
+                const dataUrl = fd?.ok ? (fd.data?.data_url || null) : null
+                if (!dataUrl) continue
+                await api.uploadBillingFile(newBillingId, { name: f.name, size: f.size, dataUrl })
+              } catch (e) { console.warn('정산 첨부파일 복사 실패', f.id, e) }
+            }
+          })
+        )
+      }
+
+      // 5. 카피 상태 변경 이력 복사 (원본 타임스탬프 그대로 bulk insert)
+      if (opt.statusHistory && statusHistory.length > 0) {
+        await api.bulkInsertStatusHistory({ pageId: newPageId, rows: statusHistory })
+      }
+    } catch (e) {
+      console.error('[DB] 프로젝트 복사 실패:', e?.message || e)
+      alert('복사 중 오류가 발생했습니다: ' + (e?.message || e))
+      return
+    }
+
+    const newPage = {
+      id: newPageId,
+      name: newPageName,
+      folder_id: page.folder_id ?? null,
+      createdAt: new Date().toISOString(),
+      // 상세 데이터(파일/분기 포함)는 페이지를 열 때 getTrackerDetail로 다시 로드되므로
+      // 여기서는 목록 표시에 필요한 최소 정보만 채워둔다.
+      countries: page.countries.map(c => ({
+        code: c.code,
+        status: c.status || '',
+        note: c.note || '',
+        file: null,
+        fileHistory: [],
+        branches: [],
+      })),
+    }
+    setPages(prev => {
+      const next = [...prev, newPage]
+      saveToStorage({ pages: next })
+      return next
+    })
+  }, [user, pages])
 
   const updatePage = useCallback((updated, persistToStorage = false) => {
     setPages(prev => {
@@ -1857,6 +3047,7 @@ export default function StatusTab() {
     onSelect: setSelectedPageId,
     onDelete: deletePage,
     onRename: renamePage,
+    onRequestDuplicate: (page) => setDuplicateTarget(page),
     user,
     folders,
     onMoveToFolder: movePageToFolderHandler,
@@ -1981,6 +3172,17 @@ export default function StatusTab() {
             )}
           </div>
         </div>
+      )}
+      {/* 복제 옵션 선택 모달 */}
+      {duplicateTarget && (
+        <DuplicateModal
+          page={duplicateTarget}
+          onConfirm={async (page, opts) => {
+            setDuplicateTarget(null)
+            await duplicatePage(page, opts)
+          }}
+          onClose={() => setDuplicateTarget(null)}
+        />
       )}
     </div>
   )

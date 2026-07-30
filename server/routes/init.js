@@ -200,6 +200,23 @@ router.post('/init', checkDbConnection, async (req, res) => {
       PRIMARY KEY (page_id, site_code),
       FOREIGN KEY (page_id) REFERENCES tracker_pages(id) ON DELETE CASCADE)`);
 
+    // 기존 tracker_site_status에 updated_by 컬럼 추가 (이미 있으면 무시)
+    try {
+      await getPool().execute(`ALTER TABLE tracker_site_status ADD COLUMN updated_by VARCHAR(100) DEFAULT NULL COMMENT '최종 수정자' AFTER note`);
+    } catch (_) { /* 이미 존재하면 무시 */ }
+
+    // 카피 작업 상태 변경 이력 테이블
+    await getPool().execute(`CREATE TABLE IF NOT EXISTS tracker_status_history (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      page_id VARCHAR(100) NOT NULL,
+      site_code VARCHAR(50) NOT NULL,
+      from_status VARCHAR(100) COMMENT '변경 전 상태',
+      to_status VARCHAR(100) COMMENT '변경 후 상태',
+      changed_by VARCHAR(100) COMMENT '변경자',
+      changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_status_hist (page_id, site_code)
+    ) COMMENT='카피 작업 상태 변경 이력'`);
+
     await getPool().execute(`CREATE TABLE IF NOT EXISTS page_files (
       id INT AUTO_INCREMENT PRIMARY KEY, page_id VARCHAR(100) NOT NULL,
       site_code VARCHAR(50) NOT NULL, name VARCHAR(500) NOT NULL,
@@ -214,6 +231,34 @@ router.post('/init', checkDbConnection, async (req, res) => {
     try {
       await getPool().execute(`ALTER TABLE page_files ADD COLUMN uploaded_by VARCHAR(100) DEFAULT NULL COMMENT '업로더 이름' AFTER note_at_upload`);
     } catch (_) { /* 이미 존재하면 무시 */ }
+
+    // ── Billing 테이블 ────────────────────────────────────────────
+    await getPool().execute(`CREATE TABLE IF NOT EXISTS tracker_billing (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      page_id VARCHAR(100) NOT NULL COMMENT '소속 페이지',
+      project_name VARCHAR(255) NOT NULL COMMENT '프로젝트명',
+      target_page VARCHAR(255) NOT NULL COMMENT '대상 페이지 (자동 입력)',
+      site_count INT NOT NULL DEFAULT 0 COMMENT '사이트 코드 개수',
+      page_count INT NOT NULL DEFAULT 0 COMMENT '페이지 수 (사용자 입력)',
+      quantity INT GENERATED ALWAYS AS (site_count * page_count) STORED COMMENT '수량 (자동계산)',
+      note TEXT COMMENT '비고',
+      created_by VARCHAR(100) COMMENT '작성자',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      deleted TINYINT(1) NOT NULL DEFAULT 0,
+      INDEX idx_billing_page (page_id)
+    ) COMMENT='페이지별 Billing 내역'`);
+
+    await getPool().execute(`CREATE TABLE IF NOT EXISTS billing_files (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      billing_id INT NOT NULL COMMENT '소속 billing 레코드',
+      name VARCHAR(500) NOT NULL,
+      size INT,
+      data_url LONGTEXT NOT NULL,
+      uploaded_by VARCHAR(100),
+      uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      deleted TINYINT(1) NOT NULL DEFAULT 0,
+      INDEX idx_billing_file (billing_id)
+    ) COMMENT='Billing 첨부파일'`);
 
     const [[{ cnt }]] = await getPool().execute(`SELECT COUNT(*) AS cnt FROM samsung_products`);
     if (cnt === 0) {
@@ -271,6 +316,7 @@ router.post('/init', checkDbConnection, async (req, res) => {
       saved_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (project_id) REFERENCES cc_projects(id) ON DELETE CASCADE
     ) COMMENT='국가별 로컬어 변경 이력'`);
+
     // ── 서비스 운영 현황 테이블 ──────────────────────────────────
     await getPool().execute(`CREATE TABLE IF NOT EXISTS service_status (
       id                   INT AUTO_INCREMENT PRIMARY KEY,
@@ -317,6 +363,18 @@ router.post('/init', checkDbConnection, async (req, res) => {
         );
       }
     }
+
+    // ── [신규] 제품별 국가 Preorder 상태 테이블 ──────────────────
+    await getPool().execute(`CREATE TABLE IF NOT EXISTS product_preorder (
+      id          INT AUTO_INCREMENT PRIMARY KEY,
+      product_id  INT NOT NULL,
+      site_code   VARCHAR(20) NOT NULL,
+      is_preorder TINYINT(1) NOT NULL DEFAULT 0,
+      updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      updated_by  VARCHAR(100),
+      UNIQUE KEY uq_prod_site (product_id, site_code),
+      INDEX idx_product (product_id)
+    ) COMMENT='제품 × 국가 Preorder 진행 여부'`);
 
     // ── soft delete 컬럼 추가 (기존 테이블 호환) ──
     for (const ddl of [

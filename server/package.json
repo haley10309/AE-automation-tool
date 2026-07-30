@@ -1,17 +1,27 @@
 {
-  "name": "copy-diff-server",
-  "version": "1.0.0",
-  "type": "commonjs",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
-  },
-  "dependencies": {
-    "bcryptjs": "^3.0.3",
-    "cors": "^2.8.6",
-    "dotenv": "^17.4.2",
-    "express": "^4.22.2",
-    "jsonwebtoken": "^9.0.3",
-    "mysql2": "^3.22.3"
-  }
+   "name": "copy-diff-server",
+   "version": "1.0.0",
+   "type": "commonjs",
+   "scripts": {
+      "start": "node server.js",
+      "build:exe": "cross-env NODE_TLS_REJECT_UNAUTHORIZED=0 npx @yao-pkg/pkg server.js --targets node18-win-x64 --output dist/server.exe --no-bytecode --public-packages \"*\" --public"
+   },
+   "dependencies": {
+      "bcrypt": "^6.0.0",
+      "bcryptjs": "^3.0.3",
+      "cors": "^2.8.5",
+      "dotenv": "^17.4.2",
+      "express": "^4.21.2",
+      "jsonwebtoken": "^9.0.3",
+      "mysql2": "^3.11.3"
+   },
+   "pkg": {
+      "assets": [
+         "node_modules/bcrypt/lib/binding/napi-v3/bcrypt_lib.node",
+         "node_modules/mysql2/**/*"
+      ]
+   },
+   "devDependencies": {
+      "cross-env": "^10.1.0"
+   }
 }
