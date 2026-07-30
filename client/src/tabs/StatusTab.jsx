@@ -1,5 +1,9 @@
 import { useState, useCallback, useEffect, useRef, memo, useMemo } from 'react'
 import { createPortal } from 'react-dom'
+
+// ── 공통 인라인 스타일 상수 ──
+const S_LABEL_SM = { fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }
+const S_LABEL_XS = { fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }
 import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import { useDB } from '../DBContext.jsx'
@@ -439,7 +443,7 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
         a.href = data.data.data_url; a.download = f.name
         document.body.appendChild(a); a.click(); document.body.removeChild(a)
       }
-    } catch (e) { console.warn('다운로드 실패', e) }
+    } catch (_) {}
     finally { setDownloading(false) }
   }
 
@@ -1239,50 +1243,6 @@ function DuplicateModal({ page, onConfirm, onClose }) {
   )
 }
 
-// ── 맨 위로 스크롤 버튼 ──────────────────────────────────────
-function ScrollToTopButton() {
-  const [visible, setVisible] = useState(false)
-
-  useEffect(() => {
-    const onScroll = () => setVisible(window.scrollY > 300)
-    window.addEventListener('scroll', onScroll, { passive: true })
-    return () => window.removeEventListener('scroll', onScroll)
-  }, [])
-
-  if (!visible) return null
-
-  return (
-    <button
-      onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-      title="맨 위로"
-      style={{
-        position: 'fixed',
-        right: 28,
-        bottom: 28,
-        width: 44,
-        height: 44,
-        borderRadius: '50%',
-        border: 'none',
-        background: '#3b82f6',
-        color: '#fff',
-        fontSize: 20,
-        cursor: 'pointer',
-        boxShadow: '0 4px 16px rgba(59,130,246,0.45)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 9000,
-        transition: 'opacity 0.2s, transform 0.2s',
-        lineHeight: 1,
-      }}
-      onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.1)'}
-      onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
-    >
-      ↑
-    </button>
-  )
-}
-
 // ── BillingModal 컴포넌트 ──────────────────────────────────────
 function BillingModal({ page, onClose }) {
   const { user } = useAuth()
@@ -1317,7 +1277,7 @@ function BillingModal({ page, onClose }) {
       try {
         const res = await api.getBillings(page.id)
         if (res.ok) setBillings(res.data || [])
-      } catch (e) { console.warn('billing 로드 실패', e) }
+      } catch (_) {}
       finally { setLoadingList(false) }
     }
     load()
@@ -1495,24 +1455,24 @@ function BillingModal({ page, onClose }) {
               <div style={{ fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 12 }}>+ 새 항목 추가</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
                 <div>
-                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>프로젝트명 *</label>
+                  <label style={S_LABEL_SM}>프로젝트명 *</label>
                   <input className="form-input" placeholder="예: Galaxy S25 Ultra" value={form.projectName}
                     onChange={e => setForm(f => ({ ...f, projectName: e.target.value }))} />
                 </div>
                 <div>
-                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>대상 페이지</label>
+                  <label style={S_LABEL_SM}>대상 페이지</label>
                   <input className="form-input" value={form.targetPage}
                     onChange={e => setForm(f => ({ ...f, targetPage: e.target.value }))} />
                 </div>
                 <div>
-                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>
+                  <label style={S_LABEL_SM}>
                     사이트 코드 수 <span style={{ color: '#6366f1', fontSize: 10 }}>자동입력</span>
                   </label>
                   <input className="form-input" type="number" min="0" value={form.siteCount}
                     onChange={e => setForm(f => ({ ...f, siteCount: e.target.value }))} />
                 </div>
                 <div>
-                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>페이지 수 *</label>
+                  <label style={S_LABEL_SM}>페이지 수 *</label>
                   <input className="form-input" type="number" min="1" placeholder="직접 입력"
                     value={form.pageCount} onChange={e => setForm(f => ({ ...f, pageCount: e.target.value }))} />
                 </div>
@@ -1533,14 +1493,14 @@ function BillingModal({ page, onClose }) {
 
               {/* 비고 */}
               <div style={{ marginBottom: 10 }}>
-                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>비고</label>
+                <label style={S_LABEL_SM}>비고</label>
                 <input className="form-input" placeholder="메모 (선택)" value={form.note}
                   onChange={e => setForm(f => ({ ...f, note: e.target.value }))} />
               </div>
 
               {/* 파일 첨부 */}
               <div style={{ marginBottom: 12 }}>
-                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>첨부파일</label>
+                <label style={S_LABEL_SM}>첨부파일</label>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
                   <button
                     type="button"
@@ -1610,28 +1570,28 @@ function BillingModal({ page, onClose }) {
                       <div>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
                           <div>
-                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>프로젝트명</label>
+                            <label style={S_LABEL_XS}>프로젝트명</label>
                             <input className="form-input" style={{ fontSize: 12 }} value={editForm.projectName}
                               onChange={e => setEditForm(f => ({ ...f, projectName: e.target.value }))} />
                           </div>
                           <div>
-                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>대상 페이지</label>
+                            <label style={S_LABEL_XS}>대상 페이지</label>
                             <input className="form-input" style={{ fontSize: 12 }} value={editForm.targetPage}
                               onChange={e => setEditForm(f => ({ ...f, targetPage: e.target.value }))} />
                           </div>
                           <div>
-                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>사이트 코드 수</label>
+                            <label style={S_LABEL_XS}>사이트 코드 수</label>
                             <input className="form-input" style={{ fontSize: 12 }} type="number" min="0" value={editForm.siteCount}
                               onChange={e => setEditForm(f => ({ ...f, siteCount: e.target.value }))} />
                           </div>
                           <div>
-                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>페이지 수</label>
+                            <label style={S_LABEL_XS}>페이지 수</label>
                             <input className="form-input" style={{ fontSize: 12 }} type="number" min="1" value={editForm.pageCount}
                               onChange={e => setEditForm(f => ({ ...f, pageCount: e.target.value }))} />
                           </div>
                         </div>
                         <div style={{ marginBottom: 8 }}>
-                          <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>비고</label>
+                          <label style={S_LABEL_XS}>비고</label>
                           <input className="form-input" style={{ fontSize: 12 }} value={editForm.note}
                             onChange={e => setEditForm(f => ({ ...f, note: e.target.value }))} />
                         </div>
@@ -1945,7 +1905,7 @@ function PageDetail({ page, onBack, onUpdate }) {
         note: note ?? existing?.note ?? '',
         changedBy: user?.name || null,
       })
-    } catch (e) { console.warn('status DB 저장 실패', e) }
+    } catch (_) {}
   }, [page, onUpdate, user])
 
   const handleBranchCreate = useCallback(async (siteCode, branchData) => {
@@ -1976,7 +1936,7 @@ function PageDetail({ page, onBack, onUpdate }) {
         )
         onUpdate({ ...page, countries: updatedCountries }, true)
       }
-    } catch (e) { console.warn('분기 생성 실패', e) }
+    } catch (_) {}
   }, [page, user, onUpdate])
 
   const handleBranchNoteUpdate = useCallback(async (siteCode, branchId, newNote) => {
@@ -1992,7 +1952,7 @@ function PageDetail({ page, onBack, onUpdate }) {
       } else {
         alert(res.message || '메모 수정에 실패했습니다.')
       }
-    } catch (e) { console.warn('분기 메모 수정 실패', e) }
+    } catch (_) {}
   }, [page, onUpdate])
 
   const handleBranchClose = useCallback(async (siteCode, branchName, isClosed) => {
@@ -2009,7 +1969,7 @@ function PageDetail({ page, onBack, onUpdate }) {
         })
         onUpdate({ ...page, countries: updatedCountries }, true)
       } else { alert(res.message || '분기 상태 변경에 실패했습니다.') }
-    } catch (e) { console.warn('분기 close 실패', e) }
+    } catch (_) {}
   }, [page, user, onUpdate])
 
   const handleBranchDelete = useCallback(async (siteCode, branchName) => {
@@ -2026,7 +1986,7 @@ function PageDetail({ page, onBack, onUpdate }) {
         })
         onUpdate({ ...page, countries: updatedCountries }, true)
       } else { alert(res.message || '분기 삭제에 실패했습니다.') }
-    } catch (e) { console.warn('분기 삭제 실패', e) }
+    } catch (_) {}
   }, [page, onUpdate])
 
   const handleFileUpload = useCallback(async (siteCode, fileInfo) => {
@@ -2045,7 +2005,7 @@ function PageDetail({ page, onBack, onUpdate }) {
         uploadedBy: user?.name || user?.email || null,   // ← 추가
       })
       if (res.ok) dbId = res.id
-    } catch (e) { console.warn('파일 DB 저장 실패', e) }
+    } catch (_) {}
 
     const fileInfoWithId = { ...fileInfo, dbId, uploadedBy: user?.name || user?.email || null }
     const updatedCountries = page.countries.map(c => {
@@ -2078,7 +2038,7 @@ function PageDetail({ page, onBack, onUpdate }) {
     if (targetFile?.dbId) {
       try {
         await api.updateHistoryNote(targetFile.dbId, { noteAtUpload: newNote })
-      } catch (e) { console.warn('히스토리 메모 DB 저장 실패', e) }
+      } catch (_) {}
     }
   }, [page, onUpdate])
 
@@ -2098,7 +2058,7 @@ function PageDetail({ page, onBack, onUpdate }) {
         status: '',
         note: '',
       })
-    } catch (e) { console.warn('국가 추가 DB 저장 실패', e) }
+    } catch (_) {}
   }
 
   const removeCountry = async (code) => {
@@ -2111,7 +2071,7 @@ function PageDetail({ page, onBack, onUpdate }) {
     // DB에서 삭제
     try {
       await api.deleteTrackerStatus(page.id, code)
-    } catch (e) { console.warn('국가 상태 DB 삭제 실패', e) }
+    } catch (_) {}
 
     onUpdate({ ...page, countries: page.countries.filter(c => c.code !== code) }, true)
   }
@@ -2945,7 +2905,7 @@ export default function StatusTab() {
               const fr = await fetch(`http://localhost:4000/api/files/${f.id}/data`)
               const fd = await fr.json()
               dataUrl = fd?.ok ? (fd.data?.data_url || null) : null
-            } catch (e) { console.warn('파일 데이터 조회 실패', f.id, e) }
+            } catch (_) {}
             if (!dataUrl) return
             await api.saveFile({
               pageId: newPageId,
@@ -3024,7 +2984,7 @@ export default function StatusTab() {
                 const dataUrl = fd?.ok ? (fd.data?.data_url || null) : null
                 if (!dataUrl) continue
                 await api.uploadBillingFile(newBillingId, { name: f.name, size: f.size, dataUrl })
-              } catch (e) { console.warn('정산 첨부파일 복사 실패', f.id, e) }
+              } catch (_) {}
             }
           })
         )
@@ -3228,7 +3188,6 @@ export default function StatusTab() {
           onClose={() => setDuplicateTarget(null)}
         />
       )}
-      <ScrollToTopButton />
     </div>
   )
 }
