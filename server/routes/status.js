@@ -435,6 +435,101 @@ router.post('/tracker/billing/:billingId/files', authMiddleware, async (req, res
 });
 
 // ══════════════════════════════════════════════════════════════
+// Billing API
+// ══════════════════════════════════════════════════════════════
+
+// billing 첨부파일 데이터 단건 조회 (다운로드용)
+router.get('/tracker/billing/files/:fileId/data', async (req, res) => {
+  try {
+    const [[row]] = await getPool().execute(
+      `SELECT id, name, data_url FROM billing_files WHERE id = ? AND deleted = 0`, [req.params.fileId]
+    );
+    if (!row) return res.json({ ok: false, message: '파일을 찾을 수 없습니다.' });
+    res.json({ ok: true, data: row });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// billing 첨부파일 soft delete
+router.delete('/tracker/billing/files/:fileId', authMiddleware, async (req, res) => {
+  try {
+    await getPool().execute(`UPDATE billing_files SET deleted = 1 WHERE id = ?`, [req.params.fileId]);
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// 특정 페이지의 billing 목록 조회 (첨부파일 포함)
+router.get('/tracker/billing/:pageId', async (req, res) => {
+  try {
+    const [rows] = await getPool().execute(
+      `SELECT id, project_name, target_page, site_count, page_count, quantity, note, created_by, created_at
+       FROM tracker_billing WHERE page_id = ? AND deleted = 0 ORDER BY created_at DESC`,
+      [req.params.pageId]
+    );
+    // 첨부파일 (data_url 제외 — 다운로드 시 단건 조회)
+    const [files] = await getPool().execute(
+      `SELECT id, billing_id, name, size, uploaded_by, uploaded_at
+       FROM billing_files
+       WHERE billing_id IN (${rows.length ? rows.map(() => '?').join(',') : 'NULL'}) AND deleted = 0`,
+      rows.map(r => r.id)
+    );
+    const fileMap = {};
+    files.forEach(f => {
+      if (!fileMap[f.billing_id]) fileMap[f.billing_id] = [];
+      fileMap[f.billing_id].push(f);
+    });
+    const data = rows.map(r => ({ ...r, files: fileMap[r.id] || [] }));
+    res.json({ ok: true, data });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// billing 항목 생성
+router.post('/tracker/billing', authMiddleware, async (req, res) => {
+  try {
+    const { pageId, projectName, targetPage, siteCount, pageCount, note } = req.body;
+    const createdBy = req.user?.name || '알 수 없음';
+    const [result] = await getPool().execute(
+      `INSERT INTO tracker_billing (page_id, project_name, target_page, site_count, page_count, note, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [pageId, projectName, targetPage, siteCount, pageCount, note || '', createdBy]
+    );
+    res.json({ ok: true, id: result.insertId });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// billing 항목 수정
+router.put('/tracker/billing/:id', authMiddleware, async (req, res) => {
+  try {
+    const { projectName, targetPage, siteCount, pageCount, note } = req.body;
+    await getPool().execute(
+      `UPDATE tracker_billing SET project_name=?, target_page=?, site_count=?, page_count=?, note=? WHERE id=?`,
+      [projectName, targetPage, siteCount, pageCount, note || '', req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// billing 항목 soft delete
+router.delete('/tracker/billing/:id', authMiddleware, async (req, res) => {
+  try {
+    await getPool().execute(`UPDATE tracker_billing SET deleted = 1 WHERE id = ?`, [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// billing 첨부파일 업로드
+router.post('/tracker/billing/:billingId/files', authMiddleware, async (req, res) => {
+  try {
+    const { name, size, dataUrl } = req.body;
+    const uploadedBy = req.user?.name || '알 수 없음';
+    const [result] = await getPool().execute(
+      `INSERT INTO billing_files (billing_id, name, size, data_url, uploaded_by) VALUES (?, ?, ?, ?, ?)`,
+      [req.params.billingId, name, size || 0, dataUrl, uploadedBy]
+    );
+    res.json({ ok: true, id: result.insertId });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════
 // merge Deck api 
 // ══════════════════════════════════════════════════════════════
 

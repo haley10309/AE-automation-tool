@@ -260,6 +260,34 @@ router.post('/init', checkDbConnection, async (req, res) => {
       INDEX idx_billing_file (billing_id)
     ) COMMENT='Billing 첨부파일'`);
 
+    // ── Billing 테이블 ────────────────────────────────────────────
+    await getPool().execute(`CREATE TABLE IF NOT EXISTS tracker_billing (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      page_id VARCHAR(100) NOT NULL COMMENT '소속 페이지',
+      project_name VARCHAR(255) NOT NULL COMMENT '프로젝트명',
+      target_page VARCHAR(255) NOT NULL COMMENT '대상 페이지 (자동 입력)',
+      site_count INT NOT NULL DEFAULT 0 COMMENT '사이트 코드 개수',
+      page_count INT NOT NULL DEFAULT 0 COMMENT '페이지 수 (사용자 입력)',
+      quantity INT GENERATED ALWAYS AS (site_count * page_count) STORED COMMENT '수량 (자동계산)',
+      note TEXT COMMENT '비고',
+      created_by VARCHAR(100) COMMENT '작성자',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      deleted TINYINT(1) NOT NULL DEFAULT 0,
+      INDEX idx_billing_page (page_id)
+    ) COMMENT='페이지별 Billing 내역'`);
+
+    await getPool().execute(`CREATE TABLE IF NOT EXISTS billing_files (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      billing_id INT NOT NULL COMMENT '소속 billing 레코드',
+      name VARCHAR(500) NOT NULL,
+      size INT,
+      data_url LONGTEXT NOT NULL,
+      uploaded_by VARCHAR(100),
+      uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      deleted TINYINT(1) NOT NULL DEFAULT 0,
+      INDEX idx_billing_file (billing_id)
+    ) COMMENT='Billing 첨부파일'`);
+
     const [[{ cnt }]] = await getPool().execute(`SELECT COUNT(*) AS cnt FROM samsung_products`);
     if (cnt === 0) {
       for (const p of SEED_PRODUCTS) {
