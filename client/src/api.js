@@ -98,6 +98,7 @@ export const api = window.electronAPI || {
   deleteBilling:       (id)            => call('DELETE', `/api/tracker/billing/${id}`),
   uploadBillingFile:   (billingId, body) => call('POST', `/api/tracker/billing/${billingId}/files`, body),
   getBillingFileData:  (fileId)        => call('GET',    `/api/tracker/billing/files/${fileId}/data`),
+  getFileData:         (fileId)        => call('GET',    `/api/files/${fileId}/data`),
   deleteBillingFile:   (fileId)        => call('DELETE', `/api/tracker/billing/files/${fileId}`),
 
   // ── 서비스 운영 현황 ──────────────────────────────────────────
