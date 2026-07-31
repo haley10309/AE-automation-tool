@@ -2412,6 +2412,70 @@ mark.diff-ins {
   background: #eff6ff;
 }
 .cst-unified-download-btn:disabled { opacity: .5; cursor: default; }
+
+.cst-unified-preview-btn {
+  background: none;
+  border: 1px solid #c7d2fe;
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-size: 11px;
+  cursor: pointer;
+  color: #4f46e5;
+  font-weight: 500;
+  transition: border-color .15s, background .15s;
+}
+.cst-unified-preview-btn:hover:not(:disabled) { background: #e0e7ff; }
+.cst-unified-preview-btn:disabled { opacity: .5; cursor: default; }
+
+/* 미리보기 모달 */
+.cst-preview-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 9999;
+  display: flex; align-items: center; justify-content: center;
+}
+.cst-preview-modal {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.25);
+  display: flex; flex-direction: column;
+  max-width: 90vw; max-height: 90vh;
+  width: 760px;
+  overflow: hidden;
+}
+.cst-preview-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid #e5e7eb;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.cst-preview-title {
+  font-size: 13px; font-weight: 600; color: #111827;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cst-preview-close {
+  background: none; border: none; font-size: 16px;
+  cursor: pointer; color: #6b7280; padding: 2px 6px; border-radius: 4px;
+  flex-shrink: 0;
+}
+.cst-preview-close:hover { background: #f3f4f6; color: #111; }
+.cst-preview-body {
+  flex: 1; overflow: auto; padding: 20px;
+  display: flex; align-items: flex-start; justify-content: center;
+}
+.cst-preview-image {
+  max-width: 100%; max-height: 75vh;
+  object-fit: contain; border-radius: 6px;
+}
+.cst-preview-text {
+  width: 100%; margin: 0;
+  font-family: 'Courier New', monospace; font-size: 12px;
+  line-height: 1.6; color: #1e293b;
+  white-space: pre-wrap; word-break: break-all;
+  background: #f8fafc; border-radius: 6px; padding: 14px;
+  border: 1px solid #e2e8f0;
+}
 .extract-layout {
   display: flex;
   gap: 0;

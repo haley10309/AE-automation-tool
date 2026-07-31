@@ -904,6 +904,33 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
   })()
 
   const [downloadingId, setDownloadingId] = useState(null)
+  const [previewFile, setPreviewFile]     = useState(null) // { name, dataUrl, type:'image'|'text', text? }
+  const [previewingId, setPreviewingId]   = useState(null)
+
+  const getFilePreviewType = (name = '') => {
+    const ext = name.split('.').pop().toLowerCase()
+    if (['jpg','jpeg','png','gif','webp','bmp','svg'].includes(ext)) return 'image'
+    if (['txt','log','csv','json','md'].includes(ext)) return 'text'
+    return null
+  }
+
+  const previewHistoryFile = async (dbId, name) => {
+    if (!dbId || previewingId) return
+    setPreviewingId(dbId)
+    try {
+      const res = await api.getFileData(dbId)
+      if (!res?.ok || !res.data?.data_url) { alert('파일 데이터를 가져올 수 없습니다.'); return }
+      const type = getFilePreviewType(name)
+      if (type === 'text') {
+        const base64 = res.data.data_url.split(',')[1] ?? res.data.data_url
+        const text = decodeURIComponent(escape(atob(base64)))
+        setPreviewFile({ name, dataUrl: res.data.data_url, text, type: 'text' })
+      } else {
+        setPreviewFile({ name, dataUrl: res.data.data_url, type: 'image' })
+      }
+    } catch (e) { alert('미리보기 실패: ' + (e?.message || e)) }
+    finally { setPreviewingId(null) }
+  }
 
   const downloadHistoryFile = async (dbId, name) => {
     if (!dbId || downloadingId) return
@@ -1030,6 +1057,16 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                           <div className="cst-unified-item-row">
                             <span style={{ fontWeight: 500, color: '#334155' }}>{f.name}</span>
                             <span className="cst-sh-badge" style={{ color: statusStyle.color, background: statusStyle.bg }}>{statusStyle.label}</span>
+                            {f.dbId && getFilePreviewType(f.name) && (
+                              <button
+                                className="cst-unified-preview-btn"
+                                onClick={() => previewHistoryFile(f.dbId, f.name)}
+                                disabled={previewingId === f.dbId}
+                                title="파일 미리보기"
+                              >
+                                {previewingId === f.dbId ? '⏳' : '자세히'}
+                              </button>
+                            )}
                             {f.dbId && (
                               <button
                                 className="cst-unified-download-btn"
@@ -1062,6 +1099,32 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
             <BranchTimeline branches={branches} branchStatuses={entry?.branchStatuses || []} onCreateBranch={(data) => handleBranchCreate(site.code, data)} onUpdateBranchNote={(id, note) => handleBranchNoteUpdate(site.code, id, note)} onCloseBranch={(siteCode, bName, isClosed) => handleBranchClose(siteCode, bName, isClosed)} onDeleteBranch={(siteCode, bName) => handleBranchDelete(siteCode, bName)} />
           </td>
         </tr>
+      )}
+      {previewFile && createPortal(
+        <div className="cst-preview-backdrop" onClick={() => setPreviewFile(null)}>
+          <div className="cst-preview-modal" onClick={e => e.stopPropagation()}>
+            <div className="cst-preview-header">
+              <span className="cst-preview-title">📎 {previewFile.name}</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="cst-unified-download-btn"
+                  onClick={() => downloadHistoryFile(
+                    mergedHistory.find(i => i.type === 'file' && i.data.name === previewFile.name)?.data.dbId,
+                    previewFile.name
+                  )}
+                >⬇ 다운로드</button>
+                <button className="cst-preview-close" onClick={() => setPreviewFile(null)}>✕</button>
+              </div>
+            </div>
+            <div className="cst-preview-body">
+              {previewFile.type === 'image'
+                ? <img src={previewFile.dataUrl} alt={previewFile.name} className="cst-preview-image" />
+                : <pre className="cst-preview-text">{previewFile.text}</pre>
+              }
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </>
   )
