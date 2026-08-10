@@ -890,6 +890,14 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
   const [statusHistory, setStatusHistory] = useState(initialStatusHistory ?? null) // null = 미로딩
   const branches = entry?.branches || []
 
+  // initialStatusHistory prop이 업데이트되면 state에 동기화
+  // (getTrackerDetail 응답 도착 전에 마운트된 경우 대응)
+  useEffect(() => {
+    if (initialStatusHistory !== null && statusHistory === null) {
+      setStatusHistory(initialStatusHistory)
+    }
+  }, [initialStatusHistory])
+
   const fetchStatusHistory = async () => {
     try {
       const res = await fetch(`http://localhost:4000/api/tracker/status-history?pageId=${pageId}&siteCode=${site.code}`)
@@ -915,6 +923,8 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
   }
 
   const toggleUnifiedHistory = async () => {
+    // 패널을 열 때 항상 최신 데이터로 fetch (실시간 동기화 보장)
+    // 진입 시 count는 initialStatusHistory로 미리 채워져 있어서 fetch 전후 count가 동일하게 유지됨
     if (!showUnifiedHistory) await fetchStatusHistory()
     setShowUnifiedHistory(v => !v)
   }
@@ -1029,9 +1039,9 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                 onClick={toggleUnifiedHistory}
               >
                 {showUnifiedHistory ? '▼ 이력 닫기' : '▶ 전체 이력'}
-                {((entry?.fileHistory?.length || 0) + (statusHistory?.length || 0)) > 0 && (
+                {((entry?.fileHistory?.length || 0) + ((statusHistory ?? initialStatusHistory)?.length || 0)) > 0 && (
                   <span className="cst-row-action-count">
-                    {(entry?.fileHistory?.length || 0) + (statusHistory?.length || 0)}
+                    {(entry?.fileHistory?.length || 0) + ((statusHistory ?? initialStatusHistory)?.length || 0)}
                   </span>
                 )}
               </button>

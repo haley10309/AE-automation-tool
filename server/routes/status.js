@@ -104,14 +104,26 @@ router.get('/tracker/pages/:id', async (req, res) => {
     const [branchStatuses] = await getPool().execute(
       `SELECT site_code, branch_name, is_closed, closed_by, closed_at FROM tracker_branch_status WHERE page_id = ?`, [pageId]
     );
-    // 카피 상태 변경 이력 전체 조회 (복제 등에서 활용)
-    const [statusHistory] = await getPool().execute(
-      `SELECT site_code, from_status, to_status, changed_by, changed_at
-       FROM tracker_status_history
-       WHERE page_id = ?
-       ORDER BY changed_at ASC`,
-      [pageId]
-    );
+    // 카피 상태 변경 이력 전체 조회 — fetchStatusHistory와 동일한 필드/정렬로 맞춤
+    let statusHistory;
+    try {
+      ([statusHistory] = await getPool().execute(
+        `SELECT id, site_code, from_status, to_status, changed_by, changed_at, note
+         FROM tracker_status_history
+         WHERE page_id = ?
+         ORDER BY changed_at DESC`,
+        [pageId]
+      ));
+    } catch {
+      // note 컬럼 없는 구버전 DB fallback
+      ([statusHistory] = await getPool().execute(
+        `SELECT id, site_code, from_status, to_status, changed_by, changed_at
+         FROM tracker_status_history
+         WHERE page_id = ?
+         ORDER BY changed_at DESC`,
+        [pageId]
+      ));
+    }
     res.json({ ok: true, statuses, files, branches, branchStatuses, statusHistory });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
