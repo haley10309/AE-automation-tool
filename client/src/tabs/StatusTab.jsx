@@ -1781,6 +1781,7 @@ function PageDetail({ page, onBack, onUpdate }) {
   const [regionFilter, setRegionFilter] = useState('ALL')
   const [showAddCountry, setShowAddCountry] = useState(false)
   const [search, setSearch] = useState('')
+  const [countrySearch, setCountrySearch] = useState('') // 국가 필터 검색창
   const [loadingDetail, setLoadingDetail] = useState(true)
   const [showBilling, setShowBilling] = useState(false)
   const dropRef = useRef(null)
@@ -1962,7 +1963,12 @@ function PageDetail({ page, onBack, onUpdate }) {
 
   const activeSiteCodes = (page.countries || []).map(c => c.code)
   const activeSites = ALL_SITES.filter(s => activeSiteCodes.includes(s.code))
-  const filtered = activeSites.filter(s => regionFilter === 'ALL' || s.region === regionFilter)
+  const filtered = activeSites
+    .filter(s => regionFilter === 'ALL' || s.region === regionFilter)
+    .filter(s => !countrySearch.trim() ||
+      s.name.toLowerCase().includes(countrySearch.trim().toLowerCase()) ||
+      s.code.toLowerCase().includes(countrySearch.trim().toLowerCase())
+    )
 
   const available = ALL_SITES
     .filter(s => !activeSiteCodes.includes(s.code))
@@ -2318,13 +2324,43 @@ function PageDetail({ page, onBack, onUpdate }) {
       </div>
 
       <div className="cst-filter-row">
-        <div className="cst-region-tabs">
-          {['ALL', ...REGIONS].map(r => (
-            <button key={r} className={`cc-region-btn ${regionFilter === r ? 'active' : ''}`}
-              style={regionFilter === r && r !== 'ALL' ? { background: REGION_COLORS[r], color: '#fff' } : {}}
-              onClick={() => setRegionFilter(r)}>{r}</button>
-          ))}
-        </div>
+        {/* 리전 탭 + 국가 검색 — 왼쪽 그룹 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div className="cst-region-tabs">
+            {['ALL', ...REGIONS].map(r => (
+              <button key={r} className={`cc-region-btn ${regionFilter === r ? 'active' : ''}`}
+                style={regionFilter === r && r !== 'ALL' ? { background: REGION_COLORS[r], color: '#fff' } : {}}
+                onClick={() => setRegionFilter(r)}>{r}</button>
+            ))}
+          </div>
+
+          {/* 국가 검색 필터 */}
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+          <span style={{ position: 'absolute', left: 9, color: '#9ca3af', fontSize: 13, pointerEvents: 'none' }}>🔍</span>
+          <input
+            type="text"
+            value={countrySearch}
+            onChange={e => setCountrySearch(e.target.value)}
+            placeholder="국가 검색"
+            style={{
+              paddingLeft: 28, paddingRight: countrySearch ? 26 : 10,
+              height: 30, fontSize: 12, borderRadius: 7,
+              border: '1px solid #e5e7eb', outline: 'none', width: 140,
+              background: '#fff',
+            }}
+          />
+          {countrySearch && (
+            <button
+              onClick={() => setCountrySearch('')}
+              style={{
+                position: 'absolute', right: 7, background: 'none', border: 'none',
+                cursor: 'pointer', color: '#9ca3af', fontSize: 14, padding: 0, lineHeight: 1,
+              }}
+              title="검색 초기화"
+            >✕</button>
+          )}
+          </div>{/* 검색 인풋 끝 */}
+        </div>{/* 왼쪽 그룹 끝 */}
 
         <div className="cst-add-country-wrap" ref={dropRef}>
           <button
