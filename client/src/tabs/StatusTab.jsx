@@ -34,19 +34,40 @@ function getStatusStyle(value) {
   return COPY_STATUSES.find(s => s.value === value) || COPY_STATUSES[0]
 }
 // ── [최적화] 메인 메모 입력 컴포넌트 (반응성 향상) ────────────────
-const NoteInput = memo(({ initialNote, onSave }) => {
-  const [val, setVal] = useState(initialNote || '')
-  useEffect(() => { setVal(initialNote || '') }, [initialNote])
+const NoteInput = memo(({ onSave }) => {
+  const [val, setVal] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const handleSave = async () => {
+    if (!val.trim() || saving) return
+    setSaving(true)
+    try {
+      await onSave(val.trim())
+      setVal('')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
-    <input 
-      className="cst-note-input" 
-      placeholder="메모 입력..."
-      value={val} 
-      onChange={e => setVal(e.target.value)}
-      onBlur={() => onSave(val)} // 포커스 나갈 때만 전체 상태 업데이트
-      onKeyDown={e => e.key === 'Enter' && onSave(val)}
-    />
+    <div className="cst-note-cell-inner">
+      <textarea
+        className="cst-note-input"
+        placeholder="메모 입력..."
+        value={val}
+        onChange={e => setVal(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSave() } }}
+        rows={1}
+      />
+      <button
+        className="cst-note-save-btn"
+        onClick={handleSave}
+        disabled={!val.trim() || saving}
+        title="메모 저장 (히스토리에 기록)"
+      >
+        {saving ? '⏳' : '저장'}
+      </button>
+    </div>
   )
 })
 const HistoryItem = ({ file, index, onUpdateNote, download }) => {
@@ -984,7 +1005,6 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
         <td className="cst-td cst-td-note">
           <div className="cst-note-cell">
             <NoteInput
-              initialNote={entry?.note}
               onSave={(note) => handleStatusChange(site.code, entry?.status, note)}
             />
             <div className="cst-row-actions">
@@ -1029,18 +1049,23 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                 mergedHistory.map((item, i) => {
                   if (item.type === 'status') {
                     const h = item.data
-                    const fromStyle = getStatusStyle(h.from_status || '')
-                    const toStyle   = getStatusStyle(h.to_status   || '')
-                    const fromLabel = fromStyle.label
-                    const toLabel   = toStyle.label
+                    const fromStyle    = getStatusStyle(h.from_status || '')
+                    const toStyle      = getStatusStyle(h.to_status   || '')
+                    const statusChanged = h.from_status !== h.to_status
+                    const noteChanged   = h.note != null
                     return (
                       <div key={`s-${h.id}`} className="cst-unified-item">
-                        <span className="cst-unified-item-icon">🔄</span>
+                        <span className="cst-unified-item-icon">{noteChanged && !statusChanged ? '📝' : '🔄'}</span>
                         <div className="cst-unified-item-body">
                           <div className="cst-unified-item-row">
-                            <span className="cst-sh-badge" style={{ color: fromStyle.color, background: fromStyle.bg }}>{fromLabel}</span>
-                            <span className="cst-sh-arrow">→</span>
-                            <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toLabel}</span>
+                            {statusChanged && <>
+                              <span className="cst-sh-badge" style={{ color: fromStyle.color, background: fromStyle.bg }}>{fromStyle.label}</span>
+                              <span className="cst-sh-arrow">→</span>
+                              <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toStyle.label}</span>
+                            </>}
+                            {noteChanged && (
+                              <span className="cst-unified-note-tag">메모: {h.note}</span>
+                            )}
                             <span className="cst-unified-item-time">{formatDateTime(h.changed_at)}</span>
                           </div>
                           {h.changed_by && <div className="cst-unified-item-meta">👤 {h.changed_by}</div>}
@@ -2371,7 +2396,7 @@ function PageDetail({ page, onBack, onUpdate }) {
               <th className="cst-th" style={{ width: 160 }}>국가</th>
               <th className="cst-th" style={{ width: 220 }}>카피 작업 상태</th>
               <th className="cst-th">첨부 파일 (업로드 당시 상태 기록)</th>
-              <th className="cst-th" style={{ width: 180 }}>메모</th>
+              <th className="cst-th" style={{ width: 300 }}>메모</th>
               <th className="cst-th" style={{ width: 40 }}></th>
             </tr>
           </thead>

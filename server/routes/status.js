@@ -148,10 +148,11 @@ router.post('/tracker/status', authMiddleware, async (req, res) => {
 
     // 변경 전 상태 조회 (히스토리용)
     const [[prev]] = await getPool().execute(
-      `SELECT status FROM tracker_site_status WHERE page_id = ? AND site_code = ? AND deleted = 0`,
+      `SELECT status, note FROM tracker_site_status WHERE page_id = ? AND site_code = ? AND deleted = 0`,
       [pageId, siteCode]
     );
     const fromStatus = prev?.status ?? null;
+    const fromNote   = prev?.note   ?? null;
 
     // 상태 업데이트
     await getPool().execute(
@@ -160,12 +161,23 @@ router.post('/tracker/status', authMiddleware, async (req, res) => {
       [pageId, siteCode, status || '', note || '', changedBy]
     );
 
-    // 상태값이 실제로 바뀐 경우에만 히스토리 기록 (복제 시 skipHistory=true로 건너뜀)
-    if (!skipHistory && status !== undefined && fromStatus !== (status || '')) {
-      await getPool().execute(
-        `INSERT INTO tracker_status_history (page_id, site_code, from_status, to_status, changed_by) VALUES (?, ?, ?, ?, ?)`,
-        [pageId, siteCode, fromStatus, status || '', changedBy]
-      );
+    // 상태 또는 메모가 실제로 바뀐 경우 히스토리 기록 (복제 시 skipHistory=true로 건너뜀)
+    const statusChanged = !skipHistory && status !== undefined && fromStatus !== (status || '');
+    const noteChanged   = !skipHistory && note   !== undefined && note.trim() !== '' && (fromNote ?? '') !== note;
+    if (statusChanged || noteChanged) {
+      try {
+        await getPool().execute(
+          `INSERT INTO tracker_status_history (page_id, site_code, from_status, to_status, changed_by, note) VALUES (?, ?, ?, ?, ?, ?)`,
+          [pageId, siteCode, fromStatus, status ?? fromStatus ?? '', changedBy, noteChanged ? note : null]
+        );
+      } catch (e) {
+        if (e.code === 'ER_BAD_FIELD_ERROR') {
+          await getPool().execute(
+            `INSERT INTO tracker_status_history (page_id, site_code, from_status, to_status, changed_by) VALUES (?, ?, ?, ?, ?)`,
+            [pageId, siteCode, fromStatus, status ?? fromStatus ?? '', changedBy]
+          );
+        } else throw e;
+      }
     }
 
     res.json({ ok: true });
@@ -177,13 +189,25 @@ router.get('/tracker/status-history', async (req, res) => {
   try {
     const { pageId, siteCode } = req.query;
     if (!pageId || !siteCode) return res.json({ ok: false, message: 'pageId, siteCode 필요' });
-    const [rows] = await getPool().execute(
-      `SELECT id, from_status, to_status, changed_by, changed_at
-       FROM tracker_status_history
-       WHERE page_id = ? AND site_code = ?
-       ORDER BY changed_at DESC`,
-      [pageId, siteCode]
-    );
+    let rows;
+    try {
+      [rows] = await getPool().execute(
+        `SELECT id, from_status, to_status, changed_by, changed_at, note
+         FROM tracker_status_history
+         WHERE page_id = ? AND site_code = ?
+         ORDER BY changed_at DESC`,
+        [pageId, siteCode]
+      );
+    } catch (e) {
+      // note 컬럼이 없는 구버전 DB fallback
+      [rows] = await getPool().execute(
+        `SELECT id, from_status, to_status, changed_by, changed_at
+         FROM tracker_status_history
+         WHERE page_id = ? AND site_code = ?
+         ORDER BY changed_at DESC`,
+        [pageId, siteCode]
+      );
+    }
     res.json({ ok: true, data: rows });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });

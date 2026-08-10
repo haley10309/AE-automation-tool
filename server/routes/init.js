@@ -232,6 +232,11 @@ router.post('/init', checkDbConnection, async (req, res) => {
       await getPool().execute(`ALTER TABLE page_files ADD COLUMN uploaded_by VARCHAR(100) DEFAULT NULL COMMENT '업로더 이름' AFTER note_at_upload`);
     } catch (_) { /* 이미 존재하면 무시 */ }
 
+    // tracker_status_history에 note 컬럼 추가 (메모 변경 이력 기록용)
+    try {
+      await getPool().execute(`ALTER TABLE tracker_status_history ADD COLUMN note TEXT DEFAULT NULL COMMENT '메모 변경 내용' AFTER changed_by`);
+    } catch (_) { /* 이미 존재하면 무시 */ }
+
     // ── Billing 테이블 ────────────────────────────────────────────
     await getPool().execute(`CREATE TABLE IF NOT EXISTS tracker_billing (
       id INT AUTO_INCREMENT PRIMARY KEY,

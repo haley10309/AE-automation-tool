@@ -2182,9 +2182,36 @@ mark.diff-ins {
   background: transparent;
   transition: border-color 0.15s;
   box-sizing: border-box;
+  resize: none;
+  line-height: 1.4;
+  font-family: inherit;
+  overflow: hidden;
 }
 .cst-note-input:focus { border-color: #3b82f6; background: #fff; }
 .cst-note-input::placeholder { color: #d1d5db; }
+
+.cst-note-cell-inner {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+}
+.cst-note-cell-inner .cst-note-input { flex: 1; min-width: 0; }
+.cst-note-save-btn {
+  flex-shrink: 0;
+  background: #4f46e5;
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-family: 'Noto Sans KR', sans-serif;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, opacity .15s;
+}
+.cst-note-save-btn:hover:not(:disabled) { background: #4338ca; }
+.cst-note-save-btn:disabled { opacity: .4; cursor: default; }
 .cst-checkbox {
   width: 15px;
   height: 15px;
@@ -2299,14 +2326,13 @@ mark.diff-ins {
 .cst-bulk-result-warn-text { color: #b45309; font-weight: 600; }
 .cst-td-note {
   overflow: hidden;
-  width: 220px;
+  width: 300px;
 }
 .cst-note-cell {
   display: flex;
   align-items: flex-start;
   gap: 4px;
 }
-.cst-note-cell .cst-note-input { flex: 0 1 110px; min-width: 80px; }
 .cst-row-actions {
   display: flex;
   flex-direction: column;
@@ -2395,6 +2421,18 @@ mark.diff-ins {
   white-space: nowrap;
 }
 .cst-sh-arrow { font-size: 11px; color: #9ca3af; }
+.cst-unified-note-tag {
+  font-size: 11px;
+  color: #92400e;
+  background: #fef3c7;
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-weight: 500;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cst-unified-download-btn {
   background: none;
   border: 1px solid #d1d5db;
