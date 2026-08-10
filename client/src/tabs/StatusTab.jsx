@@ -915,11 +915,10 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
     else setStatusHistory(null)
   }, [historyBump])
 
-  // 상태 변경 시 이력 갱신 (패널 열려있으면 즉시, 닫혀있으면 캐시 초기화)
+  // 상태/메모 변경 시 이력 갱신 — 패널 열림 여부와 무관하게 항상 fetch (count 즉시 반영)
   const handleStatusChangeWithRefresh = async (siteCode, newStatus, note) => {
     await handleStatusChange(siteCode, newStatus, note)
-    if (showUnifiedHistory) await fetchStatusHistory()
-    else setStatusHistory(null)
+    await fetchStatusHistory()
   }
 
   const toggleUnifiedHistory = async () => {
