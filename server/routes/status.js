@@ -1,6 +1,7 @@
 const express = require('express');
 const { getPool } = require('../db');
 const { checkDbConnection, authMiddleware } = require('../middleware');
+const { broadcastPageChange } = require('../realtime');
 
 const router = express.Router();
 router.use(checkDbConnection);
@@ -180,6 +181,17 @@ router.post('/tracker/status', authMiddleware, async (req, res) => {
       }
     }
 
+    // 실시간 브로드캐스트: 같은 프로젝트(pageId)를 보고 있는 다른 클라이언트에게 알림
+    broadcastPageChange(pageId, {
+      type: 'status',
+      siteCode,
+      status: status || '',
+      note: note || '',
+      changedBy,
+      statusChanged,
+      noteChanged,
+    });
+
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
@@ -317,6 +329,20 @@ router.post('/files', async (req, res) => {
       `INSERT INTO page_files (page_id, site_code, name, size, status, note_at_upload, uploaded_by, uploaded_at, data_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [pageId, siteCode, name, size, status, noteAtUpload, uploadedBy || null, mysqlDatetime, dataUrl]
     );
+
+    // 실시간 브로드캐스트: 파일 업로드 사실만 알림 (data_url은 무거우므로 payload에서 제외)
+    broadcastPageChange(pageId, {
+      type: 'file',
+      siteCode,
+      fileId: result.insertId,
+      name,
+      size,
+      status,
+      noteAtUpload,
+      uploadedBy: uploadedBy || null,
+      uploadedAt: mysqlDatetime,
+    });
+
     res.json({ ok: true, id: result.insertId });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });

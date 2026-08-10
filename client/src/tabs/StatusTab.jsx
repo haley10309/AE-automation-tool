@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 const S_LABEL_SM = { fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }
 const S_LABEL_XS = { fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }
 import { api } from '../api.js'
+import { socket } from '../socket.js'
 import { useAuth } from '../auth.jsx'
 import { useDB } from '../DBContext.jsx'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
@@ -883,7 +884,7 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
 }
 
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId, initialStatusHistory }) => {
+const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId, initialStatusHistory, historyBump }) => {
   const [isExpanded, setIsExpanded] = useState(false)
   const [showUnifiedHistory, setShowUnifiedHistory] = useState(false)
   const [statusHistory, setStatusHistory] = useState(initialStatusHistory ?? null) // null = 미로딩
@@ -896,6 +897,15 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
       setStatusHistory(data.ok ? data.data : [])
     } catch { setStatusHistory([]) }
   }
+
+  // [신규] 다른 사용자가 실시간으로 이 국가의 상태/메모/파일을 바꾼 경우
+  // 전체 이력 패널이 열려있으면 자동으로 다시 불러옴 (닫혀있으면 다음에 열 때 새로 조회하도록 캐시 무효화)
+  const isFirstBump = useRef(true)
+  useEffect(() => {
+    if (isFirstBump.current) { isFirstBump.current = false; return }
+    if (showUnifiedHistory) fetchStatusHistory()
+    else setStatusHistory(null)
+  }, [historyBump])
 
   // 상태 변경 시 이력 갱신 (패널 열려있으면 즉시, 닫혀있으면 캐시 초기화)
   const handleStatusChangeWithRefresh = async (siteCode, newStatus, note) => {
@@ -1005,7 +1015,7 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
         <td className="cst-td cst-td-note">
           <div className="cst-note-cell">
             <NoteInput
-              onSave={(note) => handleStatusChange(site.code, entry?.status, note)}
+              onSave={(note) => handleStatusChangeWithRefresh(site.code, entry?.status, note)}
             />
             <div className="cst-row-actions">
               <button
@@ -1777,6 +1787,56 @@ function PageDetail({ page, onBack, onUpdate }) {
   const [bulkTextApplying, setBulkTextApplying] = useState(false)
   const [bulkTextResult, setBulkTextResult] = useState(null)
 
+  // ── [신규] 실시간 동기화 (Socket.io) ───────────────────────
+  // 같은 프로젝트를 보고 있는 다른 클라이언트가 상태/메모/파일을 바꾸면 즉시 반영
+  const [historyBumpMap, setHistoryBumpMap] = useState({}) // siteCode -> 증가 카운터 (전체 이력 패널 재조회 트리거용)
+
+  useEffect(() => {
+    if (!page?.id) return
+    socket.emit('page:join', String(page.id))
+    return () => socket.emit('page:leave', String(page.id))
+  }, [page?.id])
+
+  useEffect(() => {
+    const handlePageChanged = (payload) => {
+      if (!payload || String(payload.pageId) !== String(page.id)) return
+      const { type, siteCode } = payload
+
+      const updated = { ...page }
+
+      if (type === 'status') {
+        // 다른 사용자가 상태/메모를 바꾼 경우 → 화면(select, 메모)에 즉시 반영
+        updated.countries = updated.countries.map(c =>
+          c.code === siteCode ? { ...c, status: payload.status, note: payload.note } : c
+        )
+        onUpdate(updated, false) // false = DB 재저장(다시 서버로 전송) 없이 화면만 갱신
+      } else if (type === 'file') {
+        // 다른 사용자가 파일을 업로드한 경우 → 파일 이력 목록에 새 항목 추가 (data_url은 필요 시 개별 조회)
+        updated.countries = updated.countries.map(c => {
+          if (c.code !== siteCode) return c
+          const newFile = {
+            dbId: payload.fileId,
+            name: payload.name,
+            size: payload.size ?? null,
+            uploadedAt: payload.uploadedAt,
+            statusAtUpload: payload.status,
+            noteAtUpload: payload.noteAtUpload ?? '',
+            uploadedBy: payload.uploadedBy,
+            dataUrl: null,
+          }
+          return { ...c, file: newFile, fileHistory: [newFile, ...(c.fileHistory || [])] }
+        })
+        onUpdate(updated, false)
+      }
+
+      // 해당 국가 행의 "전체 이력" 패널이 열려 있으면 재조회하도록 신호
+      setHistoryBumpMap(prev => ({ ...prev, [siteCode]: (prev[siteCode] || 0) + 1 }))
+    }
+
+    socket.on('page:changed', handlePageChanged)
+    return () => socket.off('page:changed', handlePageChanged)
+  }, [page, onUpdate])
+
   // ── 페이지 진입 시 DB에서 상태+파일 히스토리 로드 ──────────
   // ── 페이지 진입 시 DB에서 상태+파일+분기 히스토리 로드 ──────────
   useEffect(() => {
@@ -1986,14 +2046,15 @@ function PageDetail({ page, onBack, onUpdate }) {
     onUpdate(updated, true)
     // DB 저장 (비동기, 실패해도 UI는 유지)
     try {
-      await api.updateTrackerStatus({
+      const res = await api.updateTrackerStatus({
         pageId: page.id,
         siteCode,
         status: newStatus ?? existing?.status ?? '',
         note: note ?? existing?.note ?? '',
         changedBy: user?.name || null,
       })
-    } catch (_) {}
+      if (!res?.ok) console.error('[handleStatusChange] 저장 실패:', res)
+    } catch (e) { console.error('[handleStatusChange] API 에러:', e) }
   }, [page, onUpdate, user])
 
   const handleBranchCreate = useCallback(async (siteCode, branchData) => {
@@ -2422,6 +2483,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 isRegular={user?.position === 'regular'}
                 pageId={page.id}
                 initialStatusHistory={entry?.statusHistoryItems ?? null}
+                historyBump={historyBumpMap[site.code] || 0}
               />
             )
           })}
