@@ -1077,15 +1077,21 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                         <span className="cst-unified-item-icon">{noteChanged && !statusChanged ? '📝' : '🔄'}</span>
                         <div className="cst-unified-item-body">
                           <div className="cst-unified-item-row">
+                            {/* 왼쪽: 상태 배지 */}
                             {statusChanged && <>
                               <span className="cst-sh-badge" style={{ color: fromStyle.color, background: fromStyle.bg }}>{fromStyle.label}</span>
                               <span className="cst-sh-arrow">→</span>
                               <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toStyle.label}</span>
                             </>}
-                            {noteChanged && (
-                              <span className="cst-unified-note-tag">메모: {h.note}</span>
+                            {noteChanged && !statusChanged && h.to_status && (
+                              <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toStyle.label}</span>
                             )}
-                            <span className="cst-unified-item-time">{formatDateTime(h.changed_at)}</span>
+                            {/* 가운데: 메모 (margin-left:auto로 상태 배지와 분리) */}
+                            {noteChanged && (
+                              <span className="cst-unified-note-tag" style={{ marginLeft: 'auto' }}>메모: {h.note}</span>
+                            )}
+                            {/* 오른쪽: 시간 */}
+                            <span className="cst-unified-item-time" style={{ marginLeft: noteChanged ? 12 : 'auto' }}>{formatDateTime(h.changed_at)}</span>
                           </div>
                           {h.changed_by && <div className="cst-unified-item-meta">👤 {h.changed_by}</div>}
                         </div>
@@ -1099,8 +1105,8 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                         <span className="cst-unified-item-icon">📎</span>
                         <div className="cst-unified-item-body">
                           <div className="cst-unified-item-row">
-                            <span style={{ fontWeight: 500, color: '#334155' }}>{f.name}</span>
                             <span className="cst-sh-badge" style={{ color: statusStyle.color, background: statusStyle.bg }}>{statusStyle.label}</span>
+                            <span style={{ fontWeight: 500, color: '#334155' }}>{f.name}</span>
                             {f.dbId && getFilePreviewType(f.name) && (
                               <button
                                 className="cst-unified-preview-btn"
