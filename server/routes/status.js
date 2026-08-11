@@ -1,6 +1,7 @@
 const express = require('express');
 const { getPool } = require('../db');
 const { checkDbConnection, authMiddleware } = require('../middleware');
+const { broadcastPageChange } = require('../realtime');
 
 const router = express.Router();
 router.use(checkDbConnection);
@@ -103,14 +104,26 @@ router.get('/tracker/pages/:id', async (req, res) => {
     const [branchStatuses] = await getPool().execute(
       `SELECT site_code, branch_name, is_closed, closed_by, closed_at FROM tracker_branch_status WHERE page_id = ?`, [pageId]
     );
-    // 카피 상태 변경 이력 전체 조회 (복제 등에서 활용)
-    const [statusHistory] = await getPool().execute(
-      `SELECT site_code, from_status, to_status, changed_by, changed_at
-       FROM tracker_status_history
-       WHERE page_id = ?
-       ORDER BY changed_at ASC`,
-      [pageId]
-    );
+    // 카피 상태 변경 이력 전체 조회 — fetchStatusHistory와 동일한 필드/정렬로 맞춤
+    let statusHistory;
+    try {
+      ([statusHistory] = await getPool().execute(
+        `SELECT id, site_code, from_status, to_status, changed_by, changed_at, note
+         FROM tracker_status_history
+         WHERE page_id = ?
+         ORDER BY changed_at DESC`,
+        [pageId]
+      ));
+    } catch {
+      // note 컬럼 없는 구버전 DB fallback
+      ([statusHistory] = await getPool().execute(
+        `SELECT id, site_code, from_status, to_status, changed_by, changed_at
+         FROM tracker_status_history
+         WHERE page_id = ?
+         ORDER BY changed_at DESC`,
+        [pageId]
+      ));
+    }
     res.json({ ok: true, statuses, files, branches, branchStatuses, statusHistory });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
@@ -148,10 +161,11 @@ router.post('/tracker/status', authMiddleware, async (req, res) => {
 
     // 변경 전 상태 조회 (히스토리용)
     const [[prev]] = await getPool().execute(
-      `SELECT status FROM tracker_site_status WHERE page_id = ? AND site_code = ? AND deleted = 0`,
+      `SELECT status, note FROM tracker_site_status WHERE page_id = ? AND site_code = ? AND deleted = 0`,
       [pageId, siteCode]
     );
     const fromStatus = prev?.status ?? null;
+    const fromNote   = prev?.note   ?? null;
 
     // 상태 업데이트
     await getPool().execute(
@@ -160,13 +174,35 @@ router.post('/tracker/status', authMiddleware, async (req, res) => {
       [pageId, siteCode, status || '', note || '', changedBy]
     );
 
-    // 상태값이 실제로 바뀐 경우에만 히스토리 기록 (복제 시 skipHistory=true로 건너뜀)
-    if (!skipHistory && status !== undefined && fromStatus !== (status || '')) {
-      await getPool().execute(
-        `INSERT INTO tracker_status_history (page_id, site_code, from_status, to_status, changed_by) VALUES (?, ?, ?, ?, ?)`,
-        [pageId, siteCode, fromStatus, status || '', changedBy]
-      );
+    // 상태 또는 메모가 실제로 바뀐 경우 히스토리 기록 (복제 시 skipHistory=true로 건너뜀)
+    const statusChanged = !skipHistory && status !== undefined && fromStatus !== (status || '');
+    const noteChanged   = !skipHistory && note   !== undefined && note.trim() !== '' && (fromNote ?? '') !== note;
+    if (statusChanged || noteChanged) {
+      try {
+        await getPool().execute(
+          `INSERT INTO tracker_status_history (page_id, site_code, from_status, to_status, changed_by, note) VALUES (?, ?, ?, ?, ?, ?)`,
+          [pageId, siteCode, fromStatus, status ?? fromStatus ?? '', changedBy, noteChanged ? note : null]
+        );
+      } catch (e) {
+        if (e.code === 'ER_BAD_FIELD_ERROR') {
+          await getPool().execute(
+            `INSERT INTO tracker_status_history (page_id, site_code, from_status, to_status, changed_by) VALUES (?, ?, ?, ?, ?)`,
+            [pageId, siteCode, fromStatus, status ?? fromStatus ?? '', changedBy]
+          );
+        } else throw e;
+      }
     }
+
+    // 실시간 브로드캐스트: 같은 프로젝트(pageId)를 보고 있는 다른 클라이언트에게 알림
+    broadcastPageChange(pageId, {
+      type: 'status',
+      siteCode,
+      status: status || '',
+      note: note || '',
+      changedBy,
+      statusChanged,
+      noteChanged,
+    });
 
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
@@ -177,13 +213,25 @@ router.get('/tracker/status-history', async (req, res) => {
   try {
     const { pageId, siteCode } = req.query;
     if (!pageId || !siteCode) return res.json({ ok: false, message: 'pageId, siteCode 필요' });
-    const [rows] = await getPool().execute(
-      `SELECT id, from_status, to_status, changed_by, changed_at
-       FROM tracker_status_history
-       WHERE page_id = ? AND site_code = ?
-       ORDER BY changed_at DESC`,
-      [pageId, siteCode]
-    );
+    let rows;
+    try {
+      [rows] = await getPool().execute(
+        `SELECT id, from_status, to_status, changed_by, changed_at, note
+         FROM tracker_status_history
+         WHERE page_id = ? AND site_code = ?
+         ORDER BY changed_at DESC`,
+        [pageId, siteCode]
+      );
+    } catch (e) {
+      // note 컬럼이 없는 구버전 DB fallback
+      [rows] = await getPool().execute(
+        `SELECT id, from_status, to_status, changed_by, changed_at
+         FROM tracker_status_history
+         WHERE page_id = ? AND site_code = ?
+         ORDER BY changed_at DESC`,
+        [pageId, siteCode]
+      );
+    }
     res.json({ ok: true, data: rows });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
@@ -293,6 +341,20 @@ router.post('/files', async (req, res) => {
       `INSERT INTO page_files (page_id, site_code, name, size, status, note_at_upload, uploaded_by, uploaded_at, data_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [pageId, siteCode, name, size, status, noteAtUpload, uploadedBy || null, mysqlDatetime, dataUrl]
     );
+
+    // 실시간 브로드캐스트: 파일 업로드 사실만 알림 (data_url은 무거우므로 payload에서 제외)
+    broadcastPageChange(pageId, {
+      type: 'file',
+      siteCode,
+      fileId: result.insertId,
+      name,
+      size,
+      status,
+      noteAtUpload,
+      uploadedBy: uploadedBy || null,
+      uploadedAt: mysqlDatetime,
+    });
+
     res.json({ ok: true, id: result.insertId });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
@@ -336,101 +398,6 @@ router.delete('/files/:id', async (req, res) => {
   try {
     await getPool().execute(`UPDATE page_files SET deleted = 1 WHERE id = ?`, [req.params.id]);
     res.json({ ok: true });
-  } catch (err) { res.json({ ok: false, message: err.message }); }
-});
-
-// ══════════════════════════════════════════════════════════════
-// Billing API
-// ══════════════════════════════════════════════════════════════
-
-// billing 첨부파일 데이터 단건 조회 (다운로드용)
-router.get('/tracker/billing/files/:fileId/data', async (req, res) => {
-  try {
-    const [[row]] = await getPool().execute(
-      `SELECT id, name, data_url FROM billing_files WHERE id = ? AND deleted = 0`, [req.params.fileId]
-    );
-    if (!row) return res.json({ ok: false, message: '파일을 찾을 수 없습니다.' });
-    res.json({ ok: true, data: row });
-  } catch (err) { res.json({ ok: false, message: err.message }); }
-});
-
-// billing 첨부파일 soft delete
-router.delete('/tracker/billing/files/:fileId', authMiddleware, async (req, res) => {
-  try {
-    await getPool().execute(`UPDATE billing_files SET deleted = 1 WHERE id = ?`, [req.params.fileId]);
-    res.json({ ok: true });
-  } catch (err) { res.json({ ok: false, message: err.message }); }
-});
-
-// 특정 페이지의 billing 목록 조회 (첨부파일 포함)
-router.get('/tracker/billing/:pageId', async (req, res) => {
-  try {
-    const [rows] = await getPool().execute(
-      `SELECT id, project_name, target_page, site_count, page_count, quantity, note, created_by, created_at
-       FROM tracker_billing WHERE page_id = ? AND deleted = 0 ORDER BY created_at DESC`,
-      [req.params.pageId]
-    );
-    // 첨부파일 (data_url 제외 — 다운로드 시 단건 조회)
-    const [files] = await getPool().execute(
-      `SELECT id, billing_id, name, size, uploaded_by, uploaded_at
-       FROM billing_files
-       WHERE billing_id IN (${rows.length ? rows.map(() => '?').join(',') : 'NULL'}) AND deleted = 0`,
-      rows.map(r => r.id)
-    );
-    const fileMap = {};
-    files.forEach(f => {
-      if (!fileMap[f.billing_id]) fileMap[f.billing_id] = [];
-      fileMap[f.billing_id].push(f);
-    });
-    const data = rows.map(r => ({ ...r, files: fileMap[r.id] || [] }));
-    res.json({ ok: true, data });
-  } catch (err) { res.json({ ok: false, message: err.message }); }
-});
-
-// billing 항목 생성
-router.post('/tracker/billing', authMiddleware, async (req, res) => {
-  try {
-    const { pageId, projectName, targetPage, siteCount, pageCount, note } = req.body;
-    const createdBy = req.user?.name || '알 수 없음';
-    const [result] = await getPool().execute(
-      `INSERT INTO tracker_billing (page_id, project_name, target_page, site_count, page_count, note, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [pageId, projectName, targetPage, siteCount, pageCount, note || '', createdBy]
-    );
-    res.json({ ok: true, id: result.insertId });
-  } catch (err) { res.json({ ok: false, message: err.message }); }
-});
-
-// billing 항목 수정
-router.put('/tracker/billing/:id', authMiddleware, async (req, res) => {
-  try {
-    const { projectName, targetPage, siteCount, pageCount, note } = req.body;
-    await getPool().execute(
-      `UPDATE tracker_billing SET project_name=?, target_page=?, site_count=?, page_count=?, note=? WHERE id=?`,
-      [projectName, targetPage, siteCount, pageCount, note || '', req.params.id]
-    );
-    res.json({ ok: true });
-  } catch (err) { res.json({ ok: false, message: err.message }); }
-});
-
-// billing 항목 soft delete
-router.delete('/tracker/billing/:id', authMiddleware, async (req, res) => {
-  try {
-    await getPool().execute(`UPDATE tracker_billing SET deleted = 1 WHERE id = ?`, [req.params.id]);
-    res.json({ ok: true });
-  } catch (err) { res.json({ ok: false, message: err.message }); }
-});
-
-// billing 첨부파일 업로드
-router.post('/tracker/billing/:billingId/files', authMiddleware, async (req, res) => {
-  try {
-    const { name, size, dataUrl } = req.body;
-    const uploadedBy = req.user?.name || '알 수 없음';
-    const [result] = await getPool().execute(
-      `INSERT INTO billing_files (billing_id, name, size, data_url, uploaded_by) VALUES (?, ?, ?, ?, ?)`,
-      [req.params.billingId, name, size || 0, dataUrl, uploadedBy]
-    );
-    res.json({ ok: true, id: result.insertId });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 

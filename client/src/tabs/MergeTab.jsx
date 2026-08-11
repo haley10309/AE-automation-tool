@@ -8,6 +8,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { api } from '../api.js'
 import { useDB } from '../DBContext.jsx'
 import SiteDropdown from '../components/SiteDropdown.jsx'
+import { ALL_SITES } from '../constants.js'
 import { detectBadges } from '../utils.js'
 import { detectServiceIssues } from '../components/ServiceCheck.jsx'
 
@@ -1105,6 +1106,306 @@ function PatchCountryCard({ country, onRemove, onLabelChange, patchPasteRef, exi
 }
 
 // ════════════════════════════════════════════════════════════════
+// 엑셀 일괄 가져오기 모달
+// — 드래그/복사/붙여넣기를 국가마다 반복하는 대신, 엑셀 파일을
+//   통째로 업로드하고 "원문(original copy) 컬럼"만 선택하면
+//   1행의 V 표시로 자동 인식된 국가 컬럼들을 한번에 매핑한다.
+// ════════════════════════════════════════════════════════════════
+function ExcelImportModal({ onClose, onApply }) {
+  const [fileName, setFileName]   = useState('')
+  const [loading, setLoading]     = useState(false)
+  const [error, setError]         = useState('')
+  const [grid, setGrid]           = useState(null) // 2차원 배열 (전체)
+
+  const [headerRowIndex, setHeaderRowIndex]         = useState(0)
+  const [countryStartCol, setCountryStartCol]       = useState(null) // null = 국가 컬럼 없음
+  const [originalCopyColIndex, setOriginalCopyColIndex] = useState(null)
+  const [codeOverrides, setCodeOverrides]           = useState({}) // { colIndex: 'CA_FR' | '__exclude__' }
+
+  const colLetter = (i) => {
+    let s = '', n = i
+    do { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1 } while (n >= 0)
+    return s
+  }
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setFileName(file.name)
+    setLoading(true)
+    setError('')
+    setGrid(null)
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const r = new FileReader()
+        r.onload = () => resolve(r.result)
+        r.onerror = () => reject(new Error('파일을 읽을 수 없습니다.'))
+        r.readAsDataURL(file)
+      })
+      const res = await api.mergeParseExcel({ fileName: file.name, dataUrl })
+      if (!res.ok) { setError(res.message || '파싱 실패'); return }
+      const g = res.grid || []
+      setGrid(g)
+
+      // ── V 마커 자동 감지 (첫 5행 스캔) ──
+      let vRow = -1, vCol = -1
+      outer:
+      for (let r = 0; r < Math.min(5, g.length); r++) {
+        for (let c = 0; c < (g[r]?.length || 0); c++) {
+          if ((g[r][c] || '').trim().toLowerCase() === 'v') { vRow = r; vCol = c; break outer }
+        }
+      }
+      if (vRow !== -1) {
+        setHeaderRowIndex(vRow + 1 < g.length ? vRow + 1 : vRow)
+        setCountryStartCol(vCol)
+      } else {
+        setHeaderRowIndex(0)
+        setCountryStartCol(null)
+      }
+      setOriginalCopyColIndex(null)
+      setCodeOverrides({})
+    } catch (e) {
+      setError(e.message || '파일 처리 중 오류가 발생했습니다.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const headerRow = grid?.[headerRowIndex] || []
+  const dataStartRow = headerRowIndex + 1
+  const previewRows = grid ? grid.slice(dataStartRow, dataStartRow + 5) : []
+  const colCount = grid ? Math.max(...grid.map(r => r.length), 0) : 0
+
+  // 컬럼별 매칭된 국가 코드 (countryStartCol 이상인 컬럼만 대상)
+  const resolveCountryCode = (colIdx) => {
+    if (codeOverrides[colIdx] === '__exclude__') return null
+    if (codeOverrides[colIdx]) return codeOverrides[colIdx]
+    const headerText = (headerRow[colIdx] || '').trim()
+    if (!headerText) return null
+    const matched = ALL_SITES.find(s => s.code.toUpperCase() === headerText.toUpperCase())
+    return matched ? matched.code : null
+  }
+
+  const countryColumns = countryStartCol == null ? [] :
+    Array.from({ length: colCount - countryStartCol }, (_, i) => countryStartCol + i)
+      .map(colIdx => ({ colIdx, code: resolveCountryCode(colIdx), headerText: headerRow[colIdx] || '' }))
+
+  const canApply = grid && originalCopyColIndex != null && countryColumns.some(c => c.code)
+
+  const handleApply = () => {
+    if (!canApply) return
+    const norm = v => (v ?? '').toString().trim()
+    const validRows = grid.slice(dataStartRow).filter(row => norm(row[originalCopyColIndex]) !== '')
+    const enLines = validRows.map(row => norm(row[originalCopyColIndex])).join('\n')
+
+    const countryPasteMap = {}
+    countryColumns.forEach(({ colIdx, code }) => {
+      if (!code) return
+      countryPasteMap[code] = validRows
+        .map(row => `${norm(row[originalCopyColIndex])}\t${norm(row[colIdx])}`)
+        .join('\n')
+    })
+    onApply(enLines, countryPasteMap)
+  }
+
+  return (
+    <>
+      <style>{`
+        .mg-excel-modal-backdrop {
+          position: fixed; inset: 0; background: rgba(0,0,0,.55);
+          display: flex; align-items: center; justify-content: center; z-index: 9999;
+        }
+        .mg-excel-modal {
+          background: #fff; border-radius: 12px; width: 880px; max-width: 94vw;
+          max-height: 88vh; display: flex; flex-direction: column;
+          box-shadow: 0 24px 64px rgba(0,0,0,.3); overflow: hidden;
+        }
+        .mg-excel-modal-header {
+          padding: 16px 20px; border-bottom: 1px solid #e5e7eb;
+          display: flex; align-items: center; justify-content: space-between;
+        }
+        .mg-excel-modal-title { font-size: 15px; font-weight: 700; color: #111827; }
+        .mg-excel-modal-close { background: none; border: none; font-size: 16px; cursor: pointer; color: #6b7280; }
+        .mg-excel-modal-body { padding: 18px 20px; overflow-y: auto; flex: 1; }
+        .mg-excel-step-label { font-size: 12px; font-weight: 700; color: #4f46e5; margin-bottom: 6px; }
+        .mg-excel-hint { font-size: 11px; color: #9ca3af; margin-top: 4px; }
+        .mg-excel-row-picker { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+        .mg-excel-row-btn {
+          font-size: 11px; padding: 3px 9px; border-radius: 5px; border: 1px solid #d1d5db;
+          background: #f9fafb; cursor: pointer; color: #374151;
+        }
+        .mg-excel-row-btn.active { background: #4f46e5; border-color: #4f46e5; color: #fff; }
+        .mg-excel-table-wrap { overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 14px; }
+        .mg-excel-table { border-collapse: collapse; font-size: 11px; width: max-content; min-width: 100%; }
+        .mg-excel-table th, .mg-excel-table td {
+          border: 1px solid #f0f1f3; padding: 5px 8px; white-space: nowrap;
+          max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+        }
+        .mg-excel-col-btn {
+          display: block; width: 100%; background: none; border: none; cursor: pointer;
+          font-size: 11px; font-weight: 600; color: #374151; text-align: left; padding: 0;
+        }
+        .mg-excel-col-btn:hover { color: #4f46e5; }
+        .mg-excel-col-header { background: #f9fafb; }
+        .mg-excel-col-header.is-original { background: #dcfce7; }
+        .mg-excel-col-header.is-country { background: #dbeafe; }
+        .mg-excel-col-header.is-excluded { background: #f3f4f6; opacity: .5; }
+        .mg-excel-badge {
+          display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: 8px;
+          margin-left: 4px; font-weight: 600;
+        }
+        .mg-excel-badge.original { background: #16a34a; color: #fff; }
+        .mg-excel-badge.country { background: #2563eb; color: #fff; }
+        .mg-excel-badge.warn { background: #f59e0b; color: #fff; }
+        .mg-excel-country-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+        .mg-excel-country-item {
+          display: flex; align-items: center; gap: 8px; font-size: 12px;
+          padding: 5px 10px; border: 1px solid #e5e7eb; border-radius: 6px; background: #fafafa;
+        }
+        .mg-excel-country-select { font-size: 11px; padding: 2px 6px; border-radius: 4px; border: 1px solid #d1d5db; }
+        .mg-excel-modal-footer {
+          padding: 14px 20px; border-top: 1px solid #e5e7eb;
+          display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+        }
+        .mg-excel-stepper { display: inline-flex; align-items: center; gap: 6px; }
+        .mg-excel-stepper button {
+          width: 22px; height: 22px; border-radius: 4px; border: 1px solid #d1d5db;
+          background: #fff; cursor: pointer; font-size: 12px;
+        }
+      `}</style>
+      <div className="mg-excel-modal-backdrop" onClick={onClose}>
+        <div className="mg-excel-modal" onClick={e => e.stopPropagation()}>
+          <div className="mg-excel-modal-header">
+            <span className="mg-excel-modal-title">📊 엑셀에서 한번에 가져오기</span>
+            <button className="mg-excel-modal-close" onClick={onClose}>✕</button>
+          </div>
+
+          <div className="mg-excel-modal-body">
+            {!grid && (
+              <>
+                <div className="mg-excel-step-label">1. 엑셀 파일 선택</div>
+                <input type="file" accept=".xlsx,.xls" onChange={handleFile} disabled={loading} />
+                {loading && <div className="mg-excel-hint">파일을 불러오는 중... (NASCA DRM 우회 처리 포함, 수 초~수십 초 소요될 수 있습니다)</div>}
+                {error && <div className="mg-excel-hint" style={{ color: '#dc2626' }}>⚠ {error}</div>}
+                <div className="mg-excel-hint">
+                  1행에서 시작하는 V 표시를 기준으로 그 오른쪽 컬럼들을 국가(로컬) 필드로 자동 인식합니다.
+                </div>
+              </>
+            )}
+
+            {grid && (
+              <>
+                <div className="mg-excel-step-label">
+                  2. 헤더 행 선택 <span className="mg-excel-hint" style={{ marginLeft: 6 }}>({fileName})</span>
+                </div>
+                <div className="mg-excel-row-picker">
+                  {Array.from({ length: Math.min(6, grid.length) }, (_, i) => (
+                    <button key={i}
+                      className={`mg-excel-row-btn${headerRowIndex === i ? ' active' : ''}`}
+                      onClick={() => { setHeaderRowIndex(i); setOriginalCopyColIndex(null) }}>
+                      {i + 1}행: {(grid[i] || []).slice(0, 4).filter(Boolean).join(' / ') || '(빈 행)'}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="mg-excel-step-label">
+                  3. 원문(영문) 컬럼 선택 — 아래 표에서 컬럼명을 클릭하세요
+                </div>
+                <div className="mg-excel-table-wrap">
+                  <table className="mg-excel-table">
+                    <thead>
+                      <tr>
+                        {Array.from({ length: colCount }, (_, c) => {
+                          const isOriginal = c === originalCopyColIndex
+                          const isCountry  = countryStartCol != null && c >= countryStartCol
+                          const excluded   = isCountry && codeOverrides[c] === '__exclude__'
+                          const code = isCountry ? resolveCountryCode(c) : null
+                          return (
+                            <th key={c}
+                              className={`mg-excel-col-header ${isOriginal ? 'is-original' : ''} ${isCountry ? 'is-country' : ''} ${excluded ? 'is-excluded' : ''}`}>
+                              <div style={{ fontSize: 9, color: '#9ca3af', fontWeight: 400 }}>{colLetter(c)}</div>
+                              <button className="mg-excel-col-btn" onClick={() => setOriginalCopyColIndex(c)}>
+                                {headerRow[c] || '(빈 헤더)'}
+                              </button>
+                              {isOriginal && <span className="mg-excel-badge original">원문</span>}
+                              {isCountry && !excluded && (
+                                code
+                                  ? <span className="mg-excel-badge country">{code}</span>
+                                  : <span className="mg-excel-badge warn">코드 불명</span>
+                              )}
+                            </th>
+                          )
+                        })}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {previewRows.map((row, ri) => (
+                        <tr key={ri}>
+                          {Array.from({ length: colCount }, (_, c) => <td key={c}>{row[c] || ''}</td>)}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="mg-excel-step-label">
+                  4. 국가 컬럼 시작 위치 {countryStartCol == null && <span style={{ color: '#f59e0b' }}>(V 표시를 찾지 못했습니다 — 직접 지정하세요)</span>}
+                </div>
+                <div className="mg-excel-stepper" style={{ marginBottom: 14 }}>
+                  <button onClick={() => setCountryStartCol(c => Math.max(0, (c ?? colCount) - 1))}>◀</button>
+                  <span style={{ fontSize: 12 }}>
+                    {countryStartCol == null ? '지정 안 됨' : `${colLetter(countryStartCol)}열부터`}
+                  </span>
+                  <button onClick={() => setCountryStartCol(c => Math.min(colCount - 1, (c ?? -1) + 1))}>▶</button>
+                  {countryStartCol == null && (
+                    <button className="btn-ghost" style={{ fontSize: 11 }} onClick={() => setCountryStartCol(0)}>직접 지정</button>
+                  )}
+                </div>
+
+                {countryColumns.length > 0 && (
+                  <>
+                    <div className="mg-excel-step-label">5. 인식된 국가 컬럼 확인 / 수정</div>
+                    <div className="mg-excel-country-list">
+                      {countryColumns.map(({ colIdx, code, headerText }) => (
+                        <div key={colIdx} className="mg-excel-country-item">
+                          <span style={{ fontWeight: 600 }}>{colLetter(colIdx)}열</span>
+                          <span style={{ color: '#6b7280' }}>"{headerText || '(빈 헤더)'}"</span>
+                          <span>→</span>
+                          <select className="mg-excel-country-select"
+                            value={codeOverrides[colIdx] ?? (code || '')}
+                            onChange={e => setCodeOverrides(prev => ({ ...prev, [colIdx]: e.target.value || '__exclude__' }))}>
+                            <option value="__exclude__">제외</option>
+                            {ALL_SITES.map(s => (
+                              <option key={s.code} value={s.code}>{s.code} — {s.name}</option>
+                            ))}
+                          </select>
+                          {!code && <span className="mg-excel-badge warn">자동 인식 실패</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                <button className="btn-ghost" style={{ fontSize: 11 }} onClick={() => { setGrid(null); setFileName('') }}>
+                  ↩ 다른 파일 선택
+                </button>
+              </>
+            )}
+          </div>
+
+          <div className="mg-excel-modal-footer">
+            <button className="btn-ghost" onClick={onClose}>취소</button>
+            <button className="btn-primary" disabled={!canApply} onClick={handleApply}>
+              적용 ({countryColumns.filter(c => c.code).length}개국 매핑)
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════
 // 프로젝트 상세 뷰
 // ════════════════════════════════════════════════════════════════
 function ProjectDetailView({ project, products, onBack, onUpdated }) {
@@ -1201,6 +1502,35 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
   }
   const updateLabel = (id, label) =>
     setCountries(prev => prev.map(c => c.id === id ? { ...c, label, isSaved: false } : c))
+
+  // ── [신규] 엑셀 일괄 가져오기 ────────────────────────────────
+  const [showExcelImport, setShowExcelImport] = useState(false)
+  const applyExcelImport = (enLinesJoined, countryPasteMap) => {
+    if (enInput.trim() && !window.confirm('기존 기준 영문 카피가 있습니다. 덮어쓸까요?')) return
+    setEnInput(enLinesJoined)
+
+    const skippedSaved = []
+    setCountries(prev => {
+      const next = [...prev]
+      let seq = idSeq
+      Object.entries(countryPasteMap).forEach(([code, rawPaste]) => {
+        const idx = next.findIndex(c => (c.label || '').toUpperCase() === code.toUpperCase())
+        if (idx !== -1) {
+          if (next[idx].isSaved) { skippedSaved.push(code); return }
+          next[idx] = { ...next[idx], rawPaste }
+        } else {
+          const id = `new_${seq}`; seq += 1
+          next.push({ id, dbId: null, label: code, rawPaste, mappedJson: null, isSaved: false })
+        }
+      })
+      setIdSeq(seq)
+      return next
+    })
+    setShowExcelImport(false)
+    if (skippedSaved.length) {
+      alert(`이미 저장된 국가는 덮어쓰지 않았습니다: ${skippedSaved.join(', ')}\n(수정하려면 "국가별 추가 카피"를 사용하세요)`)
+    }
+  }
 
   // ── 추가 카피 핸들러 ───────────────────────────────────────
   const addPatchCountry = () => {
@@ -1841,12 +2171,22 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
           <section className="mg-section">
             <div className="mg-section-header">
               <div className="mg-section-title"><span className="mg-step">1</span>기준 영문 카피</div>
+              <button className="btn-ghost mg-excel-import-btn" onClick={() => setShowExcelImport(true)}>
+                📊 엑셀에서 한번에 가져오기
+              </button>
             </div>
             <textarea className="paste-area mg-en-area" value={enInput}
               onChange={e => setEnInput(e.target.value)}
               placeholder={"기준이 될 영문 카피를 한 줄씩 입력\n예:\nFind Your Galaxy\nPerformance\nCamera"} />
             <div className="input-hint">{enInput ? `${parseEnLines(enInput).length}줄 입력됨` : '한 줄 = 카피 1개'}</div>
           </section>
+
+          {showExcelImport && (
+            <ExcelImportModal
+              onClose={() => setShowExcelImport(false)}
+              onApply={applyExcelImport}
+            />
+          )}
 
           {/* ② 국가별 컨펌 카피 */}
           <section className="mg-section">

@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 const S_LABEL_SM = { fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }
 const S_LABEL_XS = { fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }
 import { api } from '../api.js'
+import { socket } from '../socket.js'
 import { useAuth } from '../auth.jsx'
 import { useDB } from '../DBContext.jsx'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
@@ -34,19 +35,40 @@ function getStatusStyle(value) {
   return COPY_STATUSES.find(s => s.value === value) || COPY_STATUSES[0]
 }
 // ── [최적화] 메인 메모 입력 컴포넌트 (반응성 향상) ────────────────
-const NoteInput = memo(({ initialNote, onSave }) => {
-  const [val, setVal] = useState(initialNote || '')
-  useEffect(() => { setVal(initialNote || '') }, [initialNote])
+const NoteInput = memo(({ onSave }) => {
+  const [val, setVal] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const handleSave = async () => {
+    if (!val.trim() || saving) return
+    setSaving(true)
+    try {
+      await onSave(val.trim())
+      setVal('')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
-    <input 
-      className="cst-note-input" 
-      placeholder="메모 입력..."
-      value={val} 
-      onChange={e => setVal(e.target.value)}
-      onBlur={() => onSave(val)} // 포커스 나갈 때만 전체 상태 업데이트
-      onKeyDown={e => e.key === 'Enter' && onSave(val)}
-    />
+    <div className="cst-note-cell-inner">
+      <textarea
+        className="cst-note-input"
+        placeholder="메모 입력..."
+        value={val}
+        onChange={e => setVal(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSave() } }}
+        rows={1}
+      />
+      <button
+        className="cst-note-save-btn"
+        onClick={handleSave}
+        disabled={!val.trim() || saving}
+        title="메모 저장 (히스토리에 기록)"
+      >
+        {saving ? '⏳' : '저장'}
+      </button>
+    </div>
   )
 })
 const HistoryItem = ({ file, index, onUpdateNote, download }) => {
@@ -862,28 +884,57 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
 }
 
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId, initialStatusHistory }) => {
+const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId, initialStatusHistory, historyBump }) => {
   const [isExpanded, setIsExpanded] = useState(false)
   const [showUnifiedHistory, setShowUnifiedHistory] = useState(false)
   const [statusHistory, setStatusHistory] = useState(initialStatusHistory ?? null) // null = 미로딩
   const branches = entry?.branches || []
 
+  // initialStatusHistory prop이 업데이트되면 state에 동기화
+  // (getTrackerDetail 응답 도착 전에 마운트된 경우 대응)
+  useEffect(() => {
+    if (initialStatusHistory !== null && statusHistory === null) {
+      setStatusHistory(initialStatusHistory)
+    }
+  }, [initialStatusHistory])
+
   const fetchStatusHistory = async () => {
+    setStatusHistory(null) // 재시도 시에도 "불러오는 중" 상태로 되돌림
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 8000) // 8초 이상 응답 없으면 중단 (DB 풀 재연결 등으로 무한 대기하는 것 방지)
     try {
-      const res = await fetch(`http://localhost:4000/api/tracker/status-history?pageId=${pageId}&siteCode=${site.code}`)
+      const res = await fetch(
+        `http://localhost:4000/api/tracker/status-history?pageId=${pageId}&siteCode=${site.code}`,
+        { signal: controller.signal }
+      )
       const data = await res.json()
-      setStatusHistory(data.ok ? data.data : [])
-    } catch { setStatusHistory([]) }
+      setStatusHistory(data.ok ? data.data : 'ERROR')
+    } catch (e) {
+      // AbortError(타임아웃) 포함 모든 실패를 명시적 에러 상태로 표시 — 빈 이력('이력이 없습니다')과 구분
+      setStatusHistory('ERROR')
+    } finally {
+      clearTimeout(timeoutId)
+    }
   }
 
-  // 상태 변경 시 이력 갱신 (패널 열려있으면 즉시, 닫혀있으면 캐시 초기화)
+  // [신규] 다른 사용자가 실시간으로 이 국가의 상태/메모/파일을 바꾼 경우
+  // 전체 이력 패널이 열려있으면 자동으로 다시 불러옴 (닫혀있으면 다음에 열 때 새로 조회하도록 캐시 무효화)
+  const isFirstBump = useRef(true)
+  useEffect(() => {
+    if (isFirstBump.current) { isFirstBump.current = false; return }
+    if (showUnifiedHistory) fetchStatusHistory()
+    else setStatusHistory(null)
+  }, [historyBump])
+
+  // 상태/메모 변경 시 이력 갱신 — 패널 열림 여부와 무관하게 항상 fetch (count 즉시 반영)
   const handleStatusChangeWithRefresh = async (siteCode, newStatus, note) => {
     await handleStatusChange(siteCode, newStatus, note)
-    if (showUnifiedHistory) await fetchStatusHistory()
-    else setStatusHistory(null)
+    await fetchStatusHistory()
   }
 
   const toggleUnifiedHistory = async () => {
+    // 패널을 열 때 항상 최신 데이터로 fetch (실시간 동기화 보장)
+    // 진입 시 count는 initialStatusHistory로 미리 채워져 있어서 fetch 전후 count가 동일하게 유지됨
     if (!showUnifiedHistory) await fetchStatusHistory()
     setShowUnifiedHistory(v => !v)
   }
@@ -984,8 +1035,7 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
         <td className="cst-td cst-td-note">
           <div className="cst-note-cell">
             <NoteInput
-              initialNote={entry?.note}
-              onSave={(note) => handleStatusChange(site.code, entry?.status, note)}
+              onSave={(note) => handleStatusChangeWithRefresh(site.code, entry?.status, note)}
             />
             <div className="cst-row-actions">
               <button
@@ -999,9 +1049,9 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                 onClick={toggleUnifiedHistory}
               >
                 {showUnifiedHistory ? '▼ 이력 닫기' : '▶ 전체 이력'}
-                {((entry?.fileHistory?.length || 0) + (statusHistory?.length || 0)) > 0 && (
+                {((entry?.fileHistory?.length || 0) + ((statusHistory ?? initialStatusHistory)?.length || 0)) > 0 && (
                   <span className="cst-row-action-count">
-                    {(entry?.fileHistory?.length || 0) + (statusHistory?.length || 0)}
+                    {(entry?.fileHistory?.length || 0) + ((statusHistory ?? initialStatusHistory)?.length || 0)}
                   </span>
                 )}
               </button>
@@ -1023,25 +1073,41 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
               </div>
               {statusHistory === null ? (
                 <div className="cst-unified-history-loading">불러오는 중...</div>
+              ) : statusHistory === 'ERROR' ? (
+                <div className="cst-unified-history-empty" style={{ color: '#dc2626', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  ⚠ 이력을 불러오지 못했습니다 (서버 응답 지연 또는 연결 문제)
+                  <button className="cst-unified-preview-btn" onClick={fetchStatusHistory}>다시 시도</button>
+                </div>
               ) : mergedHistory.length === 0 ? (
                 <div className="cst-unified-history-empty">이력이 없습니다.</div>
               ) : (
                 mergedHistory.map((item, i) => {
                   if (item.type === 'status') {
                     const h = item.data
-                    const fromStyle = getStatusStyle(h.from_status || '')
-                    const toStyle   = getStatusStyle(h.to_status   || '')
-                    const fromLabel = fromStyle.label
-                    const toLabel   = toStyle.label
+                    const fromStyle    = getStatusStyle(h.from_status || '')
+                    const toStyle      = getStatusStyle(h.to_status   || '')
+                    const statusChanged = h.from_status !== h.to_status
+                    const noteChanged   = h.note != null
                     return (
                       <div key={`s-${h.id}`} className="cst-unified-item">
-                        <span className="cst-unified-item-icon">🔄</span>
+                        <span className="cst-unified-item-icon">{noteChanged && !statusChanged ? '📝' : '🔄'}</span>
                         <div className="cst-unified-item-body">
                           <div className="cst-unified-item-row">
-                            <span className="cst-sh-badge" style={{ color: fromStyle.color, background: fromStyle.bg }}>{fromLabel}</span>
-                            <span className="cst-sh-arrow">→</span>
-                            <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toLabel}</span>
-                            <span className="cst-unified-item-time">{formatDateTime(h.changed_at)}</span>
+                            {/* 왼쪽: 상태 배지 */}
+                            {statusChanged && <>
+                              <span className="cst-sh-badge" style={{ color: fromStyle.color, background: fromStyle.bg }}>{fromStyle.label}</span>
+                              <span className="cst-sh-arrow">→</span>
+                              <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toStyle.label}</span>
+                            </>}
+                            {noteChanged && !statusChanged && h.to_status && (
+                              <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toStyle.label}</span>
+                            )}
+                            {/* 가운데: 메모 (margin-left:auto로 상태 배지와 분리) */}
+                            {noteChanged && (
+                              <span className="cst-unified-note-tag" style={{ marginLeft: 'auto' }}>메모: {h.note}</span>
+                            )}
+                            {/* 오른쪽: 시간 */}
+                            <span className="cst-unified-item-time" style={{ marginLeft: noteChanged ? 12 : 'auto' }}>{formatDateTime(h.changed_at)}</span>
                           </div>
                           {h.changed_by && <div className="cst-unified-item-meta">👤 {h.changed_by}</div>}
                         </div>
@@ -1057,6 +1123,7 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                           <div className="cst-unified-item-row">
                             <span style={{ fontWeight: 500, color: '#334155' }}>{f.name}</span>
                             <span className="cst-sh-badge" style={{ color: statusStyle.color, background: statusStyle.bg }}>{statusStyle.label}</span>
+                            <span style={{ fontWeight: 500, color: '#334155' }}>{f.name}</span>
                             {f.dbId && getFilePreviewType(f.name) && (
                               <button
                                 className="cst-unified-preview-btn"
@@ -1737,6 +1804,7 @@ function PageDetail({ page, onBack, onUpdate }) {
   const [regionFilter, setRegionFilter] = useState('ALL')
   const [showAddCountry, setShowAddCountry] = useState(false)
   const [search, setSearch] = useState('')
+  const [countrySearch, setCountrySearch] = useState('') // 국가 필터 검색창
   const [loadingDetail, setLoadingDetail] = useState(true)
   const [showBilling, setShowBilling] = useState(false)
   const dropRef = useRef(null)
@@ -1751,6 +1819,56 @@ function PageDetail({ page, onBack, onUpdate }) {
   const [bulkTextStatus, setBulkTextStatus] = useState('')
   const [bulkTextApplying, setBulkTextApplying] = useState(false)
   const [bulkTextResult, setBulkTextResult] = useState(null)
+
+  // ── [신규] 실시간 동기화 (Socket.io) ───────────────────────
+  // 같은 프로젝트를 보고 있는 다른 클라이언트가 상태/메모/파일을 바꾸면 즉시 반영
+  const [historyBumpMap, setHistoryBumpMap] = useState({}) // siteCode -> 증가 카운터 (전체 이력 패널 재조회 트리거용)
+
+  useEffect(() => {
+    if (!page?.id) return
+    socket.emit('page:join', String(page.id))
+    return () => socket.emit('page:leave', String(page.id))
+  }, [page?.id])
+
+  useEffect(() => {
+    const handlePageChanged = (payload) => {
+      if (!payload || String(payload.pageId) !== String(page.id)) return
+      const { type, siteCode } = payload
+
+      const updated = { ...page }
+
+      if (type === 'status') {
+        // 다른 사용자가 상태/메모를 바꾼 경우 → 화면(select, 메모)에 즉시 반영
+        updated.countries = updated.countries.map(c =>
+          c.code === siteCode ? { ...c, status: payload.status, note: payload.note } : c
+        )
+        onUpdate(updated, false) // false = DB 재저장(다시 서버로 전송) 없이 화면만 갱신
+      } else if (type === 'file') {
+        // 다른 사용자가 파일을 업로드한 경우 → 파일 이력 목록에 새 항목 추가 (data_url은 필요 시 개별 조회)
+        updated.countries = updated.countries.map(c => {
+          if (c.code !== siteCode) return c
+          const newFile = {
+            dbId: payload.fileId,
+            name: payload.name,
+            size: payload.size ?? null,
+            uploadedAt: payload.uploadedAt,
+            statusAtUpload: payload.status,
+            noteAtUpload: payload.noteAtUpload ?? '',
+            uploadedBy: payload.uploadedBy,
+            dataUrl: null,
+          }
+          return { ...c, file: newFile, fileHistory: [newFile, ...(c.fileHistory || [])] }
+        })
+        onUpdate(updated, false)
+      }
+
+      // 해당 국가 행의 "전체 이력" 패널이 열려 있으면 재조회하도록 신호
+      setHistoryBumpMap(prev => ({ ...prev, [siteCode]: (prev[siteCode] || 0) + 1 }))
+    }
+
+    socket.on('page:changed', handlePageChanged)
+    return () => socket.off('page:changed', handlePageChanged)
+  }, [page, onUpdate])
 
   // ── 페이지 진입 시 DB에서 상태+파일 히스토리 로드 ──────────
   // ── 페이지 진입 시 DB에서 상태+파일+분기 히스토리 로드 ──────────
@@ -1868,7 +1986,12 @@ function PageDetail({ page, onBack, onUpdate }) {
 
   const activeSiteCodes = (page.countries || []).map(c => c.code)
   const activeSites = ALL_SITES.filter(s => activeSiteCodes.includes(s.code))
-  const filtered = activeSites.filter(s => regionFilter === 'ALL' || s.region === regionFilter)
+  const filtered = activeSites
+    .filter(s => regionFilter === 'ALL' || s.region === regionFilter)
+    .filter(s => !countrySearch.trim() ||
+      s.name.toLowerCase().includes(countrySearch.trim().toLowerCase()) ||
+      s.code.toLowerCase().includes(countrySearch.trim().toLowerCase())
+    )
 
   const available = ALL_SITES
     .filter(s => !activeSiteCodes.includes(s.code))
@@ -1961,14 +2084,15 @@ function PageDetail({ page, onBack, onUpdate }) {
     onUpdate(updated, true)
     // DB 저장 (비동기, 실패해도 UI는 유지)
     try {
-      await api.updateTrackerStatus({
+      const res = await api.updateTrackerStatus({
         pageId: page.id,
         siteCode,
         status: newStatus ?? existing?.status ?? '',
         note: note ?? existing?.note ?? '',
         changedBy: user?.name || null,
       })
-    } catch (_) {}
+      if (!res?.ok) console.error('[handleStatusChange] 저장 실패:', res)
+    } catch (e) { console.error('[handleStatusChange] API 에러:', e) }
   }, [page, onUpdate, user])
 
   const handleBranchCreate = useCallback(async (siteCode, branchData) => {
@@ -2223,13 +2347,43 @@ function PageDetail({ page, onBack, onUpdate }) {
       </div>
 
       <div className="cst-filter-row">
-        <div className="cst-region-tabs">
-          {['ALL', ...REGIONS].map(r => (
-            <button key={r} className={`cc-region-btn ${regionFilter === r ? 'active' : ''}`}
-              style={regionFilter === r && r !== 'ALL' ? { background: REGION_COLORS[r], color: '#fff' } : {}}
-              onClick={() => setRegionFilter(r)}>{r}</button>
-          ))}
-        </div>
+        {/* 리전 탭 + 국가 검색 — 왼쪽 그룹 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div className="cst-region-tabs">
+            {['ALL', ...REGIONS].map(r => (
+              <button key={r} className={`cc-region-btn ${regionFilter === r ? 'active' : ''}`}
+                style={regionFilter === r && r !== 'ALL' ? { background: REGION_COLORS[r], color: '#fff' } : {}}
+                onClick={() => setRegionFilter(r)}>{r}</button>
+            ))}
+          </div>
+
+          {/* 국가 검색 필터 */}
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+          <span style={{ position: 'absolute', left: 9, color: '#9ca3af', fontSize: 13, pointerEvents: 'none' }}>🔍</span>
+          <input
+            type="text"
+            value={countrySearch}
+            onChange={e => setCountrySearch(e.target.value)}
+            placeholder="국가 검색"
+            style={{
+              paddingLeft: 28, paddingRight: countrySearch ? 26 : 10,
+              height: 30, fontSize: 12, borderRadius: 7,
+              border: '1px solid #e5e7eb', outline: 'none', width: 140,
+              background: '#fff',
+            }}
+          />
+          {countrySearch && (
+            <button
+              onClick={() => setCountrySearch('')}
+              style={{
+                position: 'absolute', right: 7, background: 'none', border: 'none',
+                cursor: 'pointer', color: '#9ca3af', fontSize: 14, padding: 0, lineHeight: 1,
+              }}
+              title="검색 초기화"
+            >✕</button>
+          )}
+          </div>{/* 검색 인풋 끝 */}
+        </div>{/* 왼쪽 그룹 끝 */}
 
         <div className="cst-add-country-wrap" ref={dropRef}>
           <button
@@ -2371,7 +2525,7 @@ function PageDetail({ page, onBack, onUpdate }) {
               <th className="cst-th" style={{ width: 160 }}>국가</th>
               <th className="cst-th" style={{ width: 220 }}>카피 작업 상태</th>
               <th className="cst-th">첨부 파일 (업로드 당시 상태 기록)</th>
-              <th className="cst-th" style={{ width: 180 }}>메모</th>
+              <th className="cst-th" style={{ width: 300 }}>메모</th>
               <th className="cst-th" style={{ width: 40 }}></th>
             </tr>
           </thead>
@@ -2397,6 +2551,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 isRegular={user?.position === 'regular'}
                 pageId={page.id}
                 initialStatusHistory={entry?.statusHistoryItems ?? null}
+                historyBump={historyBumpMap[site.code] || 0}
               />
             )
           })}

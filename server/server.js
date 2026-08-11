@@ -15,7 +15,10 @@ require('dotenv').config();
 
 const express = require('express');
 const cors    = require('cors');
+const http    = require('http');
+const { Server } = require('socket.io');
 const { initPool } = require('./db');
+const { setIO } = require('./realtime');
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
@@ -58,7 +61,27 @@ if (fs.existsSync(clientDist)) {
   );
 }
 
-// ── 서버 실행 ─────────────────────────────────────────────────
-app.listen(PORT, () =>
+// ── 서버 실행 (HTTP + Socket.io) ─────────────────────────────
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: { origin: '*' },
+});
+
+io.on('connection', (socket) => {
+  // 클라이언트가 특정 프로젝트(pageId) 화면을 열면 해당 room에 join
+  socket.on('page:join', (pageId) => {
+    if (!pageId) return;
+    socket.join(`page-${pageId}`);
+  });
+  socket.on('page:leave', (pageId) => {
+    if (!pageId) return;
+    socket.leave(`page-${pageId}`);
+  });
+});
+
+setIO(io);
+
+server.listen(PORT, () =>
   console.log(`✅ 서버 안 실행 중: http://localhost:${PORT}`)
 );

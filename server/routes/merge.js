@@ -1,9 +1,53 @@
 const express = require('express');
+const fs      = require('fs');
+const os      = require('os');
+const path    = require('path');
+const { execFile } = require('child_process');
 const { getPool } = require('../db');
 const { checkDbConnection, authMiddleware } = require('../middleware');
 
 const router = express.Router();
 router.use(authMiddleware);
+
+// 엑셀 파싱용 python 실행 파일 / 스크립트 경로 (환경변수로 재정의 가능)
+const PYTHON_BIN    = process.env.PYTHON_BIN || 'python';
+const PARSE_SCRIPT   = path.join(__dirname, '..', 'python', 'parse_merge_excel.py');
+
+// ── [신규] 엑셀 파일 업로드 → NASCA DRM 우회(xlwings)로 파싱 후 원본 그리드 반환 ──
+// NASCA DRM이 걸린 xlsx는 openpyxl/pandas로 직접 못 열기 때문에
+// xlwings(COM)로 실제 Excel 앱을 띄워 열고(해당 PC의 NASCA 플러그인이 복호화 처리),
+// 병합 셀도 함께 해제해 값을 채운 뒤 그리드 전체를 반환한다.
+// AS-WAS: 드래그→복사→붙여넣기를 국가마다 반복 (공수↑, 휴먼 에러↑)
+// TO-BE : 엑셀을 통째로 업로드하면 grid를 반환하고, 클라이언트에서
+//         원문(original copy) 컬럼과 국가(local) 컬럼을 선택해 한번에 매핑
+router.post('/parse-excel', async (req, res) => {
+  const { fileName, dataUrl } = req.body;
+  if (!dataUrl) return res.json({ ok: false, message: '파일 데이터가 없습니다.' });
+
+  // data URL(base64) → 임시 파일로 저장
+  const base64 = dataUrl.split(',')[1] ?? dataUrl;
+  const ext = path.extname(fileName || '').toLowerCase() || '.xlsx';
+  const tmpPath = path.join(os.tmpdir(), `merge_import_${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`);
+
+  try {
+    fs.writeFileSync(tmpPath, Buffer.from(base64, 'base64'));
+
+    const result = await new Promise((resolve, reject) => {
+      execFile(PYTHON_BIN, [PARSE_SCRIPT, tmpPath], { maxBuffer: 1024 * 1024 * 50 }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        try { resolve(JSON.parse(stdout)); }
+        catch (e) { reject(new Error(`파싱 스크립트 출력 오류: ${stdout || stderr}`)); }
+      });
+    });
+
+    if (result.errorMsg) return res.json({ ok: false, message: result.errorMsg });
+    res.json({ ok: true, grid: result.grid, rowCount: result.rowCount, colCount: result.colCount });
+  } catch (e) {
+    res.json({ ok: false, message: e.message });
+  } finally {
+    try { fs.unlinkSync(tmpPath); } catch (_) { /* 이미 없으면 무시 */ }
+  }
+});
 
 
 
