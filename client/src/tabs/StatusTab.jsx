@@ -934,14 +934,13 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
 
   const toggleUnifiedHistory = async () => {
     // 패널을 열 때 항상 최신 데이터로 fetch (실시간 동기화 보장)
-    // 진입 시 count는 initialStatusHistory로 미리 채워져 있어서 fetch 전후 count가 동일하게 유지됨
     if (!showUnifiedHistory) await fetchStatusHistory()
     setShowUnifiedHistory(v => !v)
   }
 
   // 상태 이력 + 파일 이력을 시간순으로 머지
   const mergedHistory = (() => {
-    const statusItems = (statusHistory || []).map(h => ({
+    const statusItems = (Array.isArray(statusHistory) ? statusHistory : []).map(h => ({
       type: 'status',
       time: new Date(h.changed_at).getTime(),
       data: h,
@@ -1049,9 +1048,9 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                 onClick={toggleUnifiedHistory}
               >
                 {showUnifiedHistory ? '▼ 이력 닫기' : '▶ 전체 이력'}
-                {((entry?.fileHistory?.length || 0) + ((statusHistory ?? initialStatusHistory)?.length || 0)) > 0 && (
+                {((entry?.fileHistory?.length || 0) + (Array.isArray(statusHistory) ? statusHistory.length : (Array.isArray(initialStatusHistory) ? initialStatusHistory.length : 0))) > 0 && (
                   <span className="cst-row-action-count">
-                    {(entry?.fileHistory?.length || 0) + ((statusHistory ?? initialStatusHistory)?.length || 0)}
+                    {(entry?.fileHistory?.length || 0) + (Array.isArray(statusHistory) ? statusHistory.length : (Array.isArray(initialStatusHistory) ? initialStatusHistory.length : 0))}
                   </span>
                 )}
               </button>
@@ -1123,7 +1122,6 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                           <div className="cst-unified-item-row">
                             <span style={{ fontWeight: 500, color: '#334155' }}>{f.name}</span>
                             <span className="cst-sh-badge" style={{ color: statusStyle.color, background: statusStyle.bg }}>{statusStyle.label}</span>
-                            <span style={{ fontWeight: 500, color: '#334155' }}>{f.name}</span>
                             {f.dbId && getFilePreviewType(f.name) && (
                               <button
                                 className="cst-unified-preview-btn"
