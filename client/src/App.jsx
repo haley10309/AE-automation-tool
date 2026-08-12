@@ -32,9 +32,19 @@ function AppContent() {
   const [tab, setTab] = useState(
     () => localStorage.getItem('ae_tool_tab') || TABS.EXTRACT
   )
+  // 이미 활성 상태인 탭을 다시 클릭하면 증가 — 각 탭이 이 값을 보고
+  // 프로젝트 상세 화면에 있어도 목록으로 돌아가도록 리셋 신호로 사용
+  const [statusResetKey, setStatusResetKey] = useState(0)
+  const [mergeResetKey, setMergeResetKey] = useState(0)
+  const [countryResetKey, setCountryResetKey] = useState(0)
 
   // 탭 변경 시 localStorage에 저장
   const handleTabChange = (key) => {
+    if (key === tab) {
+      if (key === TABS.STATUS)  setStatusResetKey(k => k + 1)
+      if (key === TABS.MERGE)   setMergeResetKey(k => k + 1)
+      if (key === TABS.COUNTRY) setCountryResetKey(k => k + 1)
+    }
     localStorage.setItem('ae_tool_tab', key)
     setTab(key)
   }
@@ -89,9 +99,9 @@ function AppContent() {
 
       <main className="main-content">
         {tab === TABS.EXTRACT  && <ExtractTab />}
-        {tab === TABS.MERGE    && <MergeTab />}
-        {tab === TABS.COUNTRY  && <CountryTab />}
-        {tab === TABS.STATUS   && <StatusTab />}
+        {tab === TABS.MERGE    && <MergeTab resetKey={mergeResetKey} />}
+        {tab === TABS.COUNTRY  && <CountryTab resetKey={countryResetKey} />}
+        {tab === TABS.STATUS   && <StatusTab resetKey={statusResetKey} />}
 
         {/* ═══ DB 설정 탭 ═══ */}
         {tab === TABS.SETTINGS && (

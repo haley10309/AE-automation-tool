@@ -2869,7 +2869,7 @@ function FolderBlock({ folder, pages, onSelect, onDelete, onRename, onRequestDup
   )
 }
 
-export default function StatusTab() {
+export default function StatusTab({ resetKey }) {
   const { dbReady } = useDB()
   const { user } = useAuth()
   const [pages, setPages] = useState([])
@@ -2886,6 +2886,12 @@ export default function StatusTab() {
   const [showNewFolder, setShowNewFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [duplicateTarget, setDuplicateTarget] = useState(null) // 복제 모달 대상 페이지
+
+  // 상단 네비게이션의 "Status" 탭을 이미 이 탭에 있는 상태에서 다시 클릭하면
+  // (App.jsx에서 resetKey가 증가) 프로젝트 상세 화면에 있어도 페이지 목록으로 돌아감
+  useEffect(() => {
+    if (resetKey) setSelectedPageId(null)
+  }, [resetKey])
 
   // ── 초기 로드: DB 우선, 실패 시 localStorage fallback ──────
   // ── 초기 로드: 목록 화면에서도 전체 상태(Status)를 한 번에 파악 ──────
