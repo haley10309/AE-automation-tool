@@ -838,7 +838,7 @@ function CountryHistoryDrawer({ projectId, country, onClose }) {
 // ════════════════════════════════════════════════════════════════
 // ── 프로젝트 목록 ─────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════
-function ProjectManager({ products }) {
+function ProjectManager({ products, resetKey }) {
   const { user } = useAuth()
   const [projects, setProjects]   = useState([])
   const [loading, setLoading]     = useState(true)
@@ -849,6 +849,12 @@ function ProjectManager({ products }) {
   const [creating, setCreating]   = useState(false)
   const [msg, setMsg]             = useState('')
   const [search, setSearch]       = useState('')
+
+  // 상단 네비게이션의 "Product reflection" 탭을 이미 이 탭에 있는 상태에서 다시 클릭하면
+  // (App.jsx에서 resetKey가 증가) 프로젝트 상세 화면에 있어도 목록으로 돌아감
+  useEffect(() => {
+    if (resetKey) { setSelectedId(null); localStorage.removeItem('country_selected_project_id') }
+  }, [resetKey])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1719,7 +1725,7 @@ function ServiceIssueBadges({ issues }) {
 // ════════════════════════════════════════════════════════════════
 // ── 메인 export ───────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════
-export default function CountryTab() {
+export default function CountryTab({ resetKey }) {
   const [subTab, setSubTab] = useState(() => {
     const s = localStorage.getItem('country_sub_tab')
     return s === 'project' ? 'project' : 'quick'
@@ -1787,7 +1793,7 @@ export default function CountryTab() {
       </div>
  
       {subTab === 'quick'   && <QuickCheck products={products} />}
-      {subTab === 'project' && <ProjectManager products={products} />}
+      {subTab === 'project' && <ProjectManager products={products} resetKey={resetKey} />}
  
       {showProductPanel && (
         <ProductPanel onClose={() => setShowProductPanel(false)} onProductsChanged={loadProducts} />

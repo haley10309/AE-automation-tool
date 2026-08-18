@@ -2348,12 +2348,18 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
 // ════════════════════════════════════════════════════════════════
 // 메인
 // ════════════════════════════════════════════════════════════════
-export default function MergeTab() {
+export default function MergeTab({ resetKey }) {
   const { dbReady }                   = useDB()
   const [projects, setProjects]       = useState([])
   const [projLoading, setProjLoading] = useState(false)
   const [openProject, setOpenProject] = useState(null)
   const [products, setProducts]       = useState([])
+
+  // 상단 네비게이션의 "Copy Merge" 탭을 이미 이 탭에 있는 상태에서 다시 클릭하면
+  // (App.jsx에서 resetKey가 증가) 프로젝트 상세 화면에 있어도 목록으로 돌아감
+  useEffect(() => {
+    if (resetKey) setOpenProject(null)
+  }, [resetKey])
 
   const loadProjects = useCallback(async () => {
     if (!dbReady) return

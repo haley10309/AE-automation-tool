@@ -899,11 +899,22 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
   }, [initialStatusHistory])
 
   const fetchStatusHistory = async () => {
+    setStatusHistory(null) // 재시도 시에도 "불러오는 중" 상태로 되돌림
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 8000) // 8초 이상 응답 없으면 중단 (DB 풀 재연결 등으로 무한 대기하는 것 방지)
     try {
-      const res = await fetch(`http://localhost:4000/api/tracker/status-history?pageId=${pageId}&siteCode=${site.code}`)
+      const res = await fetch(
+        `http://localhost:4000/api/tracker/status-history?pageId=${pageId}&siteCode=${site.code}`,
+        { signal: controller.signal }
+      )
       const data = await res.json()
-      setStatusHistory(data.ok ? data.data : [])
-    } catch { setStatusHistory([]) }
+      setStatusHistory(data.ok ? data.data : 'ERROR')
+    } catch (e) {
+      // AbortError(타임아웃) 포함 모든 실패를 명시적 에러 상태로 표시 — 빈 이력('이력이 없습니다')과 구분
+      setStatusHistory('ERROR')
+    } finally {
+      clearTimeout(timeoutId)
+    }
   }
 
   // [신규] 다른 사용자가 실시간으로 이 국가의 상태/메모/파일을 바꾼 경우
@@ -923,14 +934,13 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
 
   const toggleUnifiedHistory = async () => {
     // 패널을 열 때 항상 최신 데이터로 fetch (실시간 동기화 보장)
-    // 진입 시 count는 initialStatusHistory로 미리 채워져 있어서 fetch 전후 count가 동일하게 유지됨
     if (!showUnifiedHistory) await fetchStatusHistory()
     setShowUnifiedHistory(v => !v)
   }
 
   // 상태 이력 + 파일 이력을 시간순으로 머지
   const mergedHistory = (() => {
-    const statusItems = (statusHistory || []).map(h => ({
+    const statusItems = (Array.isArray(statusHistory) ? statusHistory : []).map(h => ({
       type: 'status',
       time: new Date(h.changed_at).getTime(),
       data: h,
@@ -1038,9 +1048,9 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                 onClick={toggleUnifiedHistory}
               >
                 {showUnifiedHistory ? '▼ 이력 닫기' : '▶ 전체 이력'}
-                {((entry?.fileHistory?.length || 0) + ((statusHistory ?? initialStatusHistory)?.length || 0)) > 0 && (
+                {((entry?.fileHistory?.length || 0) + (Array.isArray(statusHistory) ? statusHistory.length : (Array.isArray(initialStatusHistory) ? initialStatusHistory.length : 0))) > 0 && (
                   <span className="cst-row-action-count">
-                    {(entry?.fileHistory?.length || 0) + ((statusHistory ?? initialStatusHistory)?.length || 0)}
+                    {(entry?.fileHistory?.length || 0) + (Array.isArray(statusHistory) ? statusHistory.length : (Array.isArray(initialStatusHistory) ? initialStatusHistory.length : 0))}
                   </span>
                 )}
               </button>
@@ -1062,6 +1072,11 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
               </div>
               {statusHistory === null ? (
                 <div className="cst-unified-history-loading">불러오는 중...</div>
+              ) : statusHistory === 'ERROR' ? (
+                <div className="cst-unified-history-empty" style={{ color: '#dc2626', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  ⚠ 이력을 불러오지 못했습니다 (서버 응답 지연 또는 연결 문제)
+                  <button className="cst-unified-preview-btn" onClick={fetchStatusHistory}>다시 시도</button>
+                </div>
               ) : mergedHistory.length === 0 ? (
                 <div className="cst-unified-history-empty">이력이 없습니다.</div>
               ) : (
@@ -1105,8 +1120,8 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                         <span className="cst-unified-item-icon">📎</span>
                         <div className="cst-unified-item-body">
                           <div className="cst-unified-item-row">
-                            <span className="cst-sh-badge" style={{ color: statusStyle.color, background: statusStyle.bg }}>{statusStyle.label}</span>
                             <span style={{ fontWeight: 500, color: '#334155' }}>{f.name}</span>
+                            <span className="cst-sh-badge" style={{ color: statusStyle.color, background: statusStyle.bg }}>{statusStyle.label}</span>
                             {f.dbId && getFilePreviewType(f.name) && (
                               <button
                                 className="cst-unified-preview-btn"
@@ -2854,7 +2869,7 @@ function FolderBlock({ folder, pages, onSelect, onDelete, onRename, onRequestDup
   )
 }
 
-export default function StatusTab() {
+export default function StatusTab({ resetKey }) {
   const { dbReady } = useDB()
   const { user } = useAuth()
   const [pages, setPages] = useState([])
@@ -2871,6 +2886,12 @@ export default function StatusTab() {
   const [showNewFolder, setShowNewFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [duplicateTarget, setDuplicateTarget] = useState(null) // 복제 모달 대상 페이지
+
+  // 상단 네비게이션의 "Status" 탭을 이미 이 탭에 있는 상태에서 다시 클릭하면
+  // (App.jsx에서 resetKey가 증가) 프로젝트 상세 화면에 있어도 페이지 목록으로 돌아감
+  useEffect(() => {
+    if (resetKey) setSelectedPageId(null)
+  }, [resetKey])
 
   // ── 초기 로드: DB 우선, 실패 시 localStorage fallback ──────
   // ── 초기 로드: 목록 화면에서도 전체 상태(Status)를 한 번에 파악 ──────
