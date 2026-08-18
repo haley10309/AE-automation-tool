@@ -1,5 +1,6 @@
 // ── DB 연결 풀 싱글톤 ─────────────────────────────────────────
 const mysql = require('mysql2/promise');
+const { ensureUsersPositionColumn } = require('./migrations');
 
 let pool = null;
 
@@ -16,6 +17,8 @@ function initPool(config = {}) {
     queueLimit:       0,
     charset:          'utf8mb4',
   });
+  // 마이그레이션은 서버 시작을 막지 않도록 논블로킹으로 실행 (실패해도 무시)
+  ensureUsersPositionColumn(pool).catch(() => {});
   return pool;
 }
 
@@ -43,6 +46,8 @@ async function reconnect(config) {
   // 연결 테스트
   const conn = await pool.getConnection();
   conn.release();
+  // 이 DB에 5단계 역할을 위한 컬럼 확장 마이그레이션 적용
+  await ensureUsersPositionColumn(pool);
   return pool;
 }
 

@@ -1,7 +1,7 @@
 const express = require('express');
 const { getPool } = require('../db');
 const { checkDbConnection, authMiddleware } = require('../middleware');
-const { broadcastPageChange } = require('../realtime');
+const { broadcastPageChange } = require('./realtime');
 
 const router = express.Router();
 router.use(checkDbConnection);

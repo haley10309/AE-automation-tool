@@ -11,6 +11,7 @@ import SiteDropdown from '../components/SiteDropdown.jsx'
 import { ALL_SITES } from '../constants.js'
 import { detectBadges } from '../utils.js'
 import { detectServiceIssues } from '../components/ServiceCheck.jsx'
+import { isStaff } from '../roles.js'
 
 const LS_EN_KEY = 'merge_en_copy'
 
@@ -23,7 +24,7 @@ function getCurrentUserPosition() {
     return payload?.position ?? null
   } catch { return null }
 }
-const isRegular = () => getCurrentUserPosition() === 'regular'
+const isRegular = () => isStaff(getCurrentUserPosition())
 
 // ── 유틸 ─────────────────────────────────────────────────────
 function parseEnLines(raw) {
@@ -1490,7 +1491,7 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
     setCountries(prev => [...prev, { id, dbId: null, label, rawPaste: '', mappedJson: null, isSaved: false }])
   }
   const removeCountry = async (id) => {
-    if (!isRegular()) { alert('정규직만 국가를 삭제할 수 있습니다.'); return }
+    if (!isRegular()) { alert('권한이 없습니다.'); return }
     const c = countries.find(x => x.id === id)
     if (c?.dbId) {
       if (!window.confirm(`${c.label} 국가를 삭제하시겠습니까?`)) return
@@ -2381,7 +2382,7 @@ export default function MergeTab({ resetKey }) {
     if (res.ok) { await loadProjects(); setOpenProject({ id: res.id, title }) }
   }
   const handleDelete = async (id, title) => {
-    if (!isRegular()) { alert('정규직만 프로젝트를 삭제할 수 있습니다.'); return }
+    if (!isRegular()) { alert('권한이 없습니다.'); return }
     if (!window.confirm(`"${title}" 프로젝트를 삭제하시겠습니까?`)) return
     await api.mergeDeleteProject(id)
     if (openProject?.id === id) setOpenProject(null)
