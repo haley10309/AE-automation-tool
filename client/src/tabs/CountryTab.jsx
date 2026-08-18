@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
+import { isStaff } from '../roles.js'
 import SiteDropdown from '../components/SiteDropdown.jsx'
 import { ALL_SITES, SITE_MAP, REGIONS, REGION_COLORS as RC, REGION_BG as RB } from '../constants.js'
 import { parseCol, detectBadges, exportToCSV } from '../utils.js'
@@ -838,7 +839,7 @@ function CountryHistoryDrawer({ projectId, country, onClose }) {
 // ════════════════════════════════════════════════════════════════
 // ── 프로젝트 목록 ─────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════
-function ProjectManager({ products }) {
+function ProjectManager({ products, resetKey }) {
   const { user } = useAuth()
   const [projects, setProjects]   = useState([])
   const [loading, setLoading]     = useState(true)
@@ -849,6 +850,12 @@ function ProjectManager({ products }) {
   const [creating, setCreating]   = useState(false)
   const [msg, setMsg]             = useState('')
   const [search, setSearch]       = useState('')
+
+  // 상단 네비게이션의 "Product reflection" 탭을 이미 이 탭에 있는 상태에서 다시 클릭하면
+  // (App.jsx에서 resetKey가 증가) 프로젝트 상세 화면에 있어도 목록으로 돌아감
+  useEffect(() => {
+    if (resetKey) { setSelectedId(null); localStorage.removeItem('country_selected_project_id') }
+  }, [resetKey])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -870,7 +877,7 @@ function ProjectManager({ products }) {
 
   const handleDelete = async (id, name, e) => {
     e.stopPropagation()
-    if (user?.position !== 'regular') { alert('정규직만 프로젝트를 삭제할 수 있습니다.'); return }
+    if (!isStaff(user?.position)) { alert('권한이 없습니다.'); return }
     if (!window.confirm(`"${name}" 프로젝트를 삭제하시겠습니까?\n저장된 카피 데이터도 모두 삭제됩니다.`)) return
     await api.ccDeleteProject(id)
     if (selectedId === id) { setSelectedId(null); localStorage.removeItem('country_selected_project_id') }
@@ -939,7 +946,7 @@ function ProjectManager({ products }) {
           <div key={p.id} className="pj-card" onClick={() => { setSelectedId(p.id); localStorage.setItem('country_selected_project_id', p.id) }}>
             <div className="pj-card-header">
               <span className="pj-card-name">{p.name}</span>
-              {user?.position === 'regular' && (
+              {isStaff(user?.position) && (
                 <button className="act-btn act-delete" style={{ padding: '2px 7px' }}
                   onClick={e => handleDelete(p.id, p.name, e)}>🗑</button>
               )}
@@ -1124,7 +1131,7 @@ function ProductPanel({ onClose, onProductsChanged }) {
   }
 
   const handleDelete = async (id, name) => {
-    if (user?.position !== 'regular') { alert('정규직만 제품을 삭제할 수 있습니다.'); return }
+    if (!isStaff(user?.position)) { alert('권한이 없습니다.'); return }
     if (!window.confirm(`"${name}"을(를) 삭제하시겠습니까?`)) return
     const res = await api.deleteProduct(id)
     if (res.ok) { await load(); onProductsChanged() }
@@ -1171,7 +1178,7 @@ function ProductPanel({ onClose, onProductsChanged }) {
                   <div className="pp-item-actions">
                     <button className="act-btn" style={{ color: '#6366f1', borderColor: '#6366f1' }} onClick={() => setHistoryProduct(p)}>📋 이력</button>
                     <button className="act-btn act-edit" onClick={() => openEdit(p)}>✏ 수정</button>
-                    {user?.position === 'regular' && (
+                    {isStaff(user?.position) && (
                       <button className="act-btn act-delete" onClick={() => handleDelete(p.id, p.name)}>🗑</button>
                     )}
                   </div>
@@ -1719,7 +1726,7 @@ function ServiceIssueBadges({ issues }) {
 // ════════════════════════════════════════════════════════════════
 // ── 메인 export ───────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════
-export default function CountryTab() {
+export default function CountryTab({ resetKey }) {
   const [subTab, setSubTab] = useState(() => {
     const s = localStorage.getItem('country_sub_tab')
     return s === 'project' ? 'project' : 'quick'
@@ -1787,7 +1794,7 @@ export default function CountryTab() {
       </div>
  
       {subTab === 'quick'   && <QuickCheck products={products} />}
-      {subTab === 'project' && <ProjectManager products={products} />}
+      {subTab === 'project' && <ProjectManager products={products} resetKey={resetKey} />}
  
       {showProductPanel && (
         <ProductPanel onClose={() => setShowProductPanel(false)} onProductsChanged={loadProducts} />

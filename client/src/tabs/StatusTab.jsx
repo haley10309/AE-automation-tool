@@ -1,9 +1,15 @@
 import { useState, useCallback, useEffect, useRef, memo, useMemo } from 'react'
 import { createPortal } from 'react-dom'
+
+// ── 공통 인라인 스타일 상수 ──
+const S_LABEL_SM = { fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }
+const S_LABEL_XS = { fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }
 import { api } from '../api.js'
+import { socket } from '../socket.js'
 import { useAuth } from '../auth.jsx'
 import { useDB } from '../DBContext.jsx'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
+import { isStaff } from '../roles.js'
 import * as XLSX from 'xlsx'
 
 // ── 상태 정의 (0=미설정, 1~15=단계) ─────────────────────────
@@ -30,19 +36,40 @@ function getStatusStyle(value) {
   return COPY_STATUSES.find(s => s.value === value) || COPY_STATUSES[0]
 }
 // ── [최적화] 메인 메모 입력 컴포넌트 (반응성 향상) ────────────────
-const NoteInput = memo(({ initialNote, onSave }) => {
-  const [val, setVal] = useState(initialNote || '')
-  useEffect(() => { setVal(initialNote || '') }, [initialNote])
+const NoteInput = memo(({ onSave }) => {
+  const [val, setVal] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const handleSave = async () => {
+    if (!val.trim() || saving) return
+    setSaving(true)
+    try {
+      await onSave(val.trim())
+      setVal('')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
-    <input 
-      className="cst-note-input" 
-      placeholder="메모 입력..."
-      value={val} 
-      onChange={e => setVal(e.target.value)}
-      onBlur={() => onSave(val)} // 포커스 나갈 때만 전체 상태 업데이트
-      onKeyDown={e => e.key === 'Enter' && onSave(val)}
-    />
+    <div className="cst-note-cell-inner">
+      <textarea
+        className="cst-note-input"
+        placeholder="메모 입력..."
+        value={val}
+        onChange={e => setVal(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSave() } }}
+        rows={1}
+      />
+      <button
+        className="cst-note-save-btn"
+        onClick={handleSave}
+        disabled={!val.trim() || saving}
+        title="메모 저장 (히스토리에 기록)"
+      >
+        {saving ? '⏳' : '저장'}
+      </button>
+    </div>
   )
 })
 const HistoryItem = ({ file, index, onUpdateNote, download }) => {
@@ -439,7 +466,7 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
         a.href = data.data.data_url; a.download = f.name
         document.body.appendChild(a); a.click(); document.body.removeChild(a)
       }
-    } catch (e) { console.warn('다운로드 실패', e) }
+    } catch (_) {}
     finally { setDownloading(false) }
   }
 
@@ -858,35 +885,63 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
 }
 
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId, initialStatusHistory }) => {
+const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId, initialStatusHistory, historyBump }) => {
   const [isExpanded, setIsExpanded] = useState(false)
   const [showUnifiedHistory, setShowUnifiedHistory] = useState(false)
   const [statusHistory, setStatusHistory] = useState(initialStatusHistory ?? null) // null = 미로딩
   const branches = entry?.branches || []
 
+  // initialStatusHistory prop이 업데이트되면 state에 동기화
+  // (getTrackerDetail 응답 도착 전에 마운트된 경우 대응)
+  useEffect(() => {
+    if (initialStatusHistory !== null && statusHistory === null) {
+      setStatusHistory(initialStatusHistory)
+    }
+  }, [initialStatusHistory])
+
   const fetchStatusHistory = async () => {
+    setStatusHistory(null) // 재시도 시에도 "불러오는 중" 상태로 되돌림
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 8000) // 8초 이상 응답 없으면 중단 (DB 풀 재연결 등으로 무한 대기하는 것 방지)
     try {
-      const res = await fetch(`http://localhost:4000/api/tracker/status-history?pageId=${pageId}&siteCode=${site.code}`)
+      const res = await fetch(
+        `http://localhost:4000/api/tracker/status-history?pageId=${pageId}&siteCode=${site.code}`,
+        { signal: controller.signal }
+      )
       const data = await res.json()
-      setStatusHistory(data.ok ? data.data : [])
-    } catch { setStatusHistory([]) }
+      setStatusHistory(data.ok ? data.data : 'ERROR')
+    } catch (e) {
+      // AbortError(타임아웃) 포함 모든 실패를 명시적 에러 상태로 표시 — 빈 이력('이력이 없습니다')과 구분
+      setStatusHistory('ERROR')
+    } finally {
+      clearTimeout(timeoutId)
+    }
   }
 
-  // 상태 변경 시 이력 갱신 (패널 열려있으면 즉시, 닫혀있으면 캐시 초기화)
+  // [신규] 다른 사용자가 실시간으로 이 국가의 상태/메모/파일을 바꾼 경우
+  // 전체 이력 패널이 열려있으면 자동으로 다시 불러옴 (닫혀있으면 다음에 열 때 새로 조회하도록 캐시 무효화)
+  const isFirstBump = useRef(true)
+  useEffect(() => {
+    if (isFirstBump.current) { isFirstBump.current = false; return }
+    if (showUnifiedHistory) fetchStatusHistory()
+    else setStatusHistory(null)
+  }, [historyBump])
+
+  // 상태/메모 변경 시 이력 갱신 — 패널 열림 여부와 무관하게 항상 fetch (count 즉시 반영)
   const handleStatusChangeWithRefresh = async (siteCode, newStatus, note) => {
     await handleStatusChange(siteCode, newStatus, note)
-    if (showUnifiedHistory) await fetchStatusHistory()
-    else setStatusHistory(null)
+    await fetchStatusHistory()
   }
 
   const toggleUnifiedHistory = async () => {
+    // 패널을 열 때 항상 최신 데이터로 fetch (실시간 동기화 보장)
     if (!showUnifiedHistory) await fetchStatusHistory()
     setShowUnifiedHistory(v => !v)
   }
 
   // 상태 이력 + 파일 이력을 시간순으로 머지
   const mergedHistory = (() => {
-    const statusItems = (statusHistory || []).map(h => ({
+    const statusItems = (Array.isArray(statusHistory) ? statusHistory : []).map(h => ({
       type: 'status',
       time: new Date(h.changed_at).getTime(),
       data: h,
@@ -900,6 +955,33 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
   })()
 
   const [downloadingId, setDownloadingId] = useState(null)
+  const [previewFile, setPreviewFile]     = useState(null) // { name, dataUrl, type:'image'|'text', text? }
+  const [previewingId, setPreviewingId]   = useState(null)
+
+  const getFilePreviewType = (name = '') => {
+    const ext = name.split('.').pop().toLowerCase()
+    if (['jpg','jpeg','png','gif','webp','bmp','svg'].includes(ext)) return 'image'
+    if (['txt','log','csv','json','md'].includes(ext)) return 'text'
+    return null
+  }
+
+  const previewHistoryFile = async (dbId, name) => {
+    if (!dbId || previewingId) return
+    setPreviewingId(dbId)
+    try {
+      const res = await api.getFileData(dbId)
+      if (!res?.ok || !res.data?.data_url) { alert('파일 데이터를 가져올 수 없습니다.'); return }
+      const type = getFilePreviewType(name)
+      if (type === 'text') {
+        const base64 = res.data.data_url.split(',')[1] ?? res.data.data_url
+        const text = decodeURIComponent(escape(atob(base64)))
+        setPreviewFile({ name, dataUrl: res.data.data_url, text, type: 'text' })
+      } else {
+        setPreviewFile({ name, dataUrl: res.data.data_url, type: 'image' })
+      }
+    } catch (e) { alert('미리보기 실패: ' + (e?.message || e)) }
+    finally { setPreviewingId(null) }
+  }
 
   const downloadHistoryFile = async (dbId, name) => {
     if (!dbId || downloadingId) return
@@ -953,8 +1035,7 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
         <td className="cst-td cst-td-note">
           <div className="cst-note-cell">
             <NoteInput
-              initialNote={entry?.note}
-              onSave={(note) => handleStatusChange(site.code, entry?.status, note)}
+              onSave={(note) => handleStatusChangeWithRefresh(site.code, entry?.status, note)}
             />
             <div className="cst-row-actions">
               <button
@@ -968,9 +1049,9 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                 onClick={toggleUnifiedHistory}
               >
                 {showUnifiedHistory ? '▼ 이력 닫기' : '▶ 전체 이력'}
-                {((entry?.fileHistory?.length || 0) + (statusHistory?.length || 0)) > 0 && (
+                {((entry?.fileHistory?.length || 0) + (Array.isArray(statusHistory) ? statusHistory.length : (Array.isArray(initialStatusHistory) ? initialStatusHistory.length : 0))) > 0 && (
                   <span className="cst-row-action-count">
-                    {(entry?.fileHistory?.length || 0) + (statusHistory?.length || 0)}
+                    {(entry?.fileHistory?.length || 0) + (Array.isArray(statusHistory) ? statusHistory.length : (Array.isArray(initialStatusHistory) ? initialStatusHistory.length : 0))}
                   </span>
                 )}
               </button>
@@ -992,25 +1073,41 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
               </div>
               {statusHistory === null ? (
                 <div className="cst-unified-history-loading">불러오는 중...</div>
+              ) : statusHistory === 'ERROR' ? (
+                <div className="cst-unified-history-empty" style={{ color: '#dc2626', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  ⚠ 이력을 불러오지 못했습니다 (서버 응답 지연 또는 연결 문제)
+                  <button className="cst-unified-preview-btn" onClick={fetchStatusHistory}>다시 시도</button>
+                </div>
               ) : mergedHistory.length === 0 ? (
                 <div className="cst-unified-history-empty">이력이 없습니다.</div>
               ) : (
                 mergedHistory.map((item, i) => {
                   if (item.type === 'status') {
                     const h = item.data
-                    const fromStyle = getStatusStyle(h.from_status || '')
-                    const toStyle   = getStatusStyle(h.to_status   || '')
-                    const fromLabel = fromStyle.label
-                    const toLabel   = toStyle.label
+                    const fromStyle    = getStatusStyle(h.from_status || '')
+                    const toStyle      = getStatusStyle(h.to_status   || '')
+                    const statusChanged = h.from_status !== h.to_status
+                    const noteChanged   = h.note != null
                     return (
                       <div key={`s-${h.id}`} className="cst-unified-item">
-                        <span className="cst-unified-item-icon">🔄</span>
+                        <span className="cst-unified-item-icon">{noteChanged && !statusChanged ? '📝' : '🔄'}</span>
                         <div className="cst-unified-item-body">
                           <div className="cst-unified-item-row">
-                            <span className="cst-sh-badge" style={{ color: fromStyle.color, background: fromStyle.bg }}>{fromLabel}</span>
-                            <span className="cst-sh-arrow">→</span>
-                            <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toLabel}</span>
-                            <span className="cst-unified-item-time">{formatDateTime(h.changed_at)}</span>
+                            {/* 왼쪽: 상태 배지 */}
+                            {statusChanged && <>
+                              <span className="cst-sh-badge" style={{ color: fromStyle.color, background: fromStyle.bg }}>{fromStyle.label}</span>
+                              <span className="cst-sh-arrow">→</span>
+                              <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toStyle.label}</span>
+                            </>}
+                            {noteChanged && !statusChanged && h.to_status && (
+                              <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toStyle.label}</span>
+                            )}
+                            {/* 가운데: 메모 (margin-left:auto로 상태 배지와 분리) */}
+                            {noteChanged && (
+                              <span className="cst-unified-note-tag" style={{ marginLeft: 'auto' }}>메모: {h.note}</span>
+                            )}
+                            {/* 오른쪽: 시간 */}
+                            <span className="cst-unified-item-time" style={{ marginLeft: noteChanged ? 12 : 'auto' }}>{formatDateTime(h.changed_at)}</span>
                           </div>
                           {h.changed_by && <div className="cst-unified-item-meta">👤 {h.changed_by}</div>}
                         </div>
@@ -1026,6 +1123,16 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                           <div className="cst-unified-item-row">
                             <span style={{ fontWeight: 500, color: '#334155' }}>{f.name}</span>
                             <span className="cst-sh-badge" style={{ color: statusStyle.color, background: statusStyle.bg }}>{statusStyle.label}</span>
+                            {f.dbId && getFilePreviewType(f.name) && (
+                              <button
+                                className="cst-unified-preview-btn"
+                                onClick={() => previewHistoryFile(f.dbId, f.name)}
+                                disabled={previewingId === f.dbId}
+                                title="파일 미리보기"
+                              >
+                                {previewingId === f.dbId ? '⏳' : '자세히'}
+                              </button>
+                            )}
                             {f.dbId && (
                               <button
                                 className="cst-unified-download-btn"
@@ -1058,6 +1165,32 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
             <BranchTimeline branches={branches} branchStatuses={entry?.branchStatuses || []} onCreateBranch={(data) => handleBranchCreate(site.code, data)} onUpdateBranchNote={(id, note) => handleBranchNoteUpdate(site.code, id, note)} onCloseBranch={(siteCode, bName, isClosed) => handleBranchClose(siteCode, bName, isClosed)} onDeleteBranch={(siteCode, bName) => handleBranchDelete(siteCode, bName)} />
           </td>
         </tr>
+      )}
+      {previewFile && createPortal(
+        <div className="cst-preview-backdrop" onClick={() => setPreviewFile(null)}>
+          <div className="cst-preview-modal" onClick={e => e.stopPropagation()}>
+            <div className="cst-preview-header">
+              <span className="cst-preview-title">📎 {previewFile.name}</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="cst-unified-download-btn"
+                  onClick={() => downloadHistoryFile(
+                    mergedHistory.find(i => i.type === 'file' && i.data.name === previewFile.name)?.data.dbId,
+                    previewFile.name
+                  )}
+                >⬇ 다운로드</button>
+                <button className="cst-preview-close" onClick={() => setPreviewFile(null)}>✕</button>
+              </div>
+            </div>
+            <div className="cst-preview-body">
+              {previewFile.type === 'image'
+                ? <img src={previewFile.dataUrl} alt={previewFile.name} className="cst-preview-image" />
+                : <pre className="cst-preview-text">{previewFile.text}</pre>
+              }
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </>
   )
@@ -1242,7 +1375,7 @@ function DuplicateModal({ page, onConfirm, onClose }) {
 // ── BillingModal 컴포넌트 ──────────────────────────────────────
 function BillingModal({ page, onClose }) {
   const { user } = useAuth()
-  const isRegular = user?.position === 'regular'
+  const isRegular = isStaff(user?.position)
 
   // 폼 상태
   const [form, setForm] = useState({
@@ -1273,7 +1406,7 @@ function BillingModal({ page, onClose }) {
       try {
         const res = await api.getBillings(page.id)
         if (res.ok) setBillings(res.data || [])
-      } catch (e) { console.warn('billing 로드 실패', e) }
+      } catch (_) {}
       finally { setLoadingList(false) }
     }
     load()
@@ -1451,24 +1584,24 @@ function BillingModal({ page, onClose }) {
               <div style={{ fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 12 }}>+ 새 항목 추가</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
                 <div>
-                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>프로젝트명 *</label>
+                  <label style={S_LABEL_SM}>프로젝트명 *</label>
                   <input className="form-input" placeholder="예: Galaxy S25 Ultra" value={form.projectName}
                     onChange={e => setForm(f => ({ ...f, projectName: e.target.value }))} />
                 </div>
                 <div>
-                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>대상 페이지</label>
+                  <label style={S_LABEL_SM}>대상 페이지</label>
                   <input className="form-input" value={form.targetPage}
                     onChange={e => setForm(f => ({ ...f, targetPage: e.target.value }))} />
                 </div>
                 <div>
-                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>
+                  <label style={S_LABEL_SM}>
                     사이트 코드 수 <span style={{ color: '#6366f1', fontSize: 10 }}>자동입력</span>
                   </label>
                   <input className="form-input" type="number" min="0" value={form.siteCount}
                     onChange={e => setForm(f => ({ ...f, siteCount: e.target.value }))} />
                 </div>
                 <div>
-                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>페이지 수 *</label>
+                  <label style={S_LABEL_SM}>페이지 수 *</label>
                   <input className="form-input" type="number" min="1" placeholder="직접 입력"
                     value={form.pageCount} onChange={e => setForm(f => ({ ...f, pageCount: e.target.value }))} />
                 </div>
@@ -1489,14 +1622,14 @@ function BillingModal({ page, onClose }) {
 
               {/* 비고 */}
               <div style={{ marginBottom: 10 }}>
-                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>비고</label>
+                <label style={S_LABEL_SM}>비고</label>
                 <input className="form-input" placeholder="메모 (선택)" value={form.note}
                   onChange={e => setForm(f => ({ ...f, note: e.target.value }))} />
               </div>
 
               {/* 파일 첨부 */}
               <div style={{ marginBottom: 12 }}>
-                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 3 }}>첨부파일</label>
+                <label style={S_LABEL_SM}>첨부파일</label>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
                   <button
                     type="button"
@@ -1566,28 +1699,28 @@ function BillingModal({ page, onClose }) {
                       <div>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
                           <div>
-                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>프로젝트명</label>
+                            <label style={S_LABEL_XS}>프로젝트명</label>
                             <input className="form-input" style={{ fontSize: 12 }} value={editForm.projectName}
                               onChange={e => setEditForm(f => ({ ...f, projectName: e.target.value }))} />
                           </div>
                           <div>
-                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>대상 페이지</label>
+                            <label style={S_LABEL_XS}>대상 페이지</label>
                             <input className="form-input" style={{ fontSize: 12 }} value={editForm.targetPage}
                               onChange={e => setEditForm(f => ({ ...f, targetPage: e.target.value }))} />
                           </div>
                           <div>
-                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>사이트 코드 수</label>
+                            <label style={S_LABEL_XS}>사이트 코드 수</label>
                             <input className="form-input" style={{ fontSize: 12 }} type="number" min="0" value={editForm.siteCount}
                               onChange={e => setEditForm(f => ({ ...f, siteCount: e.target.value }))} />
                           </div>
                           <div>
-                            <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>페이지 수</label>
+                            <label style={S_LABEL_XS}>페이지 수</label>
                             <input className="form-input" style={{ fontSize: 12 }} type="number" min="1" value={editForm.pageCount}
                               onChange={e => setEditForm(f => ({ ...f, pageCount: e.target.value }))} />
                           </div>
                         </div>
                         <div style={{ marginBottom: 8 }}>
-                          <label style={{ fontSize: 10, color: '#64748b', display: 'block', marginBottom: 2 }}>비고</label>
+                          <label style={S_LABEL_XS}>비고</label>
                           <input className="form-input" style={{ fontSize: 12 }} value={editForm.note}
                             onChange={e => setEditForm(f => ({ ...f, note: e.target.value }))} />
                         </div>
@@ -1670,6 +1803,7 @@ function PageDetail({ page, onBack, onUpdate }) {
   const [regionFilter, setRegionFilter] = useState('ALL')
   const [showAddCountry, setShowAddCountry] = useState(false)
   const [search, setSearch] = useState('')
+  const [countrySearch, setCountrySearch] = useState('') // 국가 필터 검색창
   const [loadingDetail, setLoadingDetail] = useState(true)
   const [showBilling, setShowBilling] = useState(false)
   const dropRef = useRef(null)
@@ -1684,6 +1818,56 @@ function PageDetail({ page, onBack, onUpdate }) {
   const [bulkTextStatus, setBulkTextStatus] = useState('')
   const [bulkTextApplying, setBulkTextApplying] = useState(false)
   const [bulkTextResult, setBulkTextResult] = useState(null)
+
+  // ── [신규] 실시간 동기화 (Socket.io) ───────────────────────
+  // 같은 프로젝트를 보고 있는 다른 클라이언트가 상태/메모/파일을 바꾸면 즉시 반영
+  const [historyBumpMap, setHistoryBumpMap] = useState({}) // siteCode -> 증가 카운터 (전체 이력 패널 재조회 트리거용)
+
+  useEffect(() => {
+    if (!page?.id) return
+    socket.emit('page:join', String(page.id))
+    return () => socket.emit('page:leave', String(page.id))
+  }, [page?.id])
+
+  useEffect(() => {
+    const handlePageChanged = (payload) => {
+      if (!payload || String(payload.pageId) !== String(page.id)) return
+      const { type, siteCode } = payload
+
+      const updated = { ...page }
+
+      if (type === 'status') {
+        // 다른 사용자가 상태/메모를 바꾼 경우 → 화면(select, 메모)에 즉시 반영
+        updated.countries = updated.countries.map(c =>
+          c.code === siteCode ? { ...c, status: payload.status, note: payload.note } : c
+        )
+        onUpdate(updated, false) // false = DB 재저장(다시 서버로 전송) 없이 화면만 갱신
+      } else if (type === 'file') {
+        // 다른 사용자가 파일을 업로드한 경우 → 파일 이력 목록에 새 항목 추가 (data_url은 필요 시 개별 조회)
+        updated.countries = updated.countries.map(c => {
+          if (c.code !== siteCode) return c
+          const newFile = {
+            dbId: payload.fileId,
+            name: payload.name,
+            size: payload.size ?? null,
+            uploadedAt: payload.uploadedAt,
+            statusAtUpload: payload.status,
+            noteAtUpload: payload.noteAtUpload ?? '',
+            uploadedBy: payload.uploadedBy,
+            dataUrl: null,
+          }
+          return { ...c, file: newFile, fileHistory: [newFile, ...(c.fileHistory || [])] }
+        })
+        onUpdate(updated, false)
+      }
+
+      // 해당 국가 행의 "전체 이력" 패널이 열려 있으면 재조회하도록 신호
+      setHistoryBumpMap(prev => ({ ...prev, [siteCode]: (prev[siteCode] || 0) + 1 }))
+    }
+
+    socket.on('page:changed', handlePageChanged)
+    return () => socket.off('page:changed', handlePageChanged)
+  }, [page, onUpdate])
 
   // ── 페이지 진입 시 DB에서 상태+파일 히스토리 로드 ──────────
   // ── 페이지 진입 시 DB에서 상태+파일+분기 히스토리 로드 ──────────
@@ -1801,7 +1985,12 @@ function PageDetail({ page, onBack, onUpdate }) {
 
   const activeSiteCodes = (page.countries || []).map(c => c.code)
   const activeSites = ALL_SITES.filter(s => activeSiteCodes.includes(s.code))
-  const filtered = activeSites.filter(s => regionFilter === 'ALL' || s.region === regionFilter)
+  const filtered = activeSites
+    .filter(s => regionFilter === 'ALL' || s.region === regionFilter)
+    .filter(s => !countrySearch.trim() ||
+      s.name.toLowerCase().includes(countrySearch.trim().toLowerCase()) ||
+      s.code.toLowerCase().includes(countrySearch.trim().toLowerCase())
+    )
 
   const available = ALL_SITES
     .filter(s => !activeSiteCodes.includes(s.code))
@@ -1894,14 +2083,15 @@ function PageDetail({ page, onBack, onUpdate }) {
     onUpdate(updated, true)
     // DB 저장 (비동기, 실패해도 UI는 유지)
     try {
-      await api.updateTrackerStatus({
+      const res = await api.updateTrackerStatus({
         pageId: page.id,
         siteCode,
         status: newStatus ?? existing?.status ?? '',
         note: note ?? existing?.note ?? '',
         changedBy: user?.name || null,
       })
-    } catch (e) { console.warn('status DB 저장 실패', e) }
+      if (!res?.ok) console.error('[handleStatusChange] 저장 실패:', res)
+    } catch (e) { console.error('[handleStatusChange] API 에러:', e) }
   }, [page, onUpdate, user])
 
   const handleBranchCreate = useCallback(async (siteCode, branchData) => {
@@ -1932,7 +2122,7 @@ function PageDetail({ page, onBack, onUpdate }) {
         )
         onUpdate({ ...page, countries: updatedCountries }, true)
       }
-    } catch (e) { console.warn('분기 생성 실패', e) }
+    } catch (_) {}
   }, [page, user, onUpdate])
 
   const handleBranchNoteUpdate = useCallback(async (siteCode, branchId, newNote) => {
@@ -1948,7 +2138,7 @@ function PageDetail({ page, onBack, onUpdate }) {
       } else {
         alert(res.message || '메모 수정에 실패했습니다.')
       }
-    } catch (e) { console.warn('분기 메모 수정 실패', e) }
+    } catch (_) {}
   }, [page, onUpdate])
 
   const handleBranchClose = useCallback(async (siteCode, branchName, isClosed) => {
@@ -1965,7 +2155,7 @@ function PageDetail({ page, onBack, onUpdate }) {
         })
         onUpdate({ ...page, countries: updatedCountries }, true)
       } else { alert(res.message || '분기 상태 변경에 실패했습니다.') }
-    } catch (e) { console.warn('분기 close 실패', e) }
+    } catch (_) {}
   }, [page, user, onUpdate])
 
   const handleBranchDelete = useCallback(async (siteCode, branchName) => {
@@ -1982,7 +2172,7 @@ function PageDetail({ page, onBack, onUpdate }) {
         })
         onUpdate({ ...page, countries: updatedCountries }, true)
       } else { alert(res.message || '분기 삭제에 실패했습니다.') }
-    } catch (e) { console.warn('분기 삭제 실패', e) }
+    } catch (_) {}
   }, [page, onUpdate])
 
   const handleFileUpload = useCallback(async (siteCode, fileInfo) => {
@@ -2001,7 +2191,7 @@ function PageDetail({ page, onBack, onUpdate }) {
         uploadedBy: user?.name || user?.email || null,   // ← 추가
       })
       if (res.ok) dbId = res.id
-    } catch (e) { console.warn('파일 DB 저장 실패', e) }
+    } catch (_) {}
 
     const fileInfoWithId = { ...fileInfo, dbId, uploadedBy: user?.name || user?.email || null }
     const updatedCountries = page.countries.map(c => {
@@ -2034,7 +2224,7 @@ function PageDetail({ page, onBack, onUpdate }) {
     if (targetFile?.dbId) {
       try {
         await api.updateHistoryNote(targetFile.dbId, { noteAtUpload: newNote })
-      } catch (e) { console.warn('히스토리 메모 DB 저장 실패', e) }
+      } catch (_) {}
     }
   }, [page, onUpdate])
 
@@ -2054,12 +2244,12 @@ function PageDetail({ page, onBack, onUpdate }) {
         status: '',
         note: '',
       })
-    } catch (e) { console.warn('국가 추가 DB 저장 실패', e) }
+    } catch (_) {}
   }
 
   const removeCountry = async (code) => {
-    if (user?.position !== 'regular') {
-      alert('정규직만 국가를 제거할 수 있습니다.')
+    if (!isStaff(user?.position)) {
+      alert('권한이 없습니다.')
       return
     }
     if (!window.confirm(`${code} 국가를 이 페이지에서 제거하시겠습니까?`)) return
@@ -2067,7 +2257,7 @@ function PageDetail({ page, onBack, onUpdate }) {
     // DB에서 삭제
     try {
       await api.deleteTrackerStatus(page.id, code)
-    } catch (e) { console.warn('국가 상태 DB 삭제 실패', e) }
+    } catch (_) {}
 
     onUpdate({ ...page, countries: page.countries.filter(c => c.code !== code) }, true)
   }
@@ -2099,7 +2289,7 @@ function PageDetail({ page, onBack, onUpdate }) {
           
           <span className="cst-detail-date">생성: {page.createdAt?.slice(0, 10)}</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-            {user?.position === 'regular' && (
+            {isStaff(user?.position) && (
               <button
                 onClick={() => setShowBilling(true)}
                 style={{
@@ -2156,13 +2346,43 @@ function PageDetail({ page, onBack, onUpdate }) {
       </div>
 
       <div className="cst-filter-row">
-        <div className="cst-region-tabs">
-          {['ALL', ...REGIONS].map(r => (
-            <button key={r} className={`cc-region-btn ${regionFilter === r ? 'active' : ''}`}
-              style={regionFilter === r && r !== 'ALL' ? { background: REGION_COLORS[r], color: '#fff' } : {}}
-              onClick={() => setRegionFilter(r)}>{r}</button>
-          ))}
-        </div>
+        {/* 리전 탭 + 국가 검색 — 왼쪽 그룹 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div className="cst-region-tabs">
+            {['ALL', ...REGIONS].map(r => (
+              <button key={r} className={`cc-region-btn ${regionFilter === r ? 'active' : ''}`}
+                style={regionFilter === r && r !== 'ALL' ? { background: REGION_COLORS[r], color: '#fff' } : {}}
+                onClick={() => setRegionFilter(r)}>{r}</button>
+            ))}
+          </div>
+
+          {/* 국가 검색 필터 */}
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+          <span style={{ position: 'absolute', left: 9, color: '#9ca3af', fontSize: 13, pointerEvents: 'none' }}>🔍</span>
+          <input
+            type="text"
+            value={countrySearch}
+            onChange={e => setCountrySearch(e.target.value)}
+            placeholder="국가 검색"
+            style={{
+              paddingLeft: 28, paddingRight: countrySearch ? 26 : 10,
+              height: 30, fontSize: 12, borderRadius: 7,
+              border: '1px solid #e5e7eb', outline: 'none', width: 140,
+              background: '#fff',
+            }}
+          />
+          {countrySearch && (
+            <button
+              onClick={() => setCountrySearch('')}
+              style={{
+                position: 'absolute', right: 7, background: 'none', border: 'none',
+                cursor: 'pointer', color: '#9ca3af', fontSize: 14, padding: 0, lineHeight: 1,
+              }}
+              title="검색 초기화"
+            >✕</button>
+          )}
+          </div>{/* 검색 인풋 끝 */}
+        </div>{/* 왼쪽 그룹 끝 */}
 
         <div className="cst-add-country-wrap" ref={dropRef}>
           <button
@@ -2304,7 +2524,7 @@ function PageDetail({ page, onBack, onUpdate }) {
               <th className="cst-th" style={{ width: 160 }}>국가</th>
               <th className="cst-th" style={{ width: 220 }}>카피 작업 상태</th>
               <th className="cst-th">첨부 파일 (업로드 당시 상태 기록)</th>
-              <th className="cst-th" style={{ width: 180 }}>메모</th>
+              <th className="cst-th" style={{ width: 300 }}>메모</th>
               <th className="cst-th" style={{ width: 40 }}></th>
             </tr>
           </thead>
@@ -2327,9 +2547,10 @@ function PageDetail({ page, onBack, onUpdate }) {
                 handleBranchClose={handleBranchClose}
                 handleBranchDelete={handleBranchDelete}
                 removeCountry={removeCountry}
-                isRegular={user?.position === 'regular'}
+                isRegular={isStaff(user?.position)}
                 pageId={page.id}
                 initialStatusHistory={entry?.statusHistoryItems ?? null}
+                historyBump={historyBumpMap[site.code] || 0}
               />
             )
           })}
@@ -2475,7 +2696,7 @@ function PageCard({ page, onSelect, onDelete, onRename, onRequestDuplicate, user
   const unset = page.countries.filter(c => !c.status).length
   const currentFolder = folders.find(f => f.id === page.folder_id)
 
-  const menuItems = user?.position === 'regular' ? [
+  const menuItems = isStaff(user?.position) ? [
     {
       icon: '✏️', label: '이름 바꾸기',
       action: () => setRenaming(true),
@@ -2649,7 +2870,7 @@ function FolderBlock({ folder, pages, onSelect, onDelete, onRename, onRequestDup
   )
 }
 
-export default function StatusTab() {
+export default function StatusTab({ resetKey }) {
   const { dbReady } = useDB()
   const { user } = useAuth()
   const [pages, setPages] = useState([])
@@ -2666,6 +2887,12 @@ export default function StatusTab() {
   const [showNewFolder, setShowNewFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [duplicateTarget, setDuplicateTarget] = useState(null) // 복제 모달 대상 페이지
+
+  // 상단 네비게이션의 "Status" 탭을 이미 이 탭에 있는 상태에서 다시 클릭하면
+  // (App.jsx에서 resetKey가 증가) 프로젝트 상세 화면에 있어도 페이지 목록으로 돌아감
+  useEffect(() => {
+    if (resetKey) setSelectedPageId(null)
+  }, [resetKey])
 
   // ── 초기 로드: DB 우선, 실패 시 localStorage fallback ──────
   // ── 초기 로드: 목록 화면에서도 전체 상태(Status)를 한 번에 파악 ──────
@@ -2819,7 +3046,7 @@ export default function StatusTab() {
 
   const deletePage = useCallback(async (page, e) => {
     e.stopPropagation()
-    if (user?.position !== 'regular') { alert('정규직만 페이지를 삭제할 수 있습니다.'); return }
+    if (!isStaff(user?.position)) { alert('권한이 없습니다.'); return }
     if (!window.confirm(`"${page.name}" 페이지를 삭제하시겠습니까?\n페이지 내 모든 상태·파일 데이터가  삭제됩니다.`)) return
     try {
       const res = await api.deleteTrackerPage(page.id)
@@ -2841,7 +3068,7 @@ export default function StatusTab() {
 
   // ── 프로젝트(페이지) 복사 ─────────────────────────────────────
   const duplicatePage = useCallback(async (page, options = {}) => {
-    if (user?.position !== 'regular') { alert('정규직만 프로젝트를 복사할 수 있습니다.'); return }
+    if (!isStaff(user?.position)) { alert('권한이 없습니다.'); return }
     // options 기본값: 전부 true (기존 직접 호출 호환)
     const opt = {
       countries: true, status: true, files: true, statusHistory: true, branches: true, billing: true,
@@ -2901,7 +3128,7 @@ export default function StatusTab() {
               const fr = await fetch(`http://localhost:4000/api/files/${f.id}/data`)
               const fd = await fr.json()
               dataUrl = fd?.ok ? (fd.data?.data_url || null) : null
-            } catch (e) { console.warn('파일 데이터 조회 실패', f.id, e) }
+            } catch (_) {}
             if (!dataUrl) return
             await api.saveFile({
               pageId: newPageId,
@@ -2980,7 +3207,7 @@ export default function StatusTab() {
                 const dataUrl = fd?.ok ? (fd.data?.data_url || null) : null
                 if (!dataUrl) continue
                 await api.uploadBillingFile(newBillingId, { name: f.name, size: f.size, dataUrl })
-              } catch (e) { console.warn('정산 첨부파일 복사 실패', f.id, e) }
+              } catch (_) {}
             }
           })
         )
@@ -3080,7 +3307,7 @@ export default function StatusTab() {
               }}
             >📋 전체 뷰</button>
           </div>
-          {user?.position === 'regular' && viewMode === 'folder' && (
+          {isStaff(user?.position) && viewMode === 'folder' && (
             <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setShowNewFolder(true)}>+ 새 폴더</button>
           )}
           <button className="btn-primary" onClick={() => setShowNewPage(true)}>+ 새 페이지</button>
@@ -3129,7 +3356,7 @@ export default function StatusTab() {
               {...sharedCardProps}
               onRenameFolder={renameFolder}
               onDeleteFolder={deleteFolder}
-              isRegular={user?.position === 'regular'}
+              isRegular={isStaff(user?.position)}
             />
           ))}
 

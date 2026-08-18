@@ -118,4 +118,5 @@ export const api = window.electronAPI || {
   mergeUpsertCountry:  (projectId, body)              => call('POST',   `/api/merge/projects/${projectId}/countries`, body),
   mergeDeleteCountry:  (projectId, countryId)         => call('DELETE', `/api/merge/projects/${projectId}/countries/${countryId}`),
   mergeGetCountryHistory: (projectId, countryId)       => call('GET',    `/api/merge/projects/${projectId}/countries/${countryId}/history`),
+  mergeParseExcel:     (body)     => call('POST',   '/api/merge/parse-excel', body),
 }

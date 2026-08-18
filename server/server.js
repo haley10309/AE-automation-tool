@@ -15,7 +15,15 @@ require('dotenv').config();
 
 const express = require('express');
 const cors    = require('cors');
+const http    = require('http');
+const { Server } = require('socket.io');
 const { initPool } = require('./db');
+const { setIO } = require('./routes/realtime');
+const { setDataDir } = require('./paths');
+
+// db-environments.json 등 로컬 데이터 파일이 실제 exe 위치에 저장되도록,
+// 진입점 스크립트(server.js)의 안전한 __dirname을 공유 모듈에 주입
+setDataDir(__dirname);
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
@@ -37,6 +45,7 @@ const countryRouter = require('./routes/country');
 const statusRouter  = require('./routes/status');
 const mergeRouter   = require('./routes/merge');
 const serviceRouter = require('./routes/service');
+const adminRouter   = require('./routes/admin');
 
 app.use('/api',          initRouter);     // POST /api/connect, /api/init
 app.use('/api/auth',     authRouter);     // POST /api/auth/register, /login, GET /me
@@ -46,6 +55,7 @@ app.use('/api/cc',       countryRouter);  // /api/cc/projects, /copies, /dnt, /l
 app.use('/api',          statusRouter);   // /api/tracker/*, /api/files
 app.use('/api/merge',    mergeRouter);    // /api/merge/projects, /countries, /history
 app.use('/api/services', serviceRouter);  // /api/services
+app.use('/api/admin',    adminRouter);    // /api/admin/users, /environments (관리자 전용)
 
 // ── 정적 파일 & SPA fallback ──────────────────────────────────
 const clientDist = process.env.CLIENT_DIST_PATH
@@ -58,7 +68,27 @@ if (fs.existsSync(clientDist)) {
   );
 }
 
-// ── 서버 실행 ─────────────────────────────────────────────────
-app.listen(PORT, () =>
+// ── 서버 실행 (HTTP + Socket.io) ─────────────────────────────
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: { origin: '*' },
+});
+
+io.on('connection', (socket) => {
+  // 클라이언트가 특정 프로젝트(pageId) 화면을 열면 해당 room에 join
+  socket.on('page:join', (pageId) => {
+    if (!pageId) return;
+    socket.join(`page-${pageId}`);
+  });
+  socket.on('page:leave', (pageId) => {
+    if (!pageId) return;
+    socket.leave(`page-${pageId}`);
+  });
+});
+
+setIO(io);
+
+server.listen(PORT, () =>
   console.log(`✅ 서버 안 실행 중: http://localhost:${PORT}`)
 );
