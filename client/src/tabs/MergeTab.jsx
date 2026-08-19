@@ -1195,7 +1195,12 @@ function ExcelImportModal({ onClose, onApply }) {
 
   const handleApply = () => {
     if (!canApply) return
-    const norm = v => (v ?? '').toString().trim()
+    // 셀 안에 Alt+Enter 줄바꿈(\n, \r\n)이 있으면 공백으로 치환한다.
+    // 이 아래에서 행과 행 사이를 '\n'으로 join해 하나의 텍스트로 만들고,
+    // 이후 parseEnLines/parseConfirmedPaste가 그 텍스트를 다시 '\n' 기준으로
+    // 쪼개 "줄 = 행"으로 취급하기 때문에, 셀 내부 줄바꿈을 남겨두면
+    // 원래 한 행(한 셀)이 여러 행으로 쪼개져 국가별 매핑이 밀려버린다.
+    const norm = v => (v ?? '').toString().replace(/\r\n|\r|\n/g, ' ').trim()
     const validRows = grid.slice(dataStartRow).filter(row => norm(row[originalCopyColIndex]) !== '')
     const enLines = validRows.map(row => norm(row[originalCopyColIndex])).join('\n')
 
