@@ -1990,6 +1990,11 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
 
               <div>
                 {/* ── 검색 바 ── */}
+                {/* 국가별 검색창은 여기서 나열하면 국가가 많을 때(최대 40개국)
+                    한 줄에 다 못 들어가 계속 줄바꿈되며 세로 공간을 과도하게
+                    차지했다. 국가별 검색창은 테이블 헤더(각 국가 컬럼) 안으로
+                    옮겨서 테이블과 함께 가로 스크롤되도록 하고, 여기에는
+                    전체 검색창만 남긴다. */}
                 <div style={{ display: 'flex', gap: 8, margin: '10px 0', flexWrap: 'wrap', alignItems: 'center' }}>
                   <div style={{ position: 'relative', flex: '1 1 220px', maxWidth: 340 }}>
                     <span style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', color: '#9ca3af', fontSize: 13 }}>🔍</span>
@@ -2001,21 +2006,6 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
                       onChange={e => { setGlobalSearch(e.target.value); setPerCountrySearch({}) }}
                     />
                   </div>
-                  {activeCountries.map(c => (
-                    <div key={c.id} style={{ position: 'relative', flex: '0 1 180px' }}>
-                      <span style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', color: '#9ca3af', fontSize: 11 }}>🔍</span>
-                      <input
-                        className="form-input"
-                        style={{ paddingLeft: 24, fontSize: 12, width: '100%', boxSizing: 'border-box' }}
-                        placeholder={`${c.label} 검색`}
-                        value={perCountrySearch[c.id] ?? ''}
-                        onChange={e => {
-                          setGlobalSearch('')
-                          setPerCountrySearch(prev => ({ ...prev, [c.id]: e.target.value }))
-                        }}
-                      />
-                    </div>
-                  ))}
                   {(globalSearch || Object.values(perCountrySearch).some(v => v)) && (
                     <button className="act-btn act-cancel" style={{ fontSize: 12, whiteSpace: 'nowrap' }}
                       onClick={() => { setGlobalSearch(''); setPerCountrySearch({}) }}>
@@ -2036,7 +2026,24 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
                         <th className="cc-th cc-th-idx">#</th>
                         <th className="cc-th mg-th-en">EN (기준)</th>
                         {activeCountries.map(c => (
-                          <th key={c.id} className="cc-th mg-th-local">{c.label}</th>
+                          <th key={c.id} className="cc-th mg-th-local">
+                            <div className="cc-th-inner">
+                              <span className="cc-th-name">{c.label}</span>
+                              <div className="mg-th-search">
+                                <span className="mg-th-search-icon">🔍</span>
+                                <input
+                                  className="mg-th-search-input"
+                                  placeholder="검색"
+                                  value={perCountrySearch[c.id] ?? ''}
+                                  onClick={e => e.stopPropagation()}
+                                  onChange={e => {
+                                    setGlobalSearch('')
+                                    setPerCountrySearch(prev => ({ ...prev, [c.id]: e.target.value }))
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          </th>
                         ))}
                       </tr>
                     </thead>
