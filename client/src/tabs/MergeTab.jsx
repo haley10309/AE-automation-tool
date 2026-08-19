@@ -57,6 +57,30 @@ function mapLocals(baseEnLines, confirmedPairs) {
   })
 }
 /**
+ * parseConfirmedPaste() 결과(pairs)를 EN 키 등장 순서대로 하나씩 꺼내주는 컨슈머.
+ * 엑셀 재업로드(합집합 병합) 시, "이 EN 행에 대해 새로 업로드된 로컬 값이 있는가?"를
+ * 물어볼 때 사용 — 없으면 undefined를 반환해 "새 파일에 이 행 자체가 없음"과
+ * "새 파일에 값이 있지만 빈 칸"을 구분할 수 있게 한다.
+ */
+function makePairConsumer(pairs) {
+  const queue = {}
+  pairs.forEach(({ en, local }) => {
+    const key = en.trim()
+    if (!queue[key]) queue[key] = []
+    queue[key].push(local)
+  })
+  const cursor = {}
+  return (en) => {
+    const key = en.trim()
+    const list = queue[key]
+    if (!list) return undefined
+    const idx = cursor[key] ?? 0
+    if (idx >= list.length) return undefined
+    cursor[key] = idx + 1
+    return list[idx]
+  }
+}
+/**
  * 모달이 필요한 두 가지 케이스를 감지
  *
  * ── 케이스 A : EN이 baseEnLines에 N행(N>1) 존재 + paste local이 그보다 적게 들어온 경우
@@ -525,6 +549,129 @@ function DuplicateResolveModal({ duplicates, countryLabel, onResolve, onCancel }
             padding: '8px 24px', borderRadius: 8, border: 'none',
             background: '#6366f1', color: '#fff', fontSize: 14, cursor: 'pointer', fontWeight: 700,
           }}>✅ 선택 완료 — Merge 진행</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════
+// 엑셀 재업로드(합집합 병합) 충돌 해결 모달
+// ════════════════════════════════════════════════════════════════
+/**
+ * 이미 Merge 결과가 있는 프로젝트에 엑셀을 다시 업로드했을 때,
+ * "기존에 값이 있고 + 새 파일 값도 있는데 + 서로 다른" 항목(진짜 충돌)만 모아
+ * 사용자가 항목별로 기존 유지 / 새 카피로 교체를 선택하게 한다.
+ * (완전히 새로운 국가·새로운 EN 행이나, 기존이 비어 있던 칸은 충돌이 아니라
+ *  자동으로 합집합 처리되므로 이 모달에 나타나지 않는다.)
+ *
+ * conflicts: [{ countryId, countryLabel, rowIndex, en, existingLocal, newLocal }]
+ * onConfirm(choices) — choices: { [conflictIndex]: 'keep' | 'replace' }
+ * onCancel()
+ */
+function ImportConflictModal({ conflicts, onConfirm, onCancel }) {
+  const [choices, setChoices] = useState(
+    Object.fromEntries(conflicts.map((_, i) => [i, 'keep']))
+  )
+  const setAll = (value) => setChoices(Object.fromEntries(conflicts.map((_, i) => [i, value])))
+  const setOne = (i, value) => setChoices(prev => ({ ...prev, [i]: value }))
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 9999,
+      background: 'rgba(0,0,0,0.55)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: 24,
+    }}>
+      <div style={{
+        background: '#fff', borderRadius: 14,
+        width: '100%', maxWidth: 860,
+        maxHeight: '88vh', display: 'flex', flexDirection: 'column',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+        overflow: 'hidden',
+      }}>
+        {/* 헤더 */}
+        <div style={{
+          padding: '18px 24px 14px', borderBottom: '1px solid #e5e7eb',
+          display: 'flex', alignItems: 'flex-start', gap: 12,
+        }}>
+          <span style={{ fontSize: 24 }}>⚠️</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: '#111827' }}>
+              겹치는 카피 확인 필요 ({conflicts.length}건)
+            </div>
+            <div style={{ fontSize: 13, color: '#6b7280', marginTop: 4 }}>
+              기존 카피와 새로 업로드한 엑셀의 내용이 서로 다른 항목입니다. 항목별로 유지할지 교체할지 선택해주세요.
+              (겹치지 않는 새 국가·새 항목은 이미 자동으로 추가됩니다)
+            </div>
+          </div>
+          <button onClick={onCancel} style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            fontSize: 20, color: '#9ca3af', lineHeight: 1, padding: 0,
+          }}>✕</button>
+        </div>
+
+        {/* 전체 일괄 선택 */}
+        <div style={{ padding: '10px 24px', borderBottom: '1px solid #f0f1f3', display: 'flex', gap: 8 }}>
+          <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setAll('keep')}>전체 기존 카피 유지</button>
+          <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setAll('replace')}>전체 새 카피로 교체</button>
+        </div>
+
+        {/* 본문 */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {conflicts.map((c, i) => (
+            <div key={i} style={{ borderRadius: 10, border: '1.5px solid #e5e7eb', overflow: 'hidden' }}>
+              <div style={{
+                background: '#f9fafb', padding: '8px 12px', borderBottom: '1px solid #e5e7eb',
+                display: 'flex', gap: 8, alignItems: 'center',
+              }}>
+                <span style={{
+                  background: '#2563eb', color: '#fff', borderRadius: 4,
+                  fontSize: 10, fontWeight: 700, padding: '2px 7px', whiteSpace: 'nowrap',
+                }}>{c.countryLabel}</span>
+                <span style={{ fontSize: 12, color: '#111827', fontWeight: 600, flex: 1, wordBreak: 'break-word' }}>
+                  {c.en.length > 90 ? c.en.slice(0, 90) + '…' : c.en}
+                </span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
+                <label style={{
+                  padding: '10px 12px', borderRight: '1px solid #f0f1f3', cursor: 'pointer',
+                  background: choices[i] === 'keep' ? '#eef2ff' : '#fff',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                    <input type="radio" checked={choices[i] === 'keep'} onChange={() => setOne(i, 'keep')} />
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#4f46e5' }}>기존 유지</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#374151', whiteSpace: 'pre-wrap' }}>{c.existingLocal}</div>
+                </label>
+                <label style={{
+                  padding: '10px 12px', cursor: 'pointer',
+                  background: choices[i] === 'replace' ? '#eef2ff' : '#fff',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                    <input type="radio" checked={choices[i] === 'replace'} onChange={() => setOne(i, 'replace')} />
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#16a34a' }}>새 카피로 교체</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#374151', whiteSpace: 'pre-wrap' }}>{c.newLocal}</div>
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* 푸터 */}
+        <div style={{
+          padding: '14px 24px', borderTop: '1px solid #e5e7eb',
+          display: 'flex', justifyContent: 'flex-end', gap: 10, background: '#f9fafb',
+        }}>
+          <button onClick={onCancel} style={{
+            padding: '8px 20px', borderRadius: 8, border: '1.5px solid #d1d5db',
+            background: '#fff', color: '#374151', fontSize: 14, cursor: 'pointer', fontWeight: 500,
+          }}>취소</button>
+          <button onClick={() => onConfirm(choices)} style={{
+            padding: '8px 24px', borderRadius: 8, border: 'none',
+            background: '#6366f1', color: '#fff', fontSize: 14, cursor: 'pointer', fontWeight: 700,
+          }}>✅ 선택 적용 후 저장</button>
         </div>
       </div>
     </div>
@@ -1446,6 +1593,10 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
   const [patchDupModal, setPatchDupModal] = useState(null)
   // patchDupModal = { queue, queueIdx, pendingMatrix, pendingPatched }
 
+  // ── 엑셀 재업로드(합집합 병합) 충돌 모달 상태 ─────────────────
+  const [importConflictModal, setImportConflictModal] = useState(null)
+  // importConflictModal = { conflicts, unionEnLines, matrix, activeCountries }
+
   // 상세 로드 — 저장된 결과가 있으면 바로 테이블 표시
   const load = useCallback(async () => {
     setLoading(true)
@@ -1511,31 +1662,195 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
 
   // ── [신규] 엑셀 일괄 가져오기 ────────────────────────────────
   const [showExcelImport, setShowExcelImport] = useState(false)
-  const applyExcelImport = (enLinesJoined, countryPasteMap) => {
-    if (enInput.trim() && !window.confirm('기존 기준 영문 카피가 있습니다. 덮어쓸까요?')) return
-    setEnInput(enLinesJoined)
+  /**
+   * 엑셀 재업로드 시 기존 Merge 결과와 합집합 병합을 계산한다.
+   * (mergeResult가 있을 때만 호출됨 — 즉 이미 한 번 Merge 실행/저장된 프로젝트)
+   *
+   *  - 기존에 없던 EN 행(새 카피)      → 그대로 뒤에 추가 (합집합, 충돌 아님)   [경우 1, 3]
+   *  - 기존에 없던 국가(새 카피덱)      → 국가 카드 새로 추가, 충돌 없이 매핑    [경우 1, 3]
+   *  - 기존 행인데 그 국가 값이 비어있음 → 새 값으로 채움 (합집합, 충돌 아님)    [경우 1, 3]
+   *  - 기존 행 + 값 있음 + 새 값도 있음 + 서로 다름 → 충돌 목록에 수집          [경우 2]
+   *  - 새 파일에 해당 행 자체가 없거나 빈 칸 → 기존 값 그대로 유지
+   */
+  const buildExcelUnionMerge = (newEnLinesJoined, countryPasteMap) => {
+    const newEnLines = parseEnLines(newEnLinesJoined)
+    const existingBase = mergeResult.baseEnLines
+    const existingSet = new Set(existingBase.map(en => en.trim()))
 
-    const skippedSaved = []
-    setCountries(prev => {
-      const next = [...prev]
-      let seq = idSeq
-      Object.entries(countryPasteMap).forEach(([code, rawPaste]) => {
-        const idx = next.findIndex(c => (c.label || '').toUpperCase() === code.toUpperCase())
-        if (idx !== -1) {
-          if (next[idx].isSaved) { skippedSaved.push(code); return }
-          next[idx] = { ...next[idx], rawPaste }
-        } else {
-          const id = `new_${seq}`; seq += 1
-          next.push({ id, dbId: null, label: code, rawPaste, mappedJson: null, isSaved: false })
-        }
-      })
-      setIdSeq(seq)
-      return next
+    // 기존에 없는 새 EN 행만 순서 유지 + 중복 제거해서 뒤에 이어붙임
+    const seenNew = new Set()
+    const appendedEn = []
+    newEnLines.forEach(en => {
+      const key = en.trim()
+      if (existingSet.has(key) || seenNew.has(key)) return
+      seenNew.add(key)
+      appendedEn.push(en)
     })
-    setShowExcelImport(false)
-    if (skippedSaved.length) {
-      alert(`이미 저장된 국가는 덮어쓰지 않았습니다: ${skippedSaved.join(', ')}\n(수정하려면 "국가별 추가 카피"를 사용하세요)`)
+    const unionEnLines = [...existingBase, ...appendedEn]
+
+    const matrix = {}
+    const conflicts = []
+    const touchedIds = new Set()
+    let seq = idSeq
+    const activeCountries = [...countries]
+
+    Object.entries(countryPasteMap).forEach(([code, rawPaste]) => {
+      const pairs = parseConfirmedPaste(rawPaste)
+      if (pairs.length === 0) return
+      const consume = makePairConsumer(pairs)
+
+      let matched = activeCountries.find(c => (c.label || '').toUpperCase() === code.toUpperCase())
+      if (!matched) {
+        const id = `new_${seq}`; seq += 1
+        matched = { id, dbId: null, label: code, rawPaste: '', mappedJson: null, isSaved: false }
+        activeCountries.push(matched)
+      }
+      touchedIds.add(matched.id)
+
+      const existingRows = mergeResult.matrix[matched.id] || []
+      matrix[matched.id] = unionEnLines.map((en, i) => {
+        const existingLocal = (existingRows[i]?.local ?? '').trim()
+        const newLocal = consume(en)
+        const newLocalTrim = (newLocal ?? '').trim()
+
+        if (newLocal === undefined || newLocalTrim === '') {
+          // 새 파일에 이 행에 대한 값이 없음 → 기존 값 그대로 유지
+          return { en, local: existingRows[i]?.local ?? '', missing: !(existingRows[i]?.local) }
+        }
+        if (!existingLocal) {
+          // 기존이 비어있음(새 국가 포함) → 채움. 충돌 아님
+          return { en, local: newLocal, missing: false }
+        }
+        if (existingLocal === newLocalTrim) {
+          // 내용이 같음 → 그대로
+          return { en, local: existingRows[i].local, missing: false }
+        }
+        // 기존 값과 새 값이 서로 다름 → 충돌 — 사용자 확인 필요
+        conflicts.push({
+          countryId: matched.id, countryLabel: matched.label,
+          rowIndex: i, en, existingLocal: existingRows[i].local, newLocal,
+        })
+        // 확인 전까지는 잠정적으로 기존 값 유지 (모달에서 선택되면 교체됨)
+        return { en, local: existingRows[i].local, missing: false }
+      })
+    })
+
+    // 이번에 건드리지 않은 기존 국가들도 합집합 행 수만큼 차원만 맞춰준다
+    activeCountries.forEach(c => {
+      if (touchedIds.has(c.id)) return
+      const existingRows = mergeResult.matrix[c.id] || []
+      matrix[c.id] = unionEnLines.map((en, i) => existingRows[i] ?? { en, local: '', missing: true })
+    })
+
+    setIdSeq(seq)
+    return { unionEnLines, matrix, conflicts, activeCountries }
+  }
+
+  // ── 엑셀 재업로드 실제 저장 (충돌 해결 후, 또는 충돌 없으면 바로 호출) ──
+  const commitExcelReimport = useCallback(async (unionEnLines, matrix, activeCountries) => {
+    setSaving(true)
+    setError('')
+    try {
+      const enLinesJoined = unionEnLines.join('\n')
+
+      // DNT 이슈 재계산
+      const dntIssues = []
+      activeCountries.forEach(c => {
+        (matrix[c.id] || []).forEach((m, i) => {
+          if (!m.local || m.missing) return
+          const issues = checkDNT(m.en, m.local, products)
+          if (issues.length) dntIssues.push({ countryLabel: c.label, row: i + 1, enText: m.en, issues })
+        })
+      })
+
+      setEnInput(enLinesJoined)
+      setMergeResult({ matrix, dntIssues, missingWarns: [], baseEnLines: unionEnLines, activeCountries })
+
+      await api.mergeUpdateProject(project.id, { enLines: enLinesJoined })
+
+      const savedCountries = []
+      for (const c of activeCountries) {
+        const rows = matrix[c.id] || []
+        const rawPaste = rows.map(r => `${r.en}\t${r.local}`).join('\n')
+        const mappedJson = JSON.stringify(rows)
+        const res = await api.mergeUpsertCountry(project.id, {
+          countryId: c.dbId || null, label: c.label, rawPaste, mappedJson,
+        })
+        savedCountries.push({
+          ...c,
+          dbId: res.ok ? (res.id ?? c.dbId) : c.dbId,
+          rawPaste, mappedJson,
+          isSaved: res.ok ? true : c.isSaved,
+        })
+        if (pasteRef.current[c.id]) pasteRef.current[c.id].value = rawPaste
+      }
+      setCountries(savedCountries)
+      onUpdated()
+      await load()
+    } catch (e) {
+      console.error(e)
+      setError('엑셀 재업로드 병합 저장 중 오류가 발생했습니다.')
+    } finally {
+      setSaving(false)
     }
+  }, [project.id, products, onUpdated, load])
+
+  const handleImportConflictConfirm = (choices) => {
+    const { conflicts, unionEnLines, matrix, activeCountries } = importConflictModal
+    const finalMatrix = { ...matrix }
+    conflicts.forEach((c, i) => {
+      const rows = [...(finalMatrix[c.countryId] || [])]
+      const choice = choices[i] ?? 'keep'
+      rows[c.rowIndex] = choice === 'replace'
+        ? { en: c.en, local: c.newLocal.trim(), missing: !c.newLocal.trim() }
+        : { en: c.en, local: c.existingLocal, missing: !c.existingLocal }
+      finalMatrix[c.countryId] = rows
+    })
+    setImportConflictModal(null)
+    commitExcelReimport(unionEnLines, finalMatrix, activeCountries)
+  }
+  const handleImportConflictCancel = () => setImportConflictModal(null)
+
+  const applyExcelImport = (enLinesJoined, countryPasteMap) => {
+    // 아직 Merge를 한 번도 실행하지 않은 상태 — 대조할 기존 결과가 없으므로
+    // 입력 칸(①②)에 그대로 채워 넣고, 이후 "Merge 실행" 시 정상적으로 반영된다.
+    if (!mergeResult) {
+      if (enInput.trim() && !window.confirm('기존 기준 영문 카피가 있습니다. 덮어쓸까요?')) return
+      setEnInput(enLinesJoined)
+
+      const overwritten = []
+      setCountries(prev => {
+        const next = [...prev]
+        let seq = idSeq
+        Object.entries(countryPasteMap).forEach(([code, rawPaste]) => {
+          const idx = next.findIndex(c => (c.label || '').toUpperCase() === code.toUpperCase())
+          if (idx !== -1) {
+            if (next[idx].rawPaste?.trim()) overwritten.push(code)
+            next[idx] = { ...next[idx], rawPaste }
+          } else {
+            const id = `new_${seq}`; seq += 1
+            next.push({ id, dbId: null, label: code, rawPaste, mappedJson: null, isSaved: false })
+          }
+        })
+        setIdSeq(seq)
+        return next
+      })
+      setShowExcelImport(false)
+      if (overwritten.length) {
+        alert(`이미 입력돼 있던 국가 카피를 덮어썼습니다: ${overwritten.join(', ')}\n(아직 Merge 실행 전이므로 자유롭게 다시 수정할 수 있습니다)`)
+      }
+      return
+    }
+
+    // Merge 결과가 이미 있는 상태 — 합집합 병합 + 충돌만 확인받고 바로 저장
+    const { unionEnLines, matrix, conflicts, activeCountries } = buildExcelUnionMerge(enLinesJoined, countryPasteMap)
+    setShowExcelImport(false)
+
+    if (conflicts.length > 0) {
+      setImportConflictModal({ conflicts, unionEnLines, matrix, activeCountries })
+      return
+    }
+    commitExcelReimport(unionEnLines, matrix, activeCountries)
   }
 
   // ── 추가 카피 핸들러 ───────────────────────────────────────
@@ -1932,6 +2247,15 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
           />
         )
       })()}
+
+      {/* ── 엑셀 재업로드 충돌 확인 모달 ── */}
+      {importConflictModal && (
+        <ImportConflictModal
+          conflicts={importConflictModal.conflicts}
+          onConfirm={handleImportConflictConfirm}
+          onCancel={handleImportConflictCancel}
+        />
+      )}
 
       {/* 헤더 */}
       <div className="mg-detail-header">
