@@ -2570,8 +2570,9 @@ function DotsMenu({ items }) {
   const btnRef = useRef(null)
   const menuRef = useRef(null)
 
-  // 메뉴 열 때 버튼 위치 기준으로 좌표 계산 (뷰포트 밖으로 안 나가게 보정)
-  const openMenu = () => {
+  // 버튼 위치 기준으로 메뉴 좌표 계산 (뷰포트 밖으로 안 나가게 보정)
+  const calcPos = () => {
+    if (!btnRef.current) return null
     const r = btnRef.current.getBoundingClientRect()
     const MENU_W = 170
     const MENU_MAX_H = 320
@@ -2581,7 +2582,11 @@ function DotsMenu({ items }) {
     if (left + MENU_W > window.innerWidth - 4) left = window.innerWidth - MENU_W - 4
     if (top + MENU_MAX_H > window.innerHeight - 4) top = r.top - MENU_MAX_H - 4 // 아래 공간 부족하면 위로 띄움
     if (top < 4) top = 4
-    setPos({ top, left })
+    return { top, left }
+  }
+
+  const openMenu = () => {
+    setPos(calcPos())
     setOpen(true)
   }
 
@@ -2593,14 +2598,19 @@ function DotsMenu({ items }) {
         menuRef.current && !menuRef.current.contains(e.target)
       ) setOpen(false)
     }
-    function handleScrollResize() { setOpen(false) }
+    // 목록이 스크롤되어도 메뉴를 닫지 않고 버튼을 따라 위치만 다시 계산한다
+    // (긴 폴더 목록처럼 스크롤이 있는 화면에서 메뉴가 사라지던 문제 수정)
+    function reposition() {
+      const next = calcPos()
+      if (next) setPos(next); else setOpen(false)
+    }
     document.addEventListener('mousedown', handle)
-    window.addEventListener('scroll', handleScrollResize, true)
-    window.addEventListener('resize', handleScrollResize)
+    window.addEventListener('scroll', reposition, true)
+    window.addEventListener('resize', reposition)
     return () => {
       document.removeEventListener('mousedown', handle)
-      window.removeEventListener('scroll', handleScrollResize, true)
-      window.removeEventListener('resize', handleScrollResize)
+      window.removeEventListener('scroll', reposition, true)
+      window.removeEventListener('resize', reposition)
     }
   }, [open])
 

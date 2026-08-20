@@ -978,10 +978,74 @@ mark.diff-ins {
 .mg-td-local { min-width: 200px; max-width: 320px; }
 .mg-local-text { display: block; font-size: 12.5px; color: var(--text); line-height: 1.5; word-break: break-word; }
 .mg-cell-missing { background: #fef2f2 !important; }
-.mg-missing-badge {
-  display: inline-block; font-size: 11px; font-weight: 700;
-  color: #991b1b; background: #fee2e2; border-radius: 4px; padding: 2px 7px;
+.mg-cell-tbd { background: #fffbeb !important; }
+.mg-cell-dim { opacity: .35; }
+.mg-tbd-badge {
+  display: inline-block; font-size: 10px; font-weight: 700;
+  color: #92400e; background: #fef3c7; border: 1px solid #fcd34d;
+  border-radius: 4px; padding: 2px 6px; margin-top: 4px;
 }
+.mg-url-badge {
+  display: block; font-size: 10px; color: #1e40af; background: #eff6ff;
+  border: 1px solid #93c5fd; border-radius: 4px; padding: 3px 6px;
+  margin-top: 4px; word-break: break-all;
+}
+.mg-excel-import-btn { border-color: #c7d2fe; color: #4f46e5; }
+.mg-excel-import-btn:hover { background: #eef2ff; }
+
+/* ── 셀 직접 편집(contentEditable) ─────────────────────────────
+   텍스트 붙여넣기 흐름을 버리고, 셀을 클릭해 바로 고치는 방식으로 전환.
+   빈 셀은 placeholder 문구로 "여기 채워야 함"을 알려준다. */
+.mg-en-text[contenteditable], .mg-local-text[contenteditable] {
+  outline: none; cursor: text; min-height: 1.4em; border-radius: 5px;
+  padding: 2px 4px; margin: -2px -4px;
+}
+.mg-en-text[contenteditable]:hover, .mg-local-text[contenteditable]:hover {
+  background: rgba(99,102,241,0.07);
+}
+.mg-en-text[contenteditable]:focus, .mg-local-text[contenteditable]:focus {
+  background: #fff; box-shadow: 0 0 0 2px #6366f1;
+}
+.mg-en-text[contenteditable]:empty::before,
+.mg-local-text[contenteditable]:empty::before {
+  content: '클릭하여 입력'; color: var(--text3); font-style: italic; font-weight: 400;
+}
+
+/* ── 행/국가 삭제 버튼 ─────────────────────────────────────── */
+.cc-td-idx { position: relative; }
+.mg-row-del-btn {
+  position: absolute; right: 2px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; cursor: pointer; color: var(--text3);
+  font-size: 10px; padding: 2px 4px; border-radius: 4px; opacity: 0;
+  transition: opacity .15s;
+}
+.cc-table tbody tr:hover .mg-row-del-btn { opacity: 1; }
+.mg-row-del-btn:hover { color: #dc2626; background: #fee2e2; }
+
+.cc-th-name { display: inline-flex; align-items: center; gap: 4px; }
+.mg-country-del-btn, .mg-country-hist-btn {
+  background: none; border: none; cursor: pointer; color: var(--text3);
+  font-size: 11px; padding: 1px 3px; border-radius: 4px; line-height: 1;
+}
+.mg-country-del-btn:hover { color: #dc2626; background: #fee2e2; }
+.mg-country-hist-btn:hover { color: #4f46e5; background: #eef2ff; }
+
+/* ── 툴바 / 저장 상태 ──────────────────────────────────────── */
+.mg-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 14px 0; }
+.mg-save-status {
+  font-size: 12px; color: var(--text3); white-space: nowrap;
+  margin-left: auto; padding: 4px 0;
+}
+.mg-save-status.is-saving { color: #6366f1; font-weight: 600; }
+.mg-save-status.is-error  { color: #dc2626; font-weight: 700; }
+
+.mg-empty-grid-state {
+  padding: 60px 24px; text-align: center; border: 1.5px dashed var(--border);
+  border-radius: 12px; margin-top: 14px; color: var(--text2);
+}
+.mg-empty-grid-state .empty-icon { font-size: 32px; margin-bottom: 8px; }
+.mg-empty-grid-state p { font-size: 15px; font-weight: 600; color: var(--text); margin: 4px 0; }
+.mg-empty-grid-state small { font-size: 13px; color: var(--text3); }
  
 /* ══════════════════════════════════════════════════════════════
    MergeTab — 목록·상세·히스토리 드로어
@@ -1016,6 +1080,20 @@ mark.diff-ins {
 .mg-proj-card-date { font-size:11px; color:#9ca3af; }
 .mg-proj-card-arrow { font-size:12px; color:#6366f1; font-weight:600; margin-top:4px; align-self:flex-end; }
 .mg-proj-badge { font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; background:#ede9fe; color:#6d28d9; white-space:nowrap; }
+
+/* ── 프로젝트 폴더 블록 (StatusTab의 FolderBlock과 동일한 패턴) ── */
+.mg-folder-block {
+  margin-bottom: 16px; border: 1px solid var(--border); border-radius: 12px;
+  overflow: hidden; background: var(--surface2); box-shadow: 0 1px 3px rgba(0,0,0,.04);
+}
+.mg-folder-header {
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+  background: var(--surface2); user-select: none; border-bottom: 1px solid var(--border);
+}
+.mg-folder-caret { font-size: 13px; transition: transform .2s; display: inline-block; cursor: pointer; color: var(--text2); }
+.mg-folder-name { font-weight: 600; font-size: 14px; color: var(--text); flex: 1; cursor: pointer; }
+.mg-folder-count { font-size: 12px; color: var(--text3); flex-shrink: 0; }
+.mg-folder-body { padding: 16px; }
  
 /* ── 상세 뷰 ────────────────────────────────────────────────── */
 .mg-detail-view { display:flex; flex-direction:column; gap:18px; }

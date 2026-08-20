@@ -114,6 +114,13 @@ export const api = window.electronAPI || {
   mergeDeleteProject:  (id)       => call('DELETE', `/api/merge/projects/${id}`),
   mergeGetProject:     (id)       => call('GET',    `/api/merge/projects/${id}`),
 
+  // Merge 폴더 (StatusTab의 tracker 폴더와 동일한 패턴)
+  mergeGetFolders:          ()           => call('GET',    '/api/merge/folders'),
+  mergeCreateFolder:        (body)       => call('POST',   '/api/merge/folders', body),
+  mergeUpdateFolder:        (id, body)   => call('PUT',    `/api/merge/folders/${id}`, body),
+  mergeDeleteFolder:        (id)         => call('DELETE', `/api/merge/folders/${id}`),
+  mergeMoveProjectToFolder: (id, body)   => call('PUT',    `/api/merge/projects/${id}/folder`, body),
+
   // 국가별 카피 (프로젝트 내)
   mergeUpsertCountry:  (projectId, body)              => call('POST',   `/api/merge/projects/${projectId}/countries`, body),
   mergeDeleteCountry:  (projectId, countryId)         => call('DELETE', `/api/merge/projects/${projectId}/countries/${countryId}`),
