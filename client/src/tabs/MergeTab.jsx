@@ -5,12 +5,14 @@
  * 카드 클릭: 해당 프로젝트 상세 (EN 기준 + 국가별 로컬어 Merge 결과 바로 표시)
  */
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../api.js'
 import { useDB } from '../DBContext.jsx'
 import SiteDropdown from '../components/SiteDropdown.jsx'
 import { ALL_SITES } from '../constants.js'
 import { detectBadges } from '../utils.js'
 import { detectServiceIssues } from '../components/ServiceCheck.jsx'
+import { isStaff } from '../roles.js'
 
 const LS_EN_KEY = 'merge_en_copy'
 
@@ -23,7 +25,7 @@ function getCurrentUserPosition() {
     return payload?.position ?? null
   } catch { return null }
 }
-const isRegular = () => getCurrentUserPosition() === 'regular'
+const isRegular = () => isStaff(getCurrentUserPosition())
 
 // ── 유틸 ─────────────────────────────────────────────────────
 function parseEnLines(raw) {
@@ -38,22 +40,29 @@ function parseConfirmedPaste(raw) {
     })
     .filter(Boolean)
 }
-function mapLocals(baseEnLines, confirmedPairs) {
+/**
+ * parseConfirmedPaste() 결과(pairs)를 EN 키 등장 순서대로 하나씩 꺼내주는 컨슈머.
+ * 엑셀 재업로드(합집합 병합) 시, "이 EN 행에 대해 새로 업로드된 로컬 값이 있는가?"를
+ * 물어볼 때 사용 — 없으면 undefined를 반환해 "새 파일에 이 행 자체가 없음"과
+ * "새 파일에 값이 있지만 빈 칸"을 구분할 수 있게 한다.
+ */
+function makePairConsumer(pairs) {
   const queue = {}
-  confirmedPairs.forEach(({ en, local }) => {
+  pairs.forEach(({ en, local }) => {
     const key = en.trim()
     if (!queue[key]) queue[key] = []
     queue[key].push(local)
   })
   const cursor = {}
-  return baseEnLines.map(en => {
+  return (en) => {
     const key = en.trim()
-    if (!queue[key] || queue[key].length === 0) return { en, local: '', missing: true }
+    const list = queue[key]
+    if (!list) return undefined
     const idx = cursor[key] ?? 0
-    const local = queue[key][idx] ?? queue[key][queue[key].length - 1]
+    if (idx >= list.length) return undefined
     cursor[key] = idx + 1
-    return { en, local, missing: false }
-  })
+    return list[idx]
+  }
 }
 /**
  * 모달이 필요한 두 가지 케이스를 감지
@@ -75,58 +84,6 @@ function mapLocals(baseEnLines, confirmedPairs) {
  *
  * 반환: [{ enKey, positions, candidates, uniqueCandidates, caseType }]
  */
-function detectDuplicates(baseEnLines, confirmedPairs) {
-  // EN별 local 후보 목록 (paste 순서 그대로)
-  const pasteQueue = {}
-  confirmedPairs.forEach(({ en, local }) => {
-    const key = en.trim()
-    if (!pasteQueue[key]) pasteQueue[key] = []
-    pasteQueue[key].push(local)
-  })
-
-  // baseEnLines에서 동일 EN이 등장하는 행 인덱스 목록
-  const linesByKey = {}
-  baseEnLines.forEach((en, i) => {
-    const key = en.trim()
-    if (!linesByKey[key]) linesByKey[key] = []
-    linesByKey[key].push(i)
-  })
-
-  const duplicates = []
-
-  for (const key of Object.keys(pasteQueue)) {
-    const candidates = pasteQueue[key]            // paste에서 이 EN에 대응하는 local 목록
-    const positions  = linesByKey[key] || []      // baseEnLines에서 이 EN의 행 인덱스 목록
-    const unique     = [...new Set(candidates)]
-
-    // paste에도 1개, base에도 1개 → 완전 1:1, 모달 불필요
-    if (candidates.length === 1 && positions.length === 1) continue
-
-    // paste 개수 === base 개수이고, 모든 candidates가 동일값 → 자동 처리 가능
-    // (예: base 2번, paste 2번인데 둘 다 같은 값 → 순서대로)
-    if (candidates.length === positions.length && unique.length === 1) continue
-
-    // paste 개수 === base 개수이고, 순서대로 1:1 매핑이 자명한 경우 → 자동 처리
-    // (예: base에 Performance 2번, paste에도 Performance 2번 각각 다른 값 → 순서 매핑)
-    if (candidates.length === positions.length && candidates.length > 1) continue
-
-    // ── 케이스 A: base에 여러 행 있는데 paste는 더 적게 들어온 경우
-    //   "이 local을 어느 행(들)에 적용할 건지?" 선택
-    if (positions.length > 1 && candidates.length < positions.length) {
-      duplicates.push({ enKey: key, positions, candidates, uniqueCandidates: unique, caseType: 'A' })
-      continue
-    }
-
-    // ── 케이스 B: paste에 서로 다른 local이 여러 개인데 base 개수와 불일치
-    //   "이 중에 어떤 걸 쓸 건지?" 선택
-    if (unique.length > 1) {
-      duplicates.push({ enKey: key, positions, candidates, uniqueCandidates: unique, caseType: 'B' })
-    }
-  }
-
-  return duplicates
-}
-
 function checkDNT(en, local, products) {
   const issues = []
   for (const p of products) {
@@ -290,61 +247,25 @@ function exportCSV(baseEnLines, countries, projectTitle) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// 중복 카피 선택 모달
+// 엑셀 재업로드(합집합 병합) 충돌 해결 모달
 // ════════════════════════════════════════════════════════════════
 /**
- * duplicates: detectDuplicates()의 반환값
- *   caseType 'A' — base에 N행 있는데 paste local이 부족 → 어느 행에 적용할지
- *   caseType 'B' — paste에 서로 다른 local 여러 개 → 어떤 값을 쓸지
+ * 이미 Merge 결과가 있는 프로젝트에 엑셀을 다시 업로드했을 때,
+ * "기존에 값이 있고 + 새 파일 값도 있는데 + 서로 다른" 항목(진짜 충돌)만 모아
+ * 사용자가 항목별로 기존 유지 / 새 카피로 교체를 선택하게 한다.
+ * (완전히 새로운 국가·새로운 EN 행이나, 기존이 비어 있던 칸은 충돌이 아니라
+ *  자동으로 합집합 처리되므로 이 모달에 나타나지 않는다.)
  *
- * onResolve(resolvedMap) — { [enKey]: string[] }  각 position에 대응하는 최종 local 배열
+ * conflicts: [{ countryId, countryLabel, rowIndex, en, existingLocal, newLocal }]
+ * onConfirm(choices) — choices: { [conflictIndex]: 'keep' | 'replace' }
  * onCancel()
  */
-function DuplicateResolveModal({ duplicates, countryLabel, onResolve, onCancel }) {
-  /**
-   * selections 구조
-   * 케이스 A: { [`${enKey}__${lineIdx}`]: boolean }  — 이 행에 적용할지 여부
-   * 케이스 B: { [`${enKey}__${lineIdx}`]: string }   — 이 행에 쓸 local 값
-   */
-  const initSelections = () => {
-    const sel = {}
-    duplicates.forEach(d => {
-      if (d.caseType === 'A') {
-        // 기본값: 모든 행에 적용(true)
-        d.positions.forEach(lineIdx => {
-          sel[`${d.enKey}__${lineIdx}`] = true
-        })
-      } else {
-        // 케이스 B: 각 행에 첫 번째 후보 선택
-        d.positions.forEach((lineIdx, pi) => {
-          sel[`${d.enKey}__${lineIdx}`] = d.candidates[pi] ?? d.candidates[0]
-        })
-      }
-    })
-    return sel
-  }
-  const [selections, setSelections] = useState(initSelections)
-
-  const toggle = (enKey, lineIdx, value) =>
-    setSelections(prev => ({ ...prev, [`${enKey}__${lineIdx}`]: value }))
-
-  const handleConfirm = () => {
-    const resolvedMap = {}
-    duplicates.forEach(d => {
-      if (d.caseType === 'A') {
-        // 선택된 행에만 candidates[0] 적용, 미선택 행은 빈 값(missing)
-        resolvedMap[d.enKey] = d.positions.map(lineIdx =>
-          selections[`${d.enKey}__${lineIdx}`] ? (d.candidates[0] ?? '') : '__SKIP__'
-        )
-      } else {
-        // 각 행에 선택된 local 값
-        resolvedMap[d.enKey] = d.positions.map(lineIdx =>
-          selections[`${d.enKey}__${lineIdx}`] ?? d.candidates[0]
-        )
-      }
-    })
-    onResolve(resolvedMap)
-  }
+function ImportConflictModal({ conflicts, onConfirm, onCancel }) {
+  const [choices, setChoices] = useState(
+    Object.fromEntries(conflicts.map((_, i) => [i, 'keep']))
+  )
+  const setAll = (value) => setChoices(Object.fromEntries(conflicts.map((_, i) => [i, value])))
+  const setOne = (i, value) => setChoices(prev => ({ ...prev, [i]: value }))
 
   return (
     <div style={{
@@ -355,7 +276,7 @@ function DuplicateResolveModal({ duplicates, countryLabel, onResolve, onCancel }
     }}>
       <div style={{
         background: '#fff', borderRadius: 14,
-        width: '100%', maxWidth: 780,
+        width: '100%', maxWidth: 860,
         maxHeight: '88vh', display: 'flex', flexDirection: 'column',
         boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
         overflow: 'hidden',
@@ -368,10 +289,11 @@ function DuplicateResolveModal({ duplicates, countryLabel, onResolve, onCancel }
           <span style={{ fontSize: 24 }}>⚠️</span>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 16, color: '#111827' }}>
-              [{countryLabel}] 중복 카피 확인 필요
+              겹치는 카피 확인 필요 ({conflicts.length}건)
             </div>
             <div style={{ fontSize: 13, color: '#6b7280', marginTop: 4 }}>
-              동일한 EN 텍스트에 대해 적용 방식을 선택해주세요.
+              기존 카피와 새로 업로드한 엑셀의 내용이 서로 다른 항목입니다. 항목별로 유지할지 교체할지 선택해주세요.
+              (겹치지 않는 새 국가·새 항목은 이미 자동으로 추가됩니다)
             </div>
           </div>
           <button onClick={onCancel} style={{
@@ -380,133 +302,50 @@ function DuplicateResolveModal({ duplicates, countryLabel, onResolve, onCancel }
           }}>✕</button>
         </div>
 
+        {/* 전체 일괄 선택 */}
+        <div style={{ padding: '10px 24px', borderBottom: '1px solid #f0f1f3', display: 'flex', gap: 8 }}>
+          <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setAll('keep')}>전체 기존 카피 유지</button>
+          <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setAll('replace')}>전체 새 카피로 교체</button>
+        </div>
+
         {/* 본문 */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {duplicates.map((d, di) => (
-            <div key={di} style={{
-              borderRadius: 10, border: '1.5px solid #e5e7eb', overflow: 'hidden',
-            }}>
-              {/* EN 헤더 + 케이스 배지 */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {conflicts.map((c, i) => (
+            <div key={i} style={{ borderRadius: 10, border: '1.5px solid #e5e7eb', overflow: 'hidden' }}>
               <div style={{
-                background: d.caseType === 'A' ? '#fffbeb' : '#f0f9ff',
-                padding: '10px 14px', borderBottom: '1px solid #e5e7eb',
-                display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                background: '#f9fafb', padding: '8px 12px', borderBottom: '1px solid #e5e7eb',
+                display: 'flex', gap: 8, alignItems: 'center',
               }}>
                 <span style={{
-                  background: d.caseType === 'A' ? '#f59e0b' : '#6366f1',
-                  color: '#fff', borderRadius: 4, fontSize: 10, fontWeight: 700, padding: '2px 7px',
-                }}>EN</span>
-                <span style={{ fontSize: 13, color: '#111827', fontWeight: 600, wordBreak: 'break-all', flex: 1 }}>
-                  {d.enKey}
+                  background: '#2563eb', color: '#fff', borderRadius: 4,
+                  fontSize: 10, fontWeight: 700, padding: '2px 7px', whiteSpace: 'nowrap',
+                }}>{c.countryLabel}</span>
+                <span style={{ fontSize: 12, color: '#111827', fontWeight: 600, flex: 1, wordBreak: 'break-word' }}>
+                  {c.en.length > 90 ? c.en.slice(0, 90) + '…' : c.en}
                 </span>
-                {d.caseType === 'A' ? (
-                  <span style={{
-                    fontSize: 11, color: '#92400e', background: '#fef3c7',
-                    border: '1px solid #fcd34d', borderRadius: 4, padding: '2px 8px', whiteSpace: 'nowrap',
-                  }}>
-                    📌 EN {d.positions.length}개 행 · 로컬 1개 → 적용할 행 선택
-                  </span>
-                ) : (
-                  <span style={{
-                    fontSize: 11, color: '#3730a3', background: '#e0e7ff',
-                    border: '1px solid #c7d2fe', borderRadius: 4, padding: '2px 8px', whiteSpace: 'nowrap',
-                  }}>
-                    🔀 후보 {d.uniqueCandidates.length}가지 → 각 행에 적용할 값 선택
-                  </span>
-                )}
               </div>
-
-              {/* 케이스 A: 체크박스로 행 선택 */}
-              {d.caseType === 'A' && (
-                <div>
-                  <div style={{ padding: '8px 14px 4px', fontSize: 12, color: '#6b7280', background: '#fafafa', borderBottom: '1px solid #f3f4f6' }}>
-                    적용할 로컬 카피: <strong style={{ color: '#111827' }}>{d.candidates[0]}</strong>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
+                <label style={{
+                  padding: '10px 12px', borderRight: '1px solid #f0f1f3', cursor: 'pointer',
+                  background: choices[i] === 'keep' ? '#eef2ff' : '#fff',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                    <input type="radio" checked={choices[i] === 'keep'} onChange={() => setOne(i, 'keep')} />
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#4f46e5' }}>기존 유지</span>
                   </div>
-                  {d.positions.map((lineIdx, pi) => {
-                    const checked = selections[`${d.enKey}__${lineIdx}`] ?? true
-                    return (
-                      <div key={pi} style={{
-                        display: 'flex', alignItems: 'center', gap: 12,
-                        padding: '9px 14px',
-                        borderBottom: pi < d.positions.length - 1 ? '1px solid #f3f4f6' : 'none',
-                        background: checked ? '#f0fdf4' : '#fafafa',
-                        cursor: 'pointer',
-                      }} onClick={() => toggle(d.enKey, lineIdx, !checked)}>
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggle(d.enKey, lineIdx, !checked)}
-                          style={{ width: 16, height: 16, cursor: 'pointer', accentColor: '#10b981' }}
-                        />
-                        <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 700, minWidth: 36 }}>
-                          {lineIdx + 1}행
-                        </span>
-                        <span style={{ fontSize: 13, color: '#374151', wordBreak: 'break-all' }}>
-                          {d.enKey}
-                        </span>
-                        <span style={{
-                          marginLeft: 'auto', fontSize: 11, whiteSpace: 'nowrap',
-                          color: checked ? '#059669' : '#9ca3af', fontWeight: 600,
-                        }}>
-                          {checked ? '✓ 적용' : '건너뜀'}
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-
-              {/* 케이스 B: 행별로 후보 버튼 선택 */}
-              {d.caseType === 'B' && (
-                <div>
-                  {d.positions.map((lineIdx, pi) => {
-                    const currentVal = selections[`${d.enKey}__${lineIdx}`]
-                    return (
-                      <div key={pi} style={{
-                        padding: '10px 14px',
-                        borderBottom: pi < d.positions.length - 1 ? '1px solid #f3f4f6' : 'none',
-                        background: pi % 2 === 0 ? '#fff' : '#fafafa',
-                        display: 'flex', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap',
-                      }}>
-                        <span style={{
-                          minWidth: 36, textAlign: 'center', fontSize: 11,
-                          color: '#9ca3af', fontWeight: 700, paddingTop: 6,
-                        }}>
-                          {lineIdx + 1}행
-                        </span>
-                        <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                          {d.uniqueCandidates.map((cand, ci) => {
-                            const selected = currentVal === cand
-                            return (
-                              <button key={ci} onClick={() => toggle(d.enKey, lineIdx, cand)} style={{
-                                padding: '5px 14px', borderRadius: 6, cursor: 'pointer',
-                                border: selected ? '2px solid #6366f1' : '1.5px solid #d1d5db',
-                                background: selected ? '#eef2ff' : '#fff',
-                                color: selected ? '#4338ca' : '#374151',
-                                fontSize: 13, fontWeight: selected ? 700 : 400,
-                                wordBreak: 'break-all', textAlign: 'left',
-                                transition: 'all 0.12s',
-                              }}>
-                                {cand || <em style={{ color: '#d1d5db' }}>빈 값</em>}
-                              </button>
-                            )
-                          })}
-                        </div>
-                        {/* 직접 입력 */}
-                        <input
-                          value={currentVal ?? ''}
-                          onChange={e => toggle(d.enKey, lineIdx, e.target.value)}
-                          placeholder="직접 입력"
-                          style={{
-                            border: '1px solid #d1d5db', borderRadius: 6,
-                            padding: '5px 9px', fontSize: 12, width: 160, color: '#111827',
-                          }}
-                        />
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
+                  <div style={{ fontSize: 12, color: '#374151', whiteSpace: 'pre-wrap' }}>{c.existingLocal}</div>
+                </label>
+                <label style={{
+                  padding: '10px 12px', cursor: 'pointer',
+                  background: choices[i] === 'replace' ? '#eef2ff' : '#fff',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                    <input type="radio" checked={choices[i] === 'replace'} onChange={() => setOne(i, 'replace')} />
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#16a34a' }}>새 카피로 교체</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#374151', whiteSpace: 'pre-wrap' }}>{c.newLocal}</div>
+                </label>
+              </div>
             </div>
           ))}
         </div>
@@ -520,10 +359,10 @@ function DuplicateResolveModal({ duplicates, countryLabel, onResolve, onCancel }
             padding: '8px 20px', borderRadius: 8, border: '1.5px solid #d1d5db',
             background: '#fff', color: '#374151', fontSize: 14, cursor: 'pointer', fontWeight: 500,
           }}>취소</button>
-          <button onClick={handleConfirm} style={{
+          <button onClick={() => onConfirm(choices)} style={{
             padding: '8px 24px', borderRadius: 8, border: 'none',
             background: '#6366f1', color: '#fff', fontSize: 14, cursor: 'pointer', fontWeight: 700,
-          }}>✅ 선택 완료 — Merge 진행</button>
+          }}>✅ 선택 적용 후 저장</button>
         </div>
       </div>
     </div>
@@ -533,22 +372,281 @@ function DuplicateResolveModal({ duplicates, countryLabel, onResolve, onCancel }
 // ════════════════════════════════════════════════════════════════
 // 프로젝트 목록 뷰
 // ════════════════════════════════════════════════════════════════
-function ProjectListView({ projects, loading, onCreate, onOpen, onDelete }) {
+// ── 옵션 메뉴 (⋯) — StatusTab의 DotsMenu와 동일한 패턴 ────────────
+function DotsMenu({ items }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState(null) // { top, left } 화면 기준 고정 좌표
+  const btnRef = useRef(null)
+  const menuRef = useRef(null)
+
+  // 버튼 위치 기준으로 메뉴 좌표 계산 (뷰포트 밖으로 안 나가게 보정)
+  const calcPos = () => {
+    if (!btnRef.current) return null
+    const r = btnRef.current.getBoundingClientRect()
+    const MENU_W = 170
+    const MENU_MAX_H = 320
+    let left = r.right - MENU_W
+    let top = r.bottom + 4
+    if (left < 4) left = 4
+    if (left + MENU_W > window.innerWidth - 4) left = window.innerWidth - MENU_W - 4
+    if (top + MENU_MAX_H > window.innerHeight - 4) top = r.top - MENU_MAX_H - 4 // 아래 공간 부족하면 위로 띄움
+    if (top < 4) top = 4
+    return { top, left }
+  }
+
+  const openMenu = () => {
+    setPos(calcPos())
+    setOpen(true)
+  }
+
+  useEffect(() => {
+    if (!open) return
+    function handle(e) {
+      if (
+        btnRef.current && !btnRef.current.contains(e.target) &&
+        menuRef.current && !menuRef.current.contains(e.target)
+      ) setOpen(false)
+    }
+    // 목록이 스크롤되어도 메뉴를 닫지 않고 버튼을 따라 위치만 다시 계산한다
+    // (긴 폴더 목록처럼 스크롤이 있는 화면에서 메뉴가 사라지던 문제 수정)
+    function reposition() {
+      const next = calcPos()
+      if (next) setPos(next); else setOpen(false)
+    }
+    document.addEventListener('mousedown', handle)
+    window.addEventListener('scroll', reposition, true)
+    window.addEventListener('resize', reposition)
+    return () => {
+      document.removeEventListener('mousedown', handle)
+      window.removeEventListener('scroll', reposition, true)
+      window.removeEventListener('resize', reposition)
+    }
+  }, [open])
+
+  return (
+    <div style={{ position: 'relative', display: 'inline-block' }} onClick={e => e.stopPropagation()}>
+      <button
+        ref={btnRef}
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer',
+          padding: '3px 5px', borderRadius: 5, lineHeight: 1,
+          color: '#9ca3af', fontSize: 16, fontWeight: 700, letterSpacing: 1,
+          transition: 'background 0.15s, color 0.15s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = '#f1f5f9'; e.currentTarget.style.color = '#374151' }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#9ca3af' }}
+        title="옵션"
+      >⋯</button>
+      {open && pos && createPortal(
+        <div
+          ref={menuRef}
+          style={{
+            position: 'fixed', top: pos.top, left: pos.left, zIndex: 9999,
+            background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.13)', minWidth: 170, padding: '4px 0',
+            maxHeight: 320, overflowY: 'auto',
+          }}
+        >
+          {items.map((item, i) => item === 'divider' ? (
+            <div key={i} style={{ height: 1, background: '#f1f5f9', margin: '3px 0' }} />
+          ) : (
+            <div
+              key={i}
+              onClick={() => { item.action(); setOpen(false) }}
+              style={{
+                padding: '8px 14px', cursor: 'pointer', fontSize: 13,
+                color: item.danger ? '#ef4444' : '#374151',
+                display: 'flex', alignItems: 'center', gap: 8,
+                transition: 'background 0.1s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = item.danger ? '#fef2f2' : '#f8fafc'}
+              onMouseLeave={e => e.currentTarget.style.background = ''}
+            >
+              <span style={{ fontSize: 14, width: 18, textAlign: 'center' }}>{item.icon}</span>
+              <span>{item.label}</span>
+              {item.sub && <span style={{ marginLeft: 'auto', fontSize: 11, color: '#94a3b8' }}>{item.sub}</span>}
+            </div>
+          ))}
+        </div>,
+        document.body
+      )}
+    </div>
+  )
+}
+
+// ── 인라인 이름 수정 Input — StatusTab과 동일한 패턴 ───────────────
+function InlineRename({ value, onSave, onCancel }) {
+  const [val, setVal] = useState(value)
+  const inputRef = useRef(null)
+  useEffect(() => { inputRef.current?.focus(); inputRef.current?.select() }, [])
+  return (
+    <input
+      ref={inputRef}
+      value={val}
+      onChange={e => setVal(e.target.value)}
+      onBlur={() => { if (val.trim() && val !== value) onSave(val.trim()); else onCancel() }}
+      onKeyDown={e => {
+        e.stopPropagation()
+        if (e.key === 'Enter') { if (val.trim() && val !== value) onSave(val.trim()); else onCancel() }
+        if (e.key === 'Escape') onCancel()
+      }}
+      onClick={e => e.stopPropagation()}
+      style={{ fontSize: 14, fontWeight: 600, border: '1.5px solid #6366f1', borderRadius: 5, padding: '2px 7px', flex: 1, outline: 'none', minWidth: 0 }}
+    />
+  )
+}
+
+// ── 프로젝트 카드 ─────────────────────────────────────────────
+function ProjectCard({ p, onOpen, onDelete, onRename, folders, onMoveToFolder }) {
+  const [renaming, setRenaming] = useState(false)
+  const currentFolder = folders.find(f => f.id === p.folder_id)
+
+  const menuItems = isRegular() ? [
+    {
+      icon: '✏️', label: '이름 바꾸기',
+      action: () => setRenaming(true),
+    },
+    'divider',
+    {
+      icon: '📋', label: '최상위로 이동',
+      sub: p.folder_id ? '' : '✓ 현재',
+      action: () => onMoveToFolder(p.id, null),
+    },
+    ...folders.map(f => ({
+      icon: '📂', label: f.name,
+      sub: p.folder_id === f.id ? '✓ 현재' : '',
+      action: () => onMoveToFolder(p.id, f.id),
+    })),
+    'divider',
+    {
+      icon: '🗑️', label: '삭제', danger: true,
+      action: () => onDelete(p.id, p.title),
+    },
+  ] : []
+
+  return (
+    <div className="mg-proj-card" onClick={() => !renaming && onOpen(p)}>
+      <div className="mg-proj-card-header">
+        {renaming ? (
+          <InlineRename
+            value={p.title}
+            onSave={(newTitle) => { onRename(p.id, newTitle); setRenaming(false) }}
+            onCancel={() => setRenaming(false)}
+          />
+        ) : (
+          <span className="mg-proj-card-name">{p.title}</span>
+        )}
+        {menuItems.length > 0 && <DotsMenu items={menuItems} />}
+      </div>
+      {currentFolder && (
+        <div style={{ fontSize: 10, color: '#6366f1', marginBottom: 2 }}>📂 {currentFolder.name}</div>
+      )}
+      <div className="mg-proj-card-meta">
+        {(p.country_count ?? 0) > 0 && <span className="mg-proj-badge">{p.country_count}개국</span>}
+        {(p.row_count ?? 0) > 0    && <span className="mg-proj-badge">{p.row_count}행</span>}
+      </div>
+      <div className="mg-proj-card-date">
+        {(p.updated_at || p.created_at || '').slice(0, 10)}
+      </div>
+      <div className="mg-proj-card-arrow">열기 →</div>
+    </div>
+  )
+}
+
+// ── 프로젝트 폴더 블록 (StatusTab의 FolderBlock과 동일한 패턴) ── ─
+function ProjectFolderBlock({ folder, projects, onOpen, onDelete, onRename, folders, onMoveToFolder, onRenameFolder, onDeleteFolder }) {
+  const [isOpen, setIsOpen] = useState(true)
+  const [renaming, setRenaming] = useState(false)
+
+  const menuItems = isRegular() ? [
+    {
+      icon: '✏️', label: '이름 바꾸기',
+      action: () => setRenaming(true),
+    },
+    'divider',
+    {
+      icon: '🗑️', label: '폴더 삭제', danger: true,
+      action: () => onDeleteFolder(folder),
+    },
+  ] : []
+
+  return (
+    <div className="mg-folder-block">
+      <div className="mg-folder-header">
+        <span
+          onClick={() => setIsOpen(v => !v)}
+          className="mg-folder-caret"
+          style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
+        >▶</span>
+        <span onClick={() => setIsOpen(v => !v)} style={{ fontSize: 16, cursor: 'pointer' }}>📂</span>
+        {renaming ? (
+          <InlineRename
+            value={folder.name}
+            onSave={(newName) => { onRenameFolder(folder.id, newName); setRenaming(false) }}
+            onCancel={() => setRenaming(false)}
+          />
+        ) : (
+          <span onClick={() => setIsOpen(v => !v)} className="mg-folder-name">{folder.name}</span>
+        )}
+        <span className="mg-folder-count">{projects.length}개</span>
+        {menuItems.length > 0 && (
+          <div onClick={e => e.stopPropagation()}>
+            <DotsMenu items={menuItems} />
+          </div>
+        )}
+      </div>
+      {isOpen && (
+        <div className="mg-folder-body">
+          {projects.length === 0 ? (
+            <div style={{ fontSize: 12, color: '#9ca3af', padding: '8px 4px', textAlign: 'center' }}>빈 폴더입니다.</div>
+          ) : (
+            <div className="mg-proj-grid">
+              {projects.map(p => (
+                <ProjectCard key={p.id} p={p} onOpen={onOpen} onDelete={onDelete} onRename={onRename}
+                  folders={folders} onMoveToFolder={onMoveToFolder} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ProjectListView({
+  projects, folders, loading, onCreate, onOpen, onDelete, onRename,
+  onCreateFolder, onRenameFolder, onDeleteFolder, onMoveToFolder,
+}) {
   const [newTitle, setNewTitle] = useState('')
   const [showForm, setShowForm] = useState(false)
   const [creating, setCreating] = useState(false)
   const [search, setSearch]     = useState('')
+  const [viewMode, setViewMode] = useState('folder') // 'folder' | 'flat'
+  const [showNewFolder, setShowNewFolder] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [newProjectFolderId, setNewProjectFolderId] = useState(null)
 
   const handleCreate = async () => {
     if (!newTitle.trim()) return
     setCreating(true)
-    await onCreate(newTitle.trim())
-    setNewTitle(''); setShowForm(false); setCreating(false)
+    await onCreate(newTitle.trim(), viewMode === 'folder' ? newProjectFolderId : null)
+    setNewTitle(''); setNewProjectFolderId(null); setShowForm(false); setCreating(false)
+  }
+
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim()) return
+    await onCreateFolder(newFolderName.trim())
+    setNewFolderName(''); setShowNewFolder(false)
   }
 
   const filtered = projects.filter(p =>
     !search || p.title.toLowerCase().includes(search.toLowerCase())
   )
+  const topLevel = filtered.filter(p => !p.folder_id)
+  const folderProjectMap = {}
+  folders.forEach(f => { folderProjectMap[f.id] = filtered.filter(p => p.folder_id === f.id) })
+  const sharedCardProps = { onOpen, onDelete, onRename, folders, onMoveToFolder }
 
   return (
     <div className="mg-list-view">
@@ -560,11 +658,39 @@ function ProjectListView({ projects, loading, onCreate, onOpen, onDelete }) {
         <div className="mg-list-actions">
           <input className="form-input" placeholder="프로젝트 검색" value={search}
             onChange={e => setSearch(e.target.value)} style={{ width: 200, fontSize: 13 }} />
+          <div style={{ display: 'flex', border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+            <button onClick={() => setViewMode('folder')} style={{
+              padding: '6px 12px', fontSize: 12, border: 'none', cursor: 'pointer',
+              background: viewMode === 'folder' ? '#6366f1' : '#fff',
+              color: viewMode === 'folder' ? '#fff' : '#6b7280',
+              fontWeight: viewMode === 'folder' ? 600 : 400,
+            }}>📂 폴더 뷰</button>
+            <button onClick={() => setViewMode('flat')} style={{
+              padding: '6px 12px', fontSize: 12, border: 'none', cursor: 'pointer',
+              background: viewMode === 'flat' ? '#6366f1' : '#fff',
+              color: viewMode === 'flat' ? '#fff' : '#6b7280',
+              fontWeight: viewMode === 'flat' ? 600 : 400,
+            }}>📋 전체 뷰</button>
+          </div>
+          {isRegular() && viewMode === 'folder' && (
+            <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setShowNewFolder(true)}>+ 새 폴더</button>
+          )}
           <button className="btn-primary" onClick={() => setShowForm(v => !v)}>
             {showForm ? '취소' : '+ 새 프로젝트'}
           </button>
         </div>
       </div>
+
+      {showNewFolder && (
+        <div className="pj-create-form">
+          <input className="form-input" placeholder="폴더 이름" value={newFolderName}
+            onChange={e => setNewFolderName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleCreateFolder(); if (e.key === 'Escape') setShowNewFolder(false) }}
+            autoFocus style={{ flex: 1 }} />
+          <button className="btn-primary" onClick={handleCreateFolder}>만들기</button>
+          <button className="btn-ghost" onClick={() => { setShowNewFolder(false); setNewFolderName('') }}>취소</button>
+        </div>
+      )}
 
       {showForm && (
         <div className="pj-create-form">
@@ -572,6 +698,14 @@ function ProjectListView({ projects, loading, onCreate, onOpen, onDelete }) {
             onChange={e => setNewTitle(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleCreate()}
             autoFocus style={{ flex: 1 }} />
+          {viewMode === 'folder' && (
+            <select className="form-input" style={{ minWidth: 160, flex: 'none' }}
+              value={newProjectFolderId ?? ''}
+              onChange={e => setNewProjectFolderId(e.target.value ? Number(e.target.value) : null)}>
+              <option value="">폴더 없음 (최상위)</option>
+              {folders.map(f => <option key={f.id} value={f.id}>📂 {f.name}</option>)}
+            </select>
+          )}
           <button className="btn-primary" onClick={handleCreate} disabled={creating}>
             {creating ? '생성 중...' : '생성'}
           </button>
@@ -587,27 +721,39 @@ function ProjectListView({ projects, loading, onCreate, onOpen, onDelete }) {
         </div>
       )}
 
-      <div className="mg-proj-grid">
-        {filtered.map(p => (
-          <div key={p.id} className="mg-proj-card" onClick={() => onOpen(p)}>
-            <div className="mg-proj-card-header">
-              <span className="mg-proj-card-name">{p.title}</span>
-              {isRegular() && (
-                <button className="act-btn act-delete" style={{ padding: '2px 7px' }}
-                  onClick={e => { e.stopPropagation(); onDelete(p.id, p.title) }}>🗑</button>
+      {!loading && filtered.length > 0 && viewMode === 'folder' && (
+        <div>
+          {folders.map(folder => (
+            <ProjectFolderBlock
+              key={folder.id}
+              folder={folder}
+              projects={folderProjectMap[folder.id] || []}
+              onRenameFolder={onRenameFolder}
+              onDeleteFolder={onDeleteFolder}
+              {...sharedCardProps}
+            />
+          ))}
+
+          {topLevel.length > 0 && (
+            <div>
+              {folders.length > 0 && (
+                <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, margin: '4px 0 8px' }}>
+                  📋 폴더 미지정
+                </div>
               )}
+              <div className="mg-proj-grid">
+                {topLevel.map(p => <ProjectCard key={p.id} p={p} {...sharedCardProps} />)}
+              </div>
             </div>
-            <div className="mg-proj-card-meta">
-              {(p.country_count ?? 0) > 0 && <span className="mg-proj-badge">{p.country_count}개국</span>}
-              {(p.row_count ?? 0) > 0    && <span className="mg-proj-badge">{p.row_count}행</span>}
-            </div>
-            <div className="mg-proj-card-date">
-              {(p.updated_at || p.created_at || '').slice(0, 10)}
-            </div>
-            <div className="mg-proj-card-arrow">열기 →</div>
-          </div>
-        ))}
-      </div>
+          )}
+        </div>
+      )}
+
+      {!loading && filtered.length > 0 && viewMode === 'flat' && (
+        <div className="mg-proj-grid">
+          {filtered.map(p => <ProjectCard key={p.id} p={p} {...sharedCardProps} />)}
+        </div>
+      )}
     </div>
   )
 }
@@ -757,350 +903,119 @@ function CountryHistoryDrawer({ projectId, country, onClose }) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// 붙여넣기 미리보기 테이블 (아코디언)
+// EN(기준) 카피 히스토리 드로어 — CountryHistoryDrawer와 동일한 UI 패턴
 // ════════════════════════════════════════════════════════════════
-function PastePreviewTable({ rawText, label, accentColor = '#6366f1' }) {
-  const pairs = parseConfirmedPaste(rawText || '')
-  if (pairs.length === 0) return null
+function EnHistoryDrawer({ projectId, onClose }) {
+  const [history, setHistory] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [expanded, setExpanded] = useState(null)
+
+  useEffect(() => {
+    api.mergeGetEnHistory(projectId)
+      .then(res => { if (res.ok) setHistory(res.data) })
+      .catch(console.error)
+      .finally(() => setLoading(false))
+  }, [projectId])
+
+  const fmt = iso => {
+    if (!iso) return ''
+    const d = new Date(iso)
+    const pad = n => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  }
+
+  const parseSafe = (json) => {
+    if (!json) return []
+    if (typeof json !== 'string') return json
+    try { return JSON.parse(json) } catch { return [] }
+  }
 
   return (
-    <>
-      <style>{`
-        .mg-paste-preview-details {
-          margin-top: 8px;
-          border-radius: 8px;
-          overflow: hidden;
-          border: 1px solid #e5e7eb;
-        }
-        .mg-paste-preview-summary {
-          list-style: none;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 6px 12px;
-          font-size: 12px;
-          font-weight: 600;
-          color: var(--accent, #6366f1);
-          background: #f9fafb;
-          cursor: pointer;
-          user-select: none;
-          border-bottom: 1px solid transparent;
-          transition: background 0.15s;
-        }
-        .mg-paste-preview-summary::-webkit-details-marker { display: none; }
-        .mg-paste-preview-summary:hover { background: #f3f4f6; }
-        .mg-paste-preview-details[open] .mg-paste-preview-summary {
-          border-bottom-color: #e5e7eb;
-        }
-        .mg-paste-preview-icon {
-          display: inline-block;
-          font-size: 9px;
-          transition: transform 0.2s;
-          color: var(--accent, #6366f1);
-        }
-        .mg-paste-preview-details[open] .mg-paste-preview-icon {
-          transform: rotate(90deg);
-        }
-        .mg-paste-preview-count {
-          display: inline-block;
-          margin-left: 4px;
-          padding: 1px 6px;
-          border-radius: 10px;
-          background: var(--accent, #6366f1);
-          color: #fff;
-          font-size: 10px;
-          font-weight: 700;
-        }
-        .mg-paste-preview-body {
-          max-height: 240px;
-          overflow-y: auto;
-          background: #fff;
-        }
-        .mg-paste-preview-table {
-          width: 100%;
-          border-collapse: collapse;
-          font-size: 12px;
-        }
-        .mg-paste-preview-table thead th {
-          position: sticky;
-          top: 0;
-          background: #f3f4f6;
-          padding: 5px 10px;
-          text-align: left;
-          font-weight: 600;
-          color: #374151;
-          border-bottom: 1px solid #e5e7eb;
-          white-space: nowrap;
-        }
-        .mg-paste-preview-table tbody tr:nth-child(even) { background: #fafafa; }
-        .mg-paste-preview-table tbody tr:hover { background: #eff6ff; }
-        .mg-paste-preview-table td { padding: 4px 10px; vertical-align: top; }
-        .mg-paste-preview-idx {
-          color: #9ca3af;
-          font-size: 11px;
-          text-align: center;
-          width: 32px;
-          white-space: nowrap;
-        }
-        .mg-paste-preview-en {
-          color: #1d4ed8;
-          word-break: break-word;
-          max-width: 180px;
-        }
-        .mg-paste-preview-local {
-          color: #111827;
-          word-break: break-word;
-        }
-        .mg-paste-preview-empty { color: #d1d5db; font-style: italic; }
-
-        /* ── 신규: TBD / URL / dim ────────────────────── */
-        .mg-cell-tbd {
-          background: #fff7ed !important;
-          border-left: 3px solid #f59e0b;
-        }
-        .mg-tbd-badge {
-          display: inline-block;
-          margin-top: 3px;
-          padding: 1px 6px;
-          border-radius: 4px;
-          background: #fef3c7;
-          color: #92400e;
-          font-size: 10px;
-          font-weight: 700;
-          border: 1px solid #fcd34d;
-        }
-        .mg-url-badge {
-          display: block;
-          margin-top: 3px;
-          padding: 2px 6px;
-          border-radius: 4px;
-          background: #fee2e2;
-          color: #b91c1c;
-          font-size: 10px;
-          font-weight: 600;
-          border: 1px solid #fca5a5;
-        }
-        .mg-url-badge code {
-          font-family: monospace;
-          background: #fecaca;
-          border-radius: 3px;
-          padding: 0 3px;
-        }
-        .mg-cell-dim td,
-        td.mg-cell-dim {
-          opacity: 0.35;
-        }
-      `}</style>
-      <details className="mg-paste-preview-details">
-        <summary
-          className="mg-paste-preview-summary"
-          style={{ '--accent': accentColor }}
-        >
-          <span className="mg-paste-preview-icon">▶</span>
-          <span>
-            미리보기
-            <span className="mg-paste-preview-count">{pairs.length}행</span>
-          </span>
-        </summary>
-        <div className="mg-paste-preview-body">
-          <table className="mg-paste-preview-table">
-            <thead>
-              <tr>
-                <th style={{ width: 32 }}>#</th>
-                <th style={{ width: '50%' }}>EN</th>
-                <th style={{ width: '50%' }}>{label || '로컬어'}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pairs.map((p, i) => (
-                <tr key={i}>
-                  <td className="mg-paste-preview-idx">{i + 1}</td>
-                  <td className="mg-paste-preview-en">{p.en || <em className="empty-val">빈 값</em>}</td>
-                  <td className={`mg-paste-preview-local ${!p.local ? 'mg-paste-preview-empty' : ''}`}>
-                    {p.local || <em className="empty-val">빈 값</em>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+    <div className="mg-drawer-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="mg-drawer">
+        <div className="mg-drawer-header">
+          <span className="mg-drawer-title">📋 EN (기준) — 수정 히스토리</span>
+          <button className="cc-remove-btn" onClick={onClose} style={{ fontSize: 18 }}>✕</button>
         </div>
-      </details>
-    </>
-  )
-}
 
-// ════════════════════════════════════════════════════════════════
-// 국가 입력 카드 (기존 컨펌 카피용)
-// ════════════════════════════════════════════════════════════════
-function CountryCard({ country, onRemove, onLabelChange, pasteRef, projectId }) {
-  const [showHistory, setShowHistory] = useState(false)
-  const [pasteText, setPasteText]     = useState(country.rawPaste || '')
-
-  // rawPaste가 외부에서 바뀌면 (추가 카피 덮어쓰기 후) 동기화
-  useEffect(() => { setPasteText(country.rawPaste || '') }, [country.rawPaste])
-
-  return (
-    <>
-    {showHistory && (
-      <CountryHistoryDrawer
-        projectId={projectId}
-        country={country}
-        onClose={() => setShowHistory(false)}
-      />
-    )}
-    <div className={`mg-country-card ${country.isSaved ? 'mg-country-saved' : ''}`}
-      style={{ position: 'relative' }}>
-      {isRegular() && (
-        <button className="cc-remove-btn mg-country-delete-btn"
-          onClick={() => onRemove(country.id)}
-          title="국가 삭제"
-          style={{ position: 'absolute', top: 8, right: 8 }}>✕</button>
-      )}
-
-      <div className="mg-country-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {country.isSaved ? (
-            /* 이미 저장된 국가 — 변경 불가, label만 표시 */
-            <span className="mg-country-label-input"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 4,
-                background: '#f3f4f6', color: '#374151', borderRadius: 6,
-                padding: '4px 10px', fontSize: 13, fontWeight: 600, border: '1px solid #e5e7eb' }}>
-              {country.label}
-            </span>
-          ) : (
-            /* 미저장 국가 — SiteDropdown으로 선택 */
-            <SiteDropdown
-              label={country.label ? `🌐 ${country.label}` : '국가 선택 ▾'}
-              excludeCodes={[]}
-              onAdd={site => onLabelChange(country.id, site.code)}
-            />
-          )}
-          {country.isSaved && <span style={{ fontSize: 10, color: '#10b981', whiteSpace: 'nowrap' }}>✓ 저장됨</span>}
-        </div>
-        {country.dbId && (
-          <button className="btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
-            onClick={() => setShowHistory(true)}>
-            🕐 히스토리
-          </button>
-        )}
-      </div>
-
-      {country.isSaved ? (
-        /* ── 저장된 국가: 읽기 전용 잠금 ── */
-        <div style={{
-          position: 'relative', marginTop: 8,
-          borderRadius: 8, overflow: 'hidden',
-          border: '1.5px solid #e5e7eb',
-        }}>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: '6px 10px',
-            background: '#f9fafb',
-            borderBottom: '1px solid #e5e7eb',
-            fontSize: 11, color: '#6b7280', fontWeight: 600,
-          }}>
-            <span>🔒</span>
-            <span>저장된 카피 — 수정하려면 <strong style={{ color: '#f59e0b' }}>국가별 추가 카피</strong>를 사용하세요</span>
+        {loading ? (
+          <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>불러오는 중...</div>
+        ) : history.length === 0 ? (
+          <div className="empty-state" style={{ padding: 40 }}>
+            <div className="empty-icon">📭</div>
+            <p>아직 수정 이력이 없습니다.</p>
+            <small>EN 기준 카피를 수정하면 이전 버전이 여기에 기록됩니다.</small>
           </div>
-          <textarea
-            ref={el => { if (el) pasteRef.current[country.id] = el }}
-            className="paste-area mg-paste"
-            value={pasteText}
-            readOnly
-            style={{
-              cursor: 'not-allowed',
-              background: '#f3f4f6',
-              color: '#9ca3af',
-              border: 'none',
-              borderRadius: 0,
-              resize: 'none',
-              marginTop: 0,
-            }}
-          />
-        </div>
-      ) : (
-        /* ── 신규 국가: 편집 가능 ── */
-        <>
-          <textarea
-            ref={el => { if (el) pasteRef.current[country.id] = el }}
-            className="paste-area mg-paste"
-            value={pasteText}
-            onChange={e => setPasteText(e.target.value)}
-            placeholder={"컨펌된 카피 붙여넣기 (탭 구분)\n\n예:\nFind Your Galaxy\tFind Your Galaxy\nPerformance\tパフォーマンス性能"}
-          />
-          <div className="input-hint">EN[탭]로컬어 — 엑셀에서 두 열 선택 후 Ctrl+C → Ctrl+V</div>
-        </>
-      )}
+        ) : (
+          <div className="mg-history-list">
+            {history.map((h, i) => {
+              const diffRows = parseSafe(h.diff_json)
 
-      {/* 미리보기 테이블 (아코디언) */}
-      <PastePreviewTable
-        rawText={pasteText}
-        label={country.label}
-        accentColor="#6366f1"
-      />
-    </div>
-    </>
-  )
-}
+              return (
+                <div key={h.id} className="mg-history-item">
+                  <div className="mg-history-meta" onClick={() => setExpanded(expanded === i ? null : i)}>
+                    <span className="mg-history-ver">v{history.length - i}</span>
+                    <span
+                      className="mg-history-author"
+                      title={h.saved_by_email ? `이메일: ${h.saved_by_email}` : ''}
+                      style={{ color: '#3b82f6', fontWeight: 600, fontSize: 13, marginRight: 8, cursor: h.saved_by_email ? 'help' : 'default' }}
+                    >
+                      👤 {h.saved_by || '알 수 없음'}
+                    </span>
+                    <span className="mg-history-date">{fmt(h.saved_at)}</span>
+                    <span className="mg-history-rows">
+                      {diffRows.length > 0 ? `변경 ${diffRows.length}건` : '변경 없음'}
+                    </span>
+                    <span className="mg-history-toggle">{expanded === i ? '▲ 접기' : '▼ 펼치기'}</span>
+                  </div>
 
-// ════════════════════════════════════════════════════════════════
-// 국가별 추가 카피 카드 (덮어쓰기용)
-// ════════════════════════════════════════════════════════════════
-function PatchCountryCard({ country, onRemove, onLabelChange, patchPasteRef, existingLabels }) {
-  const [pasteText, setPasteText] = useState('')
-
-  return (
-    <div
-      className="mg-country-card"
-      style={{ position: 'relative', border: '1.5px dashed #f59e0b', background: '#fffbeb' }}
-    >
-      <button
-        className="cc-remove-btn mg-country-delete-btn"
-        onClick={() => onRemove(country.id)}
-        title="삭제"
-        style={{ position: 'absolute', top: 8, right: 8 }}
-      >✕</button>
-
-      <div className="mg-country-header">
-        <select
-          value={country.label}
-          onChange={e => onLabelChange(country.id, e.target.value)}
-          style={{
-            padding: '4px 10px', borderRadius: 6, border: '1px solid #fcd34d',
-            fontSize: 13, fontWeight: 600, background: '#fff', color: '#92400e',
-            cursor: 'pointer',
-          }}
-        >
-          <option value="">국가 선택 ▾</option>
-          {existingLabels.map(label => (
-            <option key={label} value={label}>{label}</option>
-          ))}
-        </select>
-        {country.label && (
-          <span style={{ fontSize: 11, color: '#b45309', marginLeft: 6 }}>
-            ⚡ 기존 카피에 덮어쓰기됩니다
-          </span>
+                  {expanded === i && (
+                    <div className="mg-history-body">
+                      <div className="mg-history-table-wrap">
+                        {diffRows.length === 0 ? (
+                          <div style={{ padding: '20px', textAlign: 'center', color: '#6b7280', fontSize: '13px', background: '#f9fafb', borderRadius: '6px' }}>
+                            이전 버전과 비교하여 변경된 행이 없습니다.
+                          </div>
+                        ) : (
+                          <table className="mg-history-table">
+                            <thead>
+                              <tr>
+                                <th style={{ width: 36 }}>#</th>
+                                <th>EN (기준) — 수정된 행만</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {diffRows.map((row, idx) => (
+                                <tr key={idx} className={row.new_en === null ? 'mg-cell-missing' : 'mg-cell-changed'}>
+                                  <td style={{ textAlign: 'center', color: '#9ca3af', fontSize: 11, fontWeight: 'bold' }}>
+                                    {row.row}
+                                  </td>
+                                  <td className="mg-history-local">
+                                    <div className="mg-diff-view">
+                                      <div className="mg-diff-old">
+                                        <span className="mg-diff-label">AS-WAS:</span>
+                                        <del>{row.prev_en || <em className="empty-val">빈 값</em>}</del>
+                                      </div>
+                                      <div className="mg-diff-new">
+                                        <span className="mg-diff-label">TO-BE:</span>
+                                        <ins>{row.new_en || <em className="empty-val">빈 값</em>}</ins>
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         )}
       </div>
-
-      <textarea
-        ref={el => { if (el) patchPasteRef.current[country.id] = el }}
-        className="paste-area mg-paste"
-        value={pasteText}
-        onChange={e => setPasteText(e.target.value)}
-        placeholder={"수정 또는 누락된 카피만 붙여넣기 (탭 구분)\n\n예:\nFind Your Galaxy\tFind Your Galaxy\nPerformance\t수정된 로컬어\n\n※ 덮어쓸 행만 입력하면 됩니다"}
-        style={{ borderColor: '#fcd34d' }}
-      />
-      <div className="input-hint" style={{ color: '#92400e' }}>
-        EN[탭]로컬어 — 수정이 필요한 행만 입력하세요
-      </div>
-
-      {/* 미리보기 테이블 (아코디언) */}
-      <PastePreviewTable
-        rawText={pasteText}
-        label={country.label || '로컬어'}
-        accentColor="#f59e0b"
-      />
     </div>
   )
 }
@@ -1194,7 +1109,12 @@ function ExcelImportModal({ onClose, onApply }) {
 
   const handleApply = () => {
     if (!canApply) return
-    const norm = v => (v ?? '').toString().trim()
+    // 셀 안에 Alt+Enter 줄바꿈(\n, \r\n)이 있으면 공백으로 치환한다.
+    // 이 아래에서 행과 행 사이를 '\n'으로 join해 하나의 텍스트로 만들고,
+    // 이후 parseEnLines/parseConfirmedPaste가 그 텍스트를 다시 '\n' 기준으로
+    // 쪼개 "줄 = 행"으로 취급하기 때문에, 셀 내부 줄바꿈을 남겨두면
+    // 원래 한 행(한 셀)이 여러 행으로 쪼개져 국가별 매핑이 밀려버린다.
+    const norm = v => (v ?? '').toString().replace(/\r\n|\r|\n/g, ' ').trim()
     const validRows = grid.slice(dataStartRow).filter(row => norm(row[originalCopyColIndex]) !== '')
     const enLines = validRows.map(row => norm(row[originalCopyColIndex])).join('\n')
 
@@ -1409,482 +1329,377 @@ function ExcelImportModal({ onClose, onApply }) {
 // 프로젝트 상세 뷰
 // ════════════════════════════════════════════════════════════════
 function ProjectDetailView({ project, products, onBack, onUpdated }) {
-  const [enInput, setEnInput]         = useState('')
-  const [countries, setCountries]     = useState([])
+  // mergeResult = { matrix, dntIssues, baseEnLines, activeCountries } | null(빈 프로젝트)
   const [mergeResult, setMergeResult] = useState(null)
   const [error, setError]             = useState('')
-  const [saving, setSaving]           = useState(false)
   const [loading, setLoading]         = useState(true)
   const [idSeq, setIdSeq]             = useState(1)
   const [editTitle, setEditTitle]     = useState(false)
   const [titleVal, setTitleVal]       = useState(project.title)
-  const pasteRef = useRef({})
 
   // ── 검색 상태 ─────────────────────────────────────────────
   const [globalSearch, setGlobalSearch]     = useState('')
   const [perCountrySearch, setPerCountrySearch] = useState({}) // { [countryId]: string }
 
-  // ── 추가 카피 (덮어쓰기) 상태 ──────────────────────────────
-  const [patchCountries, setPatchCountries] = useState([])
-  const [patchIdSeq, setPatchIdSeq]         = useState(1)
-  const [patchError, setPatchError]         = useState('')
-  const [patchSaving, setPatchSaving]       = useState(false)
-  const patchPasteRef = useRef({})
+  // ── 엑셀 재업로드(합집합 병합) 충돌 모달 상태 ─────────────────
+  const [importConflictModal, setImportConflictModal] = useState(null)
+  // importConflictModal = { conflicts, unionEnLines, matrix, activeCountries }
+  const [showExcelImport, setShowExcelImport] = useState(false)
 
-  // ── 중복 카피 해결 모달 상태 ────────────────────────────────
-  const [dupModal, setDupModal] = useState(null)
-  // dupModal = { duplicates, pendingActiveCountries, pendingMatrix, pendingDntIssues }
-  // 모달에서 선택 완료 시 pendingMatrix를 확정하고 저장 진행
+  // ── 자동 저장 상태 ('idle' | 'editing' | 'saving' | 'saved' | 'error') ──
+  const [saveStatus, setSaveStatus] = useState('idle')
+  const mrRef = useRef(null)
+  useEffect(() => { mrRef.current = mergeResult }, [mergeResult])
+  const enTimer = useRef(null)
+  const countryTimers = useRef({})
 
-  // ── 추가 카피 중복 모달 상태 ─────────────────────────────────
-  const [patchDupModal, setPatchDupModal] = useState(null)
-  // patchDupModal = { queue, queueIdx, pendingMatrix, pendingPatched }
+  // ── 국가별 히스토리 드로어 ───────────────────────────────────
+  const [historyCountry, setHistoryCountry] = useState(null)
+  const [showEnHistory, setShowEnHistory] = useState(false)
 
-  // 상세 로드 — 저장된 결과가 있으면 바로 테이블 표시
+  // 상세 로드 — 저장된 결과가 있으면 바로 표(그리드)로 표시
   const load = useCallback(async () => {
     setLoading(true)
     try {
       const res = await api.mergeGetProject(project.id)
       if (!res.ok) return
-      const en = res.project.en_lines || ''
-      setEnInput(en)
-      const loaded = (res.countries || []).map(c => ({
-        id: `db_${c.id}`, dbId: c.id, label: c.label,
-        rawPaste: c.raw_paste || '', mappedJson: c.mapped_json || null, isSaved: true,
+      const baseEnLines = parseEnLines(res.project.en_lines || '')
+      const activeCountries = (res.countries || []).map(c => ({
+        id: `db_${c.id}`, dbId: c.id, label: c.label, isSaved: true,
       }))
-      setCountries(loaded)
-      pasteRef.current = {}
+      const matrix = {}
+      ;(res.countries || []).forEach(c => {
+        const id = `db_${c.id}`
+        let mapped = []
+        try {
+          const mj = c.mapped_json
+          mapped = Array.isArray(mj) ? mj : typeof mj === 'string' ? JSON.parse(mj) : (mj || [])
+        } catch { mapped = [] }
+        matrix[id] = mapped
+      })
 
-      if (en && loaded.some(c => c.mappedJson)) {
-        const baseEnLines = parseEnLines(en)
-        const matrix = {}
-        loaded.forEach(c => {
-          try {
-            const mj = c.mappedJson
-            matrix[c.id] = Array.isArray(mj) ? mj : typeof mj === 'string' ? JSON.parse(mj) : (mj || [])
-          } catch { matrix[c.id] = [] }
-        })
-        setMergeResult({ matrix, dntIssues: [], missingWarns: [], baseEnLines, activeCountries: loaded })
+      if (baseEnLines.length === 0 && activeCountries.length === 0) {
+        // 완전히 빈 프로젝트 — Extract 탭 등에서 넘어온 프리필이 있는지 확인
+        const saved = localStorage.getItem(LS_EN_KEY)
+        if (saved) {
+          localStorage.removeItem(LS_EN_KEY)
+          const seeded = parseEnLines(saved)
+          setMergeResult({ matrix: {}, dntIssues: [], baseEnLines: seeded, activeCountries: [] })
+          api.mergeUpdateProject(project.id, { enLines: seeded.join('\n') }).catch(() => {})
+          setLoading(false)
+          return
+        }
+        setMergeResult(null)
+        setLoading(false)
+        return
       }
+
+      setMergeResult({ matrix, dntIssues: [], baseEnLines, activeCountries })
     } catch (e) { console.error(e) }
     finally { setLoading(false) }
   }, [project.id])
 
   useEffect(() => { load() }, [load])
 
-  // mergeResult가 바뀌면 검색 초기화
+  // mergeResult의 행/국가 개수가 바뀌면 검색 초기화
   useEffect(() => {
     setGlobalSearch('')
     setPerCountrySearch({})
   }, [mergeResult?.baseEnLines?.length, mergeResult?.activeCountries?.length])
 
-  useEffect(() => {
-    const saved = localStorage.getItem(LS_EN_KEY)
-    if (saved) { setEnInput(saved); localStorage.removeItem(LS_EN_KEY) }
-  }, [])
-
-  const addCountry = (site) => {
-    const id = `new_${idSeq}`; setIdSeq(n => n + 1)
-    // SiteDropdown이 { code, name, flag, region } 형태의 site 객체를 넘겨줌
-    const label = site?.code ?? `국가${idSeq}`
-    setCountries(prev => [...prev, { id, dbId: null, label, rawPaste: '', mappedJson: null, isSaved: false }])
-  }
-  const removeCountry = async (id) => {
-    if (!isRegular()) { alert('정규직만 국가를 삭제할 수 있습니다.'); return }
-    const c = countries.find(x => x.id === id)
-    if (c?.dbId) {
-      if (!window.confirm(`${c.label} 국가를 삭제하시겠습니까?`)) return
-      await api.mergeDeleteCountry(project.id, c.dbId)
-    }
-    setCountries(prev => prev.filter(x => x.id !== id))
-    delete pasteRef.current[id]
-    setMergeResult(null)
-  }
-  const updateLabel = (id, label) =>
-    setCountries(prev => prev.map(c => c.id === id ? { ...c, label, isSaved: false } : c))
-
-  // ── [신규] 엑셀 일괄 가져오기 ────────────────────────────────
-  const [showExcelImport, setShowExcelImport] = useState(false)
-  const applyExcelImport = (enLinesJoined, countryPasteMap) => {
-    if (enInput.trim() && !window.confirm('기존 기준 영문 카피가 있습니다. 덮어쓸까요?')) return
-    setEnInput(enLinesJoined)
-
-    const skippedSaved = []
-    setCountries(prev => {
-      const next = [...prev]
-      let seq = idSeq
-      Object.entries(countryPasteMap).forEach(([code, rawPaste]) => {
-        const idx = next.findIndex(c => (c.label || '').toUpperCase() === code.toUpperCase())
-        if (idx !== -1) {
-          if (next[idx].isSaved) { skippedSaved.push(code); return }
-          next[idx] = { ...next[idx], rawPaste }
-        } else {
-          const id = `new_${seq}`; seq += 1
-          next.push({ id, dbId: null, label: code, rawPaste, mappedJson: null, isSaved: false })
-        }
-      })
-      setIdSeq(seq)
-      return next
-    })
-    setShowExcelImport(false)
-    if (skippedSaved.length) {
-      alert(`이미 저장된 국가는 덮어쓰지 않았습니다: ${skippedSaved.join(', ')}\n(수정하려면 "국가별 추가 카피"를 사용하세요)`)
-    }
+  // ── 자동 저장 ────────────────────────────────────────────────
+  const scheduleSaveEnLines = () => {
+    setSaveStatus('editing')
+    if (enTimer.current) clearTimeout(enTimer.current)
+    enTimer.current = setTimeout(async () => {
+      const mr = mrRef.current
+      if (!mr) return
+      setSaveStatus('saving')
+      try {
+        await api.mergeUpdateProject(project.id, { enLines: mr.baseEnLines.join('\n') })
+        setSaveStatus('saved')
+        onUpdated()
+      } catch (e) {
+        console.error(e)
+        setSaveStatus('error')
+      }
+    }, 500)
   }
 
-  // ── 추가 카피 핸들러 ───────────────────────────────────────
-  const addPatchCountry = () => {
-    const id = `patch_${patchIdSeq}`; setPatchIdSeq(n => n + 1)
-    setPatchCountries(prev => [...prev, { id, label: '', rawPaste: '' }])
-  }
-  const removePatchCountry = (id) => {
-    setPatchCountries(prev => prev.filter(x => x.id !== id))
-    delete patchPasteRef.current[id]
-  }
-  const updatePatchLabel = (id, label) =>
-    setPatchCountries(prev => prev.map(c => c.id === id ? { ...c, label } : c))
-
-  const handleRename = async () => {
-    if (!titleVal.trim()) return
-    await api.mergeUpdateProject(project.id, { title: titleVal.trim(), enLines: enInput })
-    setEditTitle(false); onUpdated()
-  }
-
-  // ── Merge 저장 (중복 해결 후 실제 저장) ───────────────────
-  const commitMerge = useCallback(async (matrix, dntIssues, activeCountries) => {
-    setMergeResult({ matrix, dntIssues, missingWarns: [], baseEnLines: parseEnLines(enInput), activeCountries })
-
-    if (dntIssues.length) {
-      const msgs = dntIssues.slice(0, 5).map(d =>
-        `[${d.countryLabel}] ${d.row}행 — ${d.issues.map(i => `"${i.alias}": EN ${i.enCount}개 Local ${i.localCount}개`).join(', ')}`
-      )
-      alert(`⚠ DNT 불일치 (${dntIssues.length}건)\n\n` + msgs.join('\n'))
-    }
-
-    setSaving(true)
-    try {
-      await api.mergeUpdateProject(project.id, { enLines: enInput })
-      for (const c of activeCountries) {
-        const mappedJson = JSON.stringify(matrix[c.id] || [])
+  const scheduleSaveCountry = (countryId) => {
+    setSaveStatus('editing')
+    if (countryTimers.current[countryId]) clearTimeout(countryTimers.current[countryId])
+    countryTimers.current[countryId] = setTimeout(async () => {
+      const mr = mrRef.current
+      if (!mr) return
+      const c = mr.activeCountries.find(x => x.id === countryId)
+      if (!c) return
+      const rows = (mr.matrix[countryId] || []).map((r, i) => ({
+        en: mr.baseEnLines[i] ?? r.en, local: r.local, missing: !r.local,
+      }))
+      const rawPaste = rows.map(r => `${r.en}\t${r.local}`).join('\n')
+      const mappedJson = JSON.stringify(rows)
+      setSaveStatus('saving')
+      try {
         const res = await api.mergeUpsertCountry(project.id, {
-          countryId: c.dbId || null, label: c.label, rawPaste: c.rawPaste, mappedJson,
+          countryId: c.dbId || null, label: c.label, rawPaste, mappedJson,
         })
-        if (res.ok) {
-          setCountries(prev => prev.map(x =>
-            x.id === c.id
-              ? { ...x, dbId: res.id ?? x.dbId, isSaved: true, mappedJson, rawPaste: c.rawPaste }
-              : x
-          ))
+        if (res.ok && !c.dbId) {
+          setMergeResult(prev => ({
+            ...prev,
+            activeCountries: prev.activeCountries.map(x =>
+              x.id === countryId ? { ...x, dbId: res.id ?? x.dbId, isSaved: true } : x
+            ),
+          }))
         }
+        setSaveStatus('saved')
+        onUpdated()
+      } catch (e) {
+        console.error(e)
+        setSaveStatus('error')
       }
-      onUpdated()
-      await load()
-    } finally { setSaving(false) }
-  }, [enInput, project.id, onUpdated, load])
+    }, 500)
+  }
 
-  // ── Merge 실행 ──────────────────────────────────────────────
-  const runMerge = useCallback(async () => {
-    setError(''); setMergeResult(null)
-    const baseEnLines = parseEnLines(enInput)
-    if (baseEnLines.length === 0) { setError('기준 영문 카피를 입력해주세요.'); return }
-    if (countries.length === 0)   { setError('국가를 하나 이상 추가해주세요.'); return }
+  // ── 셀 편집 ──────────────────────────────────────────────────
+  const updateEnCell = (rowIndex, value) => {
+    setMergeResult(prev => {
+      const baseEnLines = [...prev.baseEnLines]
+      baseEnLines[rowIndex] = value
+      return { ...prev, baseEnLines }
+    })
+    scheduleSaveEnLines()
+  }
 
-    const activeCountries = countries.map(c => ({
-      ...c,
-      rawPaste: c.isSaved
-        ? c.rawPaste
-        : (pasteRef.current[c.id]?.value ?? c.rawPaste),
-    }))
+  const updateCountryCell = (countryId, rowIndex, value) => {
+    setMergeResult(prev => {
+      const rows = [...(prev.matrix[countryId] || [])]
+      rows[rowIndex] = { en: prev.baseEnLines[rowIndex] ?? '', local: value, missing: !value }
+      return { ...prev, matrix: { ...prev.matrix, [countryId]: rows } }
+    })
+    scheduleSaveCountry(countryId)
+  }
 
-    const matrix = {}, dntIssues = []
-    // 중복이 발견된 국가 목록 수집
-    const dupEntries = [] // [{ country, duplicates }]
+  // ── 행 추가/삭제 ─────────────────────────────────────────────
+  const addRow = () => {
+    setMergeResult(prev => {
+      const baseEnLines = [...(prev?.baseEnLines || []), '']
+      const activeCountries = prev?.activeCountries || []
+      const matrix = { ...(prev?.matrix || {}) }
+      activeCountries.forEach(c => {
+        matrix[c.id] = [...(matrix[c.id] || []), { en: '', local: '', missing: true }]
+      })
+      return { matrix, dntIssues: prev?.dntIssues || [], baseEnLines, activeCountries }
+    })
+    scheduleSaveEnLines()
+  }
 
-    for (const c of activeCountries) {
-      const pairs = parseConfirmedPaste(c.rawPaste)
-      if (pairs.length === 0) {
-        matrix[c.id] = baseEnLines.map(en => ({ en, local: '', missing: true }))
-        continue
+  const removeRow = (rowIndex) => {
+    if (!window.confirm('이 행을 삭제하시겠습니까?')) return
+    const touchedCountries = mergeResult?.activeCountries || []
+    setMergeResult(prev => {
+      const baseEnLines = prev.baseEnLines.filter((_, i) => i !== rowIndex)
+      const matrix = {}
+      prev.activeCountries.forEach(c => {
+        matrix[c.id] = (prev.matrix[c.id] || []).filter((_, i) => i !== rowIndex)
+      })
+      return { ...prev, baseEnLines, matrix }
+    })
+    scheduleSaveEnLines()
+    touchedCountries.forEach(c => scheduleSaveCountry(c.id))
+  }
+
+  // ── 국가 추가/삭제 ───────────────────────────────────────────
+  const addCountry = (site) => {
+    const id = `new_${idSeq}`
+    setIdSeq(n => n + 1)
+    const label = site?.code ?? `국가${idSeq}`
+    setMergeResult(prev => {
+      const baseEnLines = prev?.baseEnLines || []
+      const rows = baseEnLines.map(en => ({ en, local: '', missing: true }))
+      return {
+        matrix: { ...(prev?.matrix || {}), [id]: rows },
+        dntIssues: prev?.dntIssues || [],
+        baseEnLines,
+        activeCountries: [...(prev?.activeCountries || []), { id, dbId: null, label, isSaved: false }],
       }
+    })
+    scheduleSaveCountry(id)
+  }
 
-      // 중복 감지
-      const dups = detectDuplicates(baseEnLines, pairs)
-      if (dups.length > 0) {
-        dupEntries.push({ country: c, duplicates: dups, pairs })
-      } else {
-        const mapped = mapLocals(baseEnLines, pairs)
-        matrix[c.id] = mapped
-        mapped.forEach((m, i) => {
+  const removeCountry = async (id) => {
+    if (!isRegular()) { alert('권한이 없습니다.'); return }
+    const c = mergeResult?.activeCountries.find(x => x.id === id)
+    if (!c) return
+    if (!window.confirm(`${c.label} 국가를 삭제하시겠습니까?`)) return
+    if (countryTimers.current[id]) { clearTimeout(countryTimers.current[id]); delete countryTimers.current[id] }
+    if (c.dbId) {
+      try { await api.mergeDeleteCountry(project.id, c.dbId) } catch (e) { console.error(e) }
+    }
+    setMergeResult(prev => {
+      const matrix = { ...prev.matrix }
+      delete matrix[id]
+      return { ...prev, matrix, activeCountries: prev.activeCountries.filter(x => x.id !== id) }
+    })
+    onUpdated()
+  }
+
+  // ── 엑셀 업로드 → 합집합 병합 ────────────────────────────────
+  /**
+   *  - 기존에 없던 EN 행(새 카피)      → 그대로 뒤에 추가 (합집합, 충돌 아님)   [경우 1, 3]
+   *  - 기존에 없던 국가(새 카피덱)      → 국가 열 새로 추가, 충돌 없이 매핑     [경우 1, 3]
+   *  - 기존 행인데 그 국가 값이 비어있음 → 새 값으로 채움 (합집합, 충돌 아님)    [경우 1, 3]
+   *  - 기존 행 + 값 있음 + 새 값도 있음 + 서로 다름 → 충돌 목록에 수집          [경우 2]
+   *  - 새 파일에 해당 행 자체가 없거나 빈 칸 → 기존 값 그대로 유지
+   *  (mergeResult가 비어있어도 그대로 동작 — existingBase가 빈 배열일 뿐이라
+   *   모든 값이 "비어있음 → 채움" 경로로 처리되어 최초 업로드와 결과가 같다.)
+   */
+  const buildExcelUnionMerge = (newEnLinesJoined, countryPasteMap) => {
+    const newEnLines = parseEnLines(newEnLinesJoined)
+    const existingBase = mergeResult?.baseEnLines || []
+    const existingMatrix = mergeResult?.matrix || {}
+    const existingSet = new Set(existingBase.map(en => en.trim()))
+
+    const seenNew = new Set()
+    const appendedEn = []
+    newEnLines.forEach(en => {
+      const key = en.trim()
+      if (existingSet.has(key) || seenNew.has(key)) return
+      seenNew.add(key)
+      appendedEn.push(en)
+    })
+    const unionEnLines = [...existingBase, ...appendedEn]
+
+    const matrix = {}
+    const conflicts = []
+    const touchedIds = new Set()
+    let seq = idSeq
+    const activeCountries = [...(mergeResult?.activeCountries || [])]
+
+    Object.entries(countryPasteMap).forEach(([code, rawPaste]) => {
+      const pairs = parseConfirmedPaste(rawPaste)
+      if (pairs.length === 0) return
+      const consume = makePairConsumer(pairs)
+
+      let matched = activeCountries.find(c => (c.label || '').toUpperCase() === code.toUpperCase())
+      if (!matched) {
+        const id = `new_${seq}`; seq += 1
+        matched = { id, dbId: null, label: code, isSaved: false }
+        activeCountries.push(matched)
+      }
+      touchedIds.add(matched.id)
+
+      const existingRows = existingMatrix[matched.id] || []
+      matrix[matched.id] = unionEnLines.map((en, i) => {
+        const existingLocal = (existingRows[i]?.local ?? '').trim()
+        const newLocal = consume(en)
+        const newLocalTrim = (newLocal ?? '').trim()
+
+        if (newLocal === undefined || newLocalTrim === '') {
+          return { en, local: existingRows[i]?.local ?? '', missing: !(existingRows[i]?.local) }
+        }
+        if (!existingLocal) {
+          return { en, local: newLocal, missing: false }
+        }
+        if (existingLocal === newLocalTrim) {
+          return { en, local: existingRows[i].local, missing: false }
+        }
+        conflicts.push({
+          countryId: matched.id, countryLabel: matched.label,
+          rowIndex: i, en, existingLocal: existingRows[i].local, newLocal,
+        })
+        return { en, local: existingRows[i].local, missing: false }
+      })
+    })
+
+    activeCountries.forEach(c => {
+      if (touchedIds.has(c.id)) return
+      const existingRows = existingMatrix[c.id] || []
+      matrix[c.id] = unionEnLines.map((en, i) => existingRows[i] ?? { en, local: '', missing: true })
+    })
+
+    setIdSeq(seq)
+    return { unionEnLines, matrix, conflicts, activeCountries }
+  }
+
+  const commitExcelReimport = useCallback(async (unionEnLines, matrix, activeCountries) => {
+    setSaveStatus('saving')
+    setError('')
+    try {
+      const enLinesJoined = unionEnLines.join('\n')
+
+      const dntIssues = []
+      activeCountries.forEach(c => {
+        (matrix[c.id] || []).forEach((m, i) => {
           if (!m.local || m.missing) return
           const issues = checkDNT(m.en, m.local, products)
           if (issues.length) dntIssues.push({ countryLabel: c.label, row: i + 1, enText: m.en, issues })
         })
-      }
-    }
-
-    if (dupEntries.length > 0) {
-      // 중복이 있는 국가가 하나 이상 — 첫 번째 국가부터 순서대로 모달 표시
-      // 모달 상태에 전체 대기 목록 보관
-      setDupModal({
-        queue: dupEntries,          // 아직 처리 안 된 중복 국가 목록
-        queueIdx: 0,                // 현재 처리 중인 인덱스
-        resolvedMap: {},            // { countryId: resolvedLocalsMap }
-        pendingMatrix: matrix,      // 중복 없는 국가는 이미 계산된 상태
-        pendingDntIssues: dntIssues,
-        activeCountries,
-        baseEnLines,
       })
-      return  // 저장은 모달 완료 후 commitMerge()로
-    }
 
-    // 중복 없음 — 바로 저장
-    await commitMerge(matrix, dntIssues, activeCountries)
-  }, [enInput, countries, products, commitMerge])
+      setMergeResult({ matrix, dntIssues, baseEnLines: unionEnLines, activeCountries })
 
-  // ── 중복 모달 — 선택 완료 핸들러 ────────────────────────────
-  const handleDupResolve = useCallback(async (resolvedLocalsMap) => {
-    if (!dupModal) return
-    const { queue, queueIdx, pendingMatrix, pendingDntIssues, activeCountries, baseEnLines } = dupModal
+      await api.mergeUpdateProject(project.id, { enLines: enLinesJoined })
 
-    // resolvedLocalsMap: { [enKey]: [local_for_pos0, local_for_pos1, ...] }
-    // 현재 처리 중인 국가의 matrix를 resolvedLocalsMap으로 확정
-    const entry = queue[queueIdx]
-    const c = entry.country
-
-    // mapLocals를 resolvedLocalsMap 기반으로 재구성
-    const resolvedCursor = {}
-    const mapped = baseEnLines.map(en => {
-      const key = en.trim()
-      if (!resolvedLocalsMap[key]) {
-        // 중복 없는 키 → 원래 pairs 기반 처리
-        const origPairs = entry.pairs
-        const origQueue = {}
-        origPairs.forEach(({ en: e, local }) => {
-          const k = e.trim()
-          if (!origQueue[k]) origQueue[k] = []
-          origQueue[k].push(local)
-        })
-        if (!origQueue[key] || origQueue[key].length === 0) return { en, local: '', missing: true }
-        const idx = resolvedCursor[key] ?? 0
-        const local = origQueue[key][idx] ?? origQueue[key][origQueue[key].length - 1]
-        resolvedCursor[key] = idx + 1
-        return { en, local, missing: !local }
-      }
-      // 중복 해결된 키 → resolvedLocalsMap에서 순서대로
-      const idx = resolvedCursor[key] ?? 0
-      const local = resolvedLocalsMap[key][idx] ?? resolvedLocalsMap[key][resolvedLocalsMap[key].length - 1]
-      resolvedCursor[key] = idx + 1
-      // 케이스 A에서 체크 해제된 행(__SKIP__)은 missing 처리
-      if (local === '__SKIP__') return { en, local: '', missing: true }
-      return { en, local, missing: !local }
-    })
-
-    const newMatrix = { ...pendingMatrix, [c.id]: mapped }
-    const newDntIssues = [...pendingDntIssues]
-    mapped.forEach((m, i) => {
-      if (!m.local || m.missing) return
-      const issues = checkDNT(m.en, m.local, products)
-      if (issues.length) newDntIssues.push({ countryLabel: c.label, row: i + 1, enText: m.en, issues })
-    })
-
-    const nextIdx = queueIdx + 1
-    if (nextIdx < queue.length) {
-      // 다음 중복 국가 처리
-      setDupModal(prev => ({
-        ...prev,
-        queueIdx: nextIdx,
-        pendingMatrix: newMatrix,
-        pendingDntIssues: newDntIssues,
-      }))
-    } else {
-      // 모든 중복 처리 완료 → 저장
-      setDupModal(null)
-      await commitMerge(newMatrix, newDntIssues, activeCountries)
-    }
-  }, [dupModal, products, commitMerge])
-
-  const handleDupCancel = useCallback(() => {
-    setDupModal(null)
-    setError('중복 카피 선택이 취소되었습니다. Merge가 실행되지 않았습니다.')
-  }, [])
-
-  // ── 추가 카피 실제 저장 (중복 해결 후 호출) ──────────────
-  const commitPatch = useCallback(async (newMatrix, patchedCountries) => {
-    setPatchSaving(true)
-    try {
-      for (const { matched, updated } of patchedCountries) {
-        const newRawPaste = updated.map(row => `${row.en}\t${row.local}`).join('\n')
-        const mappedJson  = JSON.stringify(updated)
-
+      const savedCountries = []
+      for (const c of activeCountries) {
+        const rows = matrix[c.id] || []
+        const rawPaste = rows.map(r => `${r.en}\t${r.local}`).join('\n')
+        const mappedJson = JSON.stringify(rows)
         const res = await api.mergeUpsertCountry(project.id, {
-          countryId: matched.dbId || null,
-          label: matched.label,
-          rawPaste: newRawPaste,
-          mappedJson,
+          countryId: c.dbId || null, label: c.label, rawPaste, mappedJson,
         })
-
-        if (res.ok) {
-          setCountries(prev => prev.map(c =>
-            c.id === matched.id
-              ? { ...c, rawPaste: newRawPaste, mappedJson, isSaved: true }
-              : c
-          ))
-          if (pasteRef.current[matched.id]) {
-            pasteRef.current[matched.id].value = newRawPaste
-          }
-        }
+        savedCountries.push({
+          ...c,
+          dbId: res.ok ? (res.id ?? c.dbId) : c.dbId,
+          isSaved: res.ok ? true : c.isSaved,
+        })
       }
-
-      setMergeResult(prev => ({ ...prev, matrix: newMatrix }))
-      setPatchCountries([])
-      patchPasteRef.current = {}
+      setMergeResult(prev => ({ ...prev, activeCountries: savedCountries }))
+      setSaveStatus('saved')
       onUpdated()
+      await load()
     } catch (e) {
       console.error(e)
-      setPatchError('저장 중 오류가 발생했습니다.')
-    } finally {
-      setPatchSaving(false)
+      setSaveStatus('error')
+      setError('엑셀 업로드 저장 중 오류가 발생했습니다.')
     }
-  }, [project.id, onUpdated])
+  }, [project.id, products, onUpdated, load])
 
-  // ── 추가 카피 중복 모달 핸들러 ───────────────────────────────
-  const handlePatchDupResolve = useCallback(async (resolvedLocalsMap) => {
-    if (!patchDupModal) return
-    const { queue, queueIdx, pendingMatrix, pendingPatched } = patchDupModal
-    const entry = queue[queueIdx]
-    const { matched, existing, baseEnLines, patchPairs } = entry
-
-    // resolvedLocalsMap 기반으로 기존 mapped 배열 덮어쓰기
-    const resolvedCursor = {}
-    // 중복 없는 키는 원래 patchPairs 큐로 처리
-    const origQueue = {}
-    patchPairs.forEach(({ en, local }) => {
-      const key = en.trim()
-      if (!origQueue[key]) origQueue[key] = []
-      origQueue[key].push(local)
+  const handleImportConflictConfirm = (choices) => {
+    const { conflicts, unionEnLines, matrix, activeCountries } = importConflictModal
+    const finalMatrix = { ...matrix }
+    conflicts.forEach((c, i) => {
+      const rows = [...(finalMatrix[c.countryId] || [])]
+      const choice = choices[i] ?? 'keep'
+      rows[c.rowIndex] = choice === 'replace'
+        ? { en: c.en, local: c.newLocal.trim(), missing: !c.newLocal.trim() }
+        : { en: c.en, local: c.existingLocal, missing: !c.existingLocal }
+      finalMatrix[c.countryId] = rows
     })
-    const origCursor = {}
+    setImportConflictModal(null)
+    commitExcelReimport(unionEnLines, finalMatrix, activeCountries)
+  }
+  const handleImportConflictCancel = () => setImportConflictModal(null)
 
-    const updated = existing.map(row => {
-      const key = row.en.trim()
-      if (resolvedLocalsMap[key] !== undefined) {
-        // 중복 해결된 키
-        const idx = resolvedCursor[key] ?? 0
-        const local = resolvedLocalsMap[key][idx] ?? resolvedLocalsMap[key][resolvedLocalsMap[key].length - 1]
-        resolvedCursor[key] = idx + 1
-        if (local === '__SKIP__') return row  // 케이스 A 건너뜀 → 기존 값 유지
-        return { ...row, local, missing: !local }
-      }
-      if (origQueue[key]) {
-        // 중복 없는 키 → 원래 순서 매핑
-        const idx = origCursor[key] ?? 0
-        const local = origQueue[key][idx] ?? origQueue[key][origQueue[key].length - 1]
-        origCursor[key] = idx + 1
-        return { ...row, local, missing: !local }
-      }
-      return row  // paste에 없는 키 → 기존 값 유지
-    })
-
-    const newMatrix = { ...pendingMatrix, [matched.id]: updated }
-    const newPatched = [...pendingPatched, { matched, updated }]
-
-    const nextIdx = queueIdx + 1
-    if (nextIdx < queue.length) {
-      // 다음 중복 국가 처리
-      setPatchDupModal(prev => ({
-        ...prev,
-        queueIdx: nextIdx,
-        pendingMatrix: newMatrix,
-        pendingPatched: newPatched,
-      }))
-    } else {
-      // 모두 완료 → 저장
-      setPatchDupModal(null)
-      await commitPatch(newMatrix, newPatched)
-    }
-  }, [patchDupModal, commitPatch])
-
-  const handlePatchDupCancel = useCallback(() => {
-    setPatchDupModal(null)
-    setPatchError('중복 카피 선택이 취소되었습니다. 추가 카피가 적용되지 않았습니다.')
-  }, [])
-
-  // ── 추가 카피 덮어쓰기 저장 ────────────────────────────────
-  const runPatch = useCallback(async () => {
-    if (!mergeResult) { setPatchError('먼저 Merge를 실행해주세요.'); return }
-    setPatchError('')
-
-    const activePatch = patchCountries
-      .map(c => ({ ...c, rawPaste: patchPasteRef.current[c.id]?.value ?? c.rawPaste }))
-      .filter(c => c.label && c.rawPaste.trim())
-
-    if (activePatch.length === 0) {
-      setPatchError('국가를 선택하고 수정 카피를 입력해주세요.')
+  const applyExcelImport = (enLinesJoined, countryPasteMap) => {
+    const { unionEnLines, matrix, conflicts, activeCountries } = buildExcelUnionMerge(enLinesJoined, countryPasteMap)
+    setShowExcelImport(false)
+    if (conflicts.length > 0) {
+      setImportConflictModal({ conflicts, unionEnLines, matrix, activeCountries })
       return
     }
+    commitExcelReimport(unionEnLines, matrix, activeCountries)
+  }
 
-    const newMatrix = { ...mergeResult.matrix }
-    const patchedCountries = []   // 중복 없이 바로 처리 완료된 국가들
-    const dupPatchEntries  = []   // 중복 감지돼서 모달 필요한 국가들
-
-    for (const patch of activePatch) {
-      const matched = countries.find(c =>
-        c.label.trim().toLowerCase() === patch.label.trim().toLowerCase()
-      )
-      if (!matched) {
-        alert(`"${patch.label}" 국가를 찾을 수 없습니다.\n국가별 컨펌 카피에 등록된 국가명과 동일하게 선택해주세요.`)
-        continue
-      }
-
-      const patchPairs = parseConfirmedPaste(patch.rawPaste)
-      if (patchPairs.length === 0) continue
-
-      // 기존 merge된 EN 행 목록을 base로 사용
-      const existing = [...(newMatrix[matched.id] || [])]
-      const baseEnLines = existing.map(row => row.en)
-
-      // 중복 감지
-      const dups = detectDuplicates(baseEnLines, patchPairs)
-
-      if (dups.length > 0) {
-        // 모달 필요 — 대기 목록에 추가
-        dupPatchEntries.push({ patch, matched, patchPairs, existing, baseEnLines, duplicates: dups })
-      } else {
-        // 중복 없음 — 바로 덮어쓰기
-        const patchQueue = {}
-        patchPairs.forEach(({ en, local }) => {
-          const key = en.trim()
-          if (!patchQueue[key]) patchQueue[key] = []
-          patchQueue[key].push(local)
-        })
-        const cursor = {}
-        const updated = existing.map(row => {
-          const key = row.en.trim()
-          if (!patchQueue[key]) return row
-          const idx = cursor[key] ?? 0
-          const local = patchQueue[key][idx] ?? patchQueue[key][patchQueue[key].length - 1]
-          cursor[key] = idx + 1
-          return { ...row, local, missing: !local }
-        })
-        newMatrix[matched.id] = updated
-        patchedCountries.push({ matched, updated })
-      }
-    }
-
-    if (dupPatchEntries.length > 0) {
-      // 중복 있는 국가가 하나 이상 → 모달 진입
-      setPatchDupModal({
-        queue: dupPatchEntries,
-        queueIdx: 0,
-        pendingMatrix: newMatrix,
-        pendingPatched: patchedCountries,  // 중복 없이 처리된 국가들
-      })
-      return
-    }
-
-    // 중복 없음 → 바로 저장
-    await commitPatch(newMatrix, patchedCountries)
-  }, [mergeResult, patchCountries, countries, commitPatch])
+  const handleRename = async () => {
+    if (!titleVal.trim()) return
+    await api.mergeUpdateProject(project.id, {
+      title: titleVal.trim(),
+      enLines: (mergeResult?.baseEnLines || []).join('\n'),
+    })
+    setEditTitle(false); onUpdated()
+  }
 
   const handleExport = () => {
     if (!mergeResult) return
@@ -1897,35 +1712,56 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
 
   if (loading) return <div className="loading" style={{ padding: 60, textAlign: 'center' }}>불러오는 중...</div>
 
+  const activeCountries = mergeResult?.activeCountries || []
+  const baseEnLines = mergeResult?.baseEnLines || []
+
+  // ── 검색 필터링 ──────────────────────────────────────────────
+  const gq = globalSearch.trim().toLowerCase()
+  const filteredIndices = baseEnLines.reduce((acc, en, i) => {
+    if (!gq) { acc.push(i); return acc }
+    if (en.toLowerCase().includes(gq)) { acc.push(i); return acc }
+    const anyMatch = activeCountries.some(c => (mergeResult.matrix[c.id]?.[i]?.local ?? '').toLowerCase().includes(gq))
+    if (anyMatch) acc.push(i)
+    return acc
+  }, [])
+
+  const saveStatusText = {
+    idle: '', editing: '편집 중…', saving: '저장 중…',
+    saved: '모든 변경사항 저장됨', error: '저장 실패 — 다시 시도해주세요',
+  }[saveStatus]
+
   return (
     <div className="mg-detail-view">
-      {/* ── 중복 카피 선택 모달 ── */}
-      {dupModal && (() => {
-        const entry = dupModal.queue[dupModal.queueIdx]
-        return (
-          <DuplicateResolveModal
-            key={`dup_${entry.country.id}_${dupModal.queueIdx}`}
-            duplicates={entry.duplicates}
-            countryLabel={entry.country.label}
-            onResolve={handleDupResolve}
-            onCancel={handleDupCancel}
-          />
-        )
-      })()}
+      {/* ── 엑셀 재업로드 충돌 확인 모달 ── */}
+      {importConflictModal && (
+        <ImportConflictModal
+          conflicts={importConflictModal.conflicts}
+          onConfirm={handleImportConflictConfirm}
+          onCancel={handleImportConflictCancel}
+        />
+      )}
 
-      {/* ── 추가 카피 중복 선택 모달 ── */}
-      {patchDupModal && (() => {
-        const entry = patchDupModal.queue[patchDupModal.queueIdx]
-        return (
-          <DuplicateResolveModal
-            key={`patchdup_${entry.matched.id}_${patchDupModal.queueIdx}`}
-            duplicates={entry.duplicates}
-            countryLabel={entry.matched.label}
-            onResolve={handlePatchDupResolve}
-            onCancel={handlePatchDupCancel}
-          />
-        )
-      })()}
+      {historyCountry && (
+        <CountryHistoryDrawer
+          projectId={project.id}
+          country={historyCountry}
+          onClose={() => setHistoryCountry(null)}
+        />
+      )}
+
+      {showEnHistory && (
+        <EnHistoryDrawer
+          projectId={project.id}
+          onClose={() => setShowEnHistory(false)}
+        />
+      )}
+
+      {showExcelImport && (
+        <ExcelImportModal
+          onClose={() => setShowExcelImport(false)}
+          onApply={applyExcelImport}
+        />
+      )}
 
       {/* 헤더 */}
       <div className="mg-detail-header">
@@ -1948,399 +1784,255 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
         </div>
       </div>
 
-      {/* ── Merge 결과: 진입 즉시 표시 (저장된 경우) ── */}
-      {mergeResult && (() => {
-        // ── 검색 필터링 ──────────────────────────────────────
-        const activeCountries = mergeResult.activeCountries || []
+      {error && <div className="error-banner" style={{ margin: '10px 0' }}>{error}</div>}
 
-        // 전체 검색 적용: EN 또는 임의 국가 로컬에 keyword 포함된 행만
-        const gq = globalSearch.trim().toLowerCase()
-        const filteredIndices = mergeResult.baseEnLines.reduce((acc, en, i) => {
-          if (!gq) { acc.push(i); return acc }
-          if (en.toLowerCase().includes(gq)) { acc.push(i); return acc }
-          const anyMatch = activeCountries.some(c => {
-            const local = (mergeResult.matrix[c.id]?.[i]?.local ?? '').toLowerCase()
-            return local.includes(gq)
-          })
-          if (anyMatch) acc.push(i)
-          return acc
-        }, [])
+      {/* ── 툴바 ── */}
+      <div className="mg-toolbar">
+        <button className="btn-ghost mg-excel-import-btn" onClick={() => setShowExcelImport(true)}>
+          📊 엑셀 업로드
+        </button>
+        <button className="btn-ghost" onClick={addRow}>+ 행 추가</button>
+        <SiteDropdown
+          label="+ 국가 추가"
+          excludeCodes={activeCountries.map(c => c.label)}
+          onAdd={addCountry}
+        />
+        {mergeResult && (
+          <>
+            <span className="cc-scroll-hint">← 가로 스크롤 →</span>
+            <button className="btn-export" onClick={handleExport}>⬇ Excel 추출</button>
+          </>
+        )}
+        <span className={`mg-save-status ${saveStatus === 'saving' || saveStatus === 'editing' ? 'is-saving' : ''} ${saveStatus === 'error' ? 'is-error' : ''}`}>
+          {saveStatusText}
+        </span>
+      </div>
 
-        return (
-          <section className="mg-result-section">
-            <details className="mg-edit-details" open style={{ marginBottom: 0 }}>
-              <summary className="mg-edit-summary">
-                <span className="mg-accordion-chevron" aria-hidden="true" />
-                <span className="mg-accordion-icon">📊</span>
-                <span className="result-title">
-                  Merge 결과 — {mergeResult.baseEnLines.length}행 · {activeCountries.length}개국
-                  {gq && (
-                    <span style={{ marginLeft: 8, fontSize: 12, color: '#6366f1', fontWeight: 400 }}>
-                      ({filteredIndices.length}건 매칭)
-                    </span>
-                  )}
+      {/* DNT 이슈 (엑셀 재업로드로 계산된 것) */}
+      {mergeResult?.dntIssues?.length > 0 && (
+        <section className="mg-dnt-section">
+          <div className="mg-dnt-title">⚠ DNT 불일치 {mergeResult.dntIssues.length}건</div>
+          <div className="mg-dnt-list">
+            {(mergeResult.dntIssues || []).map((d, i) => (
+              <div key={i} className="mg-dnt-item">
+                <span className="mg-dnt-country">[{d.countryLabel}]</span>
+                <span className="mg-dnt-row">{d.row}행</span>
+                <span className="mg-dnt-en">{d.enText.slice(0, 40)}{d.enText.length > 40 ? '…' : ''}</span>
+                <span className="mg-dnt-issues">
+                  {d.issues.map(iss => `"${iss.alias}" EN:${iss.enCount} Local:${iss.localCount}`).join(' / ')}
                 </span>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 'auto' }}
-                  onClick={e => e.stopPropagation()}>
-                  <span className="cc-scroll-hint">← 가로 스크롤 →</span>
-                  <button className="btn-export" onClick={handleExport}>⬇ Excel 추출</button>
-                </div>
-              </summary>
-
-              <div>
-                {/* ── 검색 바 ── */}
-                <div style={{ display: 'flex', gap: 8, margin: '10px 0', flexWrap: 'wrap', alignItems: 'center' }}>
-                  <div style={{ position: 'relative', flex: '1 1 220px', maxWidth: 340 }}>
-                    <span style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', color: '#9ca3af', fontSize: 13 }}>🔍</span>
-                    <input
-                      className="form-input"
-                      style={{ paddingLeft: 28, fontSize: 13, width: '100%', boxSizing: 'border-box' }}
-                      placeholder="전체 검색 (EN + 모든 국가)"
-                      value={globalSearch}
-                      onChange={e => { setGlobalSearch(e.target.value); setPerCountrySearch({}) }}
-                    />
-                  </div>
-                  {activeCountries.map(c => (
-                    <div key={c.id} style={{ position: 'relative', flex: '0 1 180px' }}>
-                      <span style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', color: '#9ca3af', fontSize: 11 }}>🔍</span>
-                      <input
-                        className="form-input"
-                        style={{ paddingLeft: 24, fontSize: 12, width: '100%', boxSizing: 'border-box' }}
-                        placeholder={`${c.label} 검색`}
-                        value={perCountrySearch[c.id] ?? ''}
-                        onChange={e => {
-                          setGlobalSearch('')
-                          setPerCountrySearch(prev => ({ ...prev, [c.id]: e.target.value }))
-                        }}
-                      />
-                    </div>
-                  ))}
-                  {(globalSearch || Object.values(perCountrySearch).some(v => v)) && (
-                    <button className="act-btn act-cancel" style={{ fontSize: 12, whiteSpace: 'nowrap' }}
-                      onClick={() => { setGlobalSearch(''); setPerCountrySearch({}) }}>
-                      ✕ 검색 초기화
-                    </button>
-                  )}
-                  {gq && (
-                    <span style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>
-                      {filteredIndices.length}/{mergeResult.baseEnLines.length}건
-                    </span>
-                  )}
-                </div>
-
-                <div className="cc-table-wrap">
-                  <table className="cc-table mg-table">
-                    <thead>
-                      <tr>
-                        <th className="cc-th cc-th-idx">#</th>
-                        <th className="cc-th mg-th-en">EN (기준)</th>
-                        {activeCountries.map(c => (
-                          <th key={c.id} className="cc-th mg-th-local">{c.label}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredIndices.map(i => {
-                        const en = mergeResult.baseEnLines[i]
-
-                    // 국가별 검색 필터: 이 행에서 해당 국가가 keyword 포함하는지
-                        const perCountryVisible = (c) => {
-                          const pq = (perCountrySearch[c.id] ?? '').trim().toLowerCase()
-                          if (!pq) return true
-                          const local = (mergeResult.matrix[c.id]?.[i]?.local ?? '').toLowerCase()
-                          return local.includes(pq) || en.toLowerCase().includes(pq)
-                        }
-                    // 국가별 검색 모드일 때: 아무 국가도 매치 안 하면 행 자체 숨기기
-                        const hasAnyPerSearch = Object.values(perCountrySearch).some(v => v.trim())
-                        if (hasAnyPerSearch && !activeCountries.some(c => perCountryVisible(c))) return null
-
-                        const rowHasIssue = activeCountries.some(c => {
-                          const m = mergeResult.matrix[c.id]?.[i]
-                          if (m?.missing) return true
-                          const local = m?.local ?? ''
-                          return (
-                            checkDNT(en, local, products).length > 0 ||
-                            checkUnreleased(local, c.label, products).length > 0 ||
-                            checkDNTCountMismatch(en, local, c.label, products) !== null ||
-                            detectServiceIssues(local, c.label).length > 0          // ✅ 추가
-                          )
-                        })
-                        return (
-                          <tr key={i} className={rowHasIssue ? 'cc-row-issue' : ''}>
-                            <td className="cc-td cc-td-idx">{i + 1}</td>
-                            <td className="cc-td mg-td-en">
-                              <span className="mg-en-text">{en || <em className="empty-val">빈 값</em>}</span>
-                            </td>
-                            {activeCountries.map(c => {
-                          const m = mergeResult.matrix[c.id]?.[i]
-                          const dntIss        = m?.local ? checkDNT(en, m.local, products) : []
-                          const urlIss        = m?.local ? checkUrlSiteCode(m.local, c.label) : []
-                          const isTBD         = hasTBDorNA(m?.local)
-                          const isMissing     = m?.missing || !m
-                          const unreleased    = (!isMissing && m?.local) ? checkUnreleased(m.local, c.label, products) : []
-                          const dntMismatch   = (!isMissing && m?.local) ? checkDNTCountMismatch(en, m.local, c.label, products) : null
-                          const svcIssues     = (!isMissing && m?.local) ? detectServiceIssues(m.local, c.label) : []   // ✅ 추가
-
-                          const hasAnyIssue = dntIss.length || urlIss.length || unreleased.length || dntMismatch || svcIssues.length  // ✅ 추가
-                          const pq = (perCountrySearch[c.id] ?? '').trim().toLowerCase()
-                          const isPerMatch = pq
-                            ? ((m?.local ?? '').toLowerCase().includes(pq) || en.toLowerCase().includes(pq))
-                            : true
-                              let cellClass = 'cc-td mg-td-local'
-                          if (isMissing)          cellClass += ' mg-cell-missing'
-                          else if (isTBD)         cellClass += ' mg-cell-tbd'
-                          else if (hasAnyIssue)   cellClass += ' cc-cell-issue'
-                          if (!isPerMatch && pq)  cellClass += ' mg-cell-dim'
-
-                              return (
-                                <td key={c.id} className={cellClass}>
-                                  {isMissing
-                                    ? <span className="mg-missing-badge">⚠ 매핑 없음</span>
-                                    : <span className="mg-local-text" style={isTBD ? { fontWeight: 700, color: '#b45309' } : {}}>
-                                        {m.local || <em className="empty-val">빈 값</em>}
-                                      </span>
-                                  }
-                                  {isTBD && (
-                                    <div className="mg-tbd-badge">⚠ TBD/N·A 미확정</div>
-                                  )}
-                                  {urlIss.map((u, ui) => (
-                                    <div key={ui} className="mg-url-badge">
-                                      🔗 URL 사이트코드 불일치: <code>/{u.found}/</code> → <code>/{u.expected}/</code> 필요
-                                    </div>
-                                  ))}
-                                  {dntIss.map((iss, di) => (
-                                    <div key={di} className="cc-launch-badge" style={{ fontSize: 10 }}>
-                                      ⚠ DNT: "{iss.alias}" {iss.enCount}→{iss.localCount}
-                                    </div>
-                                  ))}
-                              {unreleased.map((name, ui) => (
-                                <div key={`unrel-${ui}`} className="cc-launch-badge" style={{ fontSize: 10, background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d' }}>
-                                  🚫 미출시: {name}
-                                </div>
-                              ))}
-                              {dntMismatch && (
-                                <div className="cc-launch-badge" style={{ fontSize: 10, background: '#ede9fe', color: '#5b21b6', borderColor: '#c4b5fd' }}>
-                                  ⚠ DNT 개수 불일치 EN:{dntMismatch.enCount} / Local:{dntMismatch.lcCount}
-                                </div>
-                              )}
-                              {svcIssues.map((issue, si) => {
-                                if (issue.type === 'not_operated') return (
-                                  <div key={`svc-${si}`} className="cc-launch-badge" style={{ fontSize: 10, background: '#fee2e2', color: '#b91c1c', borderColor: '#fca5a5' }}>
-                                    ⛔ 미운영: {issue.service}
-                                  </div>
-                                )
-                                if (issue.type === 'wrong_text') return (
-                                  <div key={`svc-${si}`} className="cc-launch-badge" style={{ fontSize: 10, background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d' }}>
-                                    ⚠ {issue.service}
-                                    <div style={{ marginTop: 2, fontSize: '0.85em', opacity: 0.75 }}>→ <strong>{issue.expected}</strong></div>
-                                  </div>
-                                )
-                                if (issue.type === 'wrong_url') return (
-                                  <div key={`svc-${si}`} className="cc-launch-badge" style={{ fontSize: 10, background: '#eff6ff', color: '#1e40af', borderColor: '#93c5fd', wordBreak: 'break-all' }}>
-                                    🔗 {issue.service}
-                                    <div style={{ marginTop: 2, fontSize: '0.85em', opacity: 0.75 }}>→ <strong>{issue.expected}</strong></div>
-                                  </div>
-                                )
-                                return null
-                              })}
-                                </td>
-                              )
-                            })}
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
               </div>
-            </details>
-          </section>
-        )
-      })()}
+            ))}
+          </div>
+        </section>
+      )}
 
-      {/* ── 편집 영역 ── */}
-      <details className="mg-edit-details" open>
-        <summary className="mg-edit-summary">
-          <span className="mg-accordion-chevron" aria-hidden="true" />
-          <span className="mg-accordion-icon">{mergeResult ? '✏' : '📋'}</span>
-          <span>{mergeResult ? '카피 수정 / 국가 추가' : '카피 입력'}</span>
-        </summary>
-        <div className="mg-edit-body">
-
-          {/* ① 기준 영문 카피 */}
-          <section className="mg-section">
-            <div className="mg-section-header">
-              <div className="mg-section-title"><span className="mg-step">1</span>기준 영문 카피</div>
-              <button className="btn-ghost mg-excel-import-btn" onClick={() => setShowExcelImport(true)}>
-                📊 엑셀에서 한번에 가져오기
-              </button>
-            </div>
-            <textarea className="paste-area mg-en-area" value={enInput}
-              onChange={e => setEnInput(e.target.value)}
-              placeholder={"기준이 될 영문 카피를 한 줄씩 입력\n예:\nFind Your Galaxy\nPerformance\nCamera"} />
-            <div className="input-hint">{enInput ? `${parseEnLines(enInput).length}줄 입력됨` : '한 줄 = 카피 1개'}</div>
-          </section>
-
-          {showExcelImport && (
-            <ExcelImportModal
-              onClose={() => setShowExcelImport(false)}
-              onApply={applyExcelImport}
-            />
-          )}
-
-          {/* ② 국가별 컨펌 카피 */}
-          <section className="mg-section">
-            <div className="mg-section-header">
-              <div className="mg-section-title">
-                <span className="mg-step">2</span>국가별 컨펌 카피
-                {countries.some(c => c.isSaved) && (
-                  <span style={{ fontSize: 11, color: '#10b981', marginLeft: 8 }}>
-                    {countries.filter(c => c.isSaved).length}개국 저장됨
-                  </span>
-                )}
-              </div>
-              <SiteDropdown
-                label="+ 국가 추가"
-                excludeCodes={countries.map(c => c.label)}
-                onAdd={addCountry}
+      {!mergeResult ? (
+        <div className="mg-empty-grid-state">
+          <div className="empty-icon">📋</div>
+          <p>아직 카피가 없습니다</p>
+          <small>엑셀을 업로드하거나 "+ 행 추가"로 직접 입력해 시작하세요.</small>
+        </div>
+      ) : (
+        <section className="mg-result-section">
+          {/* ── 검색 바 ── */}
+          <div style={{ display: 'flex', gap: 8, margin: '10px 0', flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ position: 'relative', flex: '1 1 220px', maxWidth: 340 }}>
+              <span style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', color: '#9ca3af', fontSize: 13 }}>🔍</span>
+              <input
+                className="form-input"
+                style={{ paddingLeft: 28, fontSize: 13, width: '100%', boxSizing: 'border-box' }}
+                placeholder="전체 검색 (EN + 모든 국가)"
+                value={globalSearch}
+                onChange={e => { setGlobalSearch(e.target.value); setPerCountrySearch({}) }}
               />
             </div>
-            {countries.length === 0 ? (
-              <div className="empty-state" style={{ marginTop: 8 }}>
-                <div className="empty-icon">🌍</div>
-                <p>국가를 추가해주세요</p>
-              </div>
-            ) : (
-              <div className="mg-countries-grid">
-                {countries.map(c => (
-                  <CountryCard key={c.id} country={c} onRemove={removeCountry}
-                    onLabelChange={updateLabel} pasteRef={pasteRef} projectId={project.id} />
-                ))}
-              </div>
+            {(globalSearch || Object.values(perCountrySearch).some(v => v)) && (
+              <button className="act-btn act-cancel" style={{ fontSize: 12, whiteSpace: 'nowrap' }}
+                onClick={() => { setGlobalSearch(''); setPerCountrySearch({}) }}>
+                ✕ 검색 초기화
+              </button>
             )}
-          </section>
+            {gq && (
+              <span style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>
+                {filteredIndices.length}/{baseEnLines.length}건
+              </span>
+            )}
+            <span style={{ marginLeft: 'auto', fontSize: 12, color: '#6b7280' }}>
+              {baseEnLines.length}행 · {activeCountries.length}개국
+            </span>
+          </div>
 
-          {/* Merge 실행 */}
-          <section className="mg-run-row">
-            <button className="btn-primary mg-run-btn" onClick={runMerge} disabled={saving}>
-              {saving ? '⏳ 저장 중...' : '🔀 Merge 실행 & 저장'}
-            </button>
-            <span style={{ fontSize: 12, color: '#6b7280' }}>Merge 실행 시 자동 저장됩니다.</span>
-            {error && <div className="error-banner" style={{ margin: 0 }}>{error}</div>}
-          </section>
-
-          {/* DNT 이슈 */}
-          {mergeResult?.dntIssues?.length > 0 && (
-            <section className="mg-dnt-section">
-              <div className="mg-dnt-title">⚠ DNT 불일치 {mergeResult.dntIssues.length}건</div>
-              <div className="mg-dnt-list">
-                {(mergeResult.dntIssues || []).map((d, i) => (
-                  <div key={i} className="mg-dnt-item">
-                    <span className="mg-dnt-country">[{d.countryLabel}]</span>
-                    <span className="mg-dnt-row">{d.row}행</span>
-                    <span className="mg-dnt-en">{d.enText.slice(0, 40)}{d.enText.length > 40 ? '…' : ''}</span>
-                    <span className="mg-dnt-issues">
-                      {d.issues.map(iss => `"${iss.alias}" EN:${iss.enCount} Local:${iss.localCount}`).join(' / ')}
+          <div className="cc-table-wrap">
+            <table className="cc-table mg-table">
+              <thead>
+                <tr>
+                  <th className="cc-th cc-th-idx">#</th>
+                  <th className="cc-th mg-th-en">
+                    <span className="cc-th-name">
+                      EN (기준)
+                      <button className="mg-country-hist-btn" onClick={() => setShowEnHistory(true)} title="히스토리">🕐</button>
                     </span>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
+                  </th>
+                  {activeCountries.map(c => (
+                    <th key={c.id} className="cc-th mg-th-local">
+                      <div className="cc-th-inner">
+                        <span className="cc-th-name">
+                          {c.label}
+                          {c.dbId && (
+                            <button className="mg-country-hist-btn" onClick={() => setHistoryCountry(c)} title="히스토리">🕐</button>
+                          )}
+                          {isRegular() && (
+                            <button className="mg-country-del-btn" onClick={() => removeCountry(c.id)} title="국가 삭제">✕</button>
+                          )}
+                        </span>
+                        <div className="mg-th-search">
+                          <span className="mg-th-search-icon">🔍</span>
+                          <input
+                            className="mg-th-search-input"
+                            placeholder="검색"
+                            value={perCountrySearch[c.id] ?? ''}
+                            onClick={e => e.stopPropagation()}
+                            onChange={e => {
+                              setGlobalSearch('')
+                              setPerCountrySearch(prev => ({ ...prev, [c.id]: e.target.value }))
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filteredIndices.map(i => {
+                  const en = baseEnLines[i]
 
-          {/* ③ 국가별 추가 카피 (덮어쓰기) — Merge 결과가 있을 때만 표시 */}
-          {mergeResult && (
-            <section className="mg-section mg-patch-section" style={{ marginTop: 28 }}>
-              {/* 구분선 */}
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: 10,
-                marginBottom: 16, color: '#f59e0b',
-              }}>
-                <div style={{ flex: 1, height: 1, background: '#fde68a' }} />
-                <span style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>
-                  추가 / 수정 카피
-                </span>
-                <div style={{ flex: 1, height: 1, background: '#fde68a' }} />
-              </div>
+                  const perCountryVisible = (c) => {
+                    const pq = (perCountrySearch[c.id] ?? '').trim().toLowerCase()
+                    if (!pq) return true
+                    const local = (mergeResult.matrix[c.id]?.[i]?.local ?? '').toLowerCase()
+                    return local.includes(pq) || en.toLowerCase().includes(pq)
+                  }
+                  const hasAnyPerSearch = Object.values(perCountrySearch).some(v => v.trim())
+                  if (hasAnyPerSearch && !activeCountries.some(c => perCountryVisible(c))) return null
 
-              <div className="mg-section-header">
-                <div className="mg-section-title">
-                  <span
-                    className="mg-step"
-                    style={{ background: '#f59e0b', color: '#fff' }}
-                  >+</span>
-                  국가별 추가 카피
-                  <span style={{ fontSize: 11, color: '#b45309', marginLeft: 8, fontWeight: 400 }}>
-                    누락 · 수정된 카피를 기존 Merge 결과에 덮어씁니다
-                  </span>
-                </div>
-                <button
-                  className="btn-primary"
-                  style={{
-                    fontSize: 13, padding: '7px 16px',
-                    background: '#f59e0b', borderColor: '#f59e0b',
-                  }}
-                  onClick={addPatchCountry}
-                >
-                  + 국가 추가
-                </button>
-              </div>
+                  const rowHasIssue = activeCountries.some(c => {
+                    const m = mergeResult.matrix[c.id]?.[i]
+                    if (m?.missing) return true
+                    const local = m?.local ?? ''
+                    return (
+                      checkDNT(en, local, products).length > 0 ||
+                      checkUnreleased(local, c.label, products).length > 0 ||
+                      checkDNTCountMismatch(en, local, c.label, products) !== null ||
+                      detectServiceIssues(local, c.label).length > 0
+                    )
+                  })
 
-              {patchCountries.length === 0 ? (
-                <div style={{
-                  marginTop: 8, padding: '20px 24px',
-                  background: '#fffbeb', borderRadius: 10,
-                  border: '1.5px dashed #fcd34d',
-                  textAlign: 'center',
-                }}>
-                  <div style={{ fontSize: 24, marginBottom: 6 }}>✏️</div>
-                  <p style={{ fontSize: 13, color: '#92400e', margin: '0 0 4px' }}>
-                    뒤늦게 수정된 카피가 있을 때 사용하세요
-                  </p>
-                  <small style={{ color: '#b45309' }}>
-                    입력한 행만 Merge 결과에 덮어쓰이고,
-                    국가별 컨펌 카피도 함께 업데이트됩니다.
-                    저장 후 이 영역은 자동으로 초기화됩니다.
-                  </small>
-                </div>
-              ) : (
-                <>
-                  <div className="mg-countries-grid">
-                    {patchCountries.map(c => (
-                      <PatchCountryCard
-                        key={c.id}
-                        country={c}
-                        onRemove={removePatchCountry}
-                        onLabelChange={updatePatchLabel}
-                        patchPasteRef={patchPasteRef}
-                        existingLabels={countries.map(x => x.label)}
-                      />
-                    ))}
-                  </div>
+                  return (
+                    <tr key={i} className={rowHasIssue ? 'cc-row-issue' : ''}>
+                      <td className="cc-td cc-td-idx">
+                        {i + 1}
+                        <button className="mg-row-del-btn" onClick={() => removeRow(i)} title="행 삭제">✕</button>
+                      </td>
+                      <td className="cc-td mg-td-en">
+                        <div
+                          className="mg-en-text"
+                          contentEditable
+                          suppressContentEditableWarning
+                          onBlur={e => {
+                            const val = e.currentTarget.textContent.trim()
+                            if (val !== en) updateEnCell(i, val)
+                          }}
+                        >{en}</div>
+                      </td>
+                      {activeCountries.map(c => {
+                        const m = mergeResult.matrix[c.id]?.[i]
+                        const dntIss        = m?.local ? checkDNT(en, m.local, products) : []
+                        const urlIss        = m?.local ? checkUrlSiteCode(m.local, c.label) : []
+                        const isTBD         = hasTBDorNA(m?.local)
+                        const isMissing     = m?.missing || !m
+                        const unreleased    = (!isMissing && m?.local) ? checkUnreleased(m.local, c.label, products) : []
+                        const dntMismatch   = (!isMissing && m?.local) ? checkDNTCountMismatch(en, m.local, c.label, products) : null
+                        const svcIssues     = (!isMissing && m?.local) ? detectServiceIssues(m.local, c.label) : []
 
-                  <div className="mg-run-row" style={{ marginTop: 14 }}>
-                    <button
-                      className="btn-primary mg-run-btn"
-                      style={{ background: '#f59e0b', borderColor: '#f59e0b' }}
-                      onClick={runPatch}
-                      disabled={patchSaving}
-                    >
-                      {patchSaving ? '⏳ 저장 중...' : '✅ 추가 카피 덮어쓰기 저장'}
-                    </button>
-                    <span style={{ fontSize: 12, color: '#6b7280' }}>
-                      저장 후 추가 카피 영역은 자동으로 초기화됩니다.
-                    </span>
-                    {patchError && (
-                      <div className="error-banner" style={{ margin: 0 }}>{patchError}</div>
-                    )}
-                  </div>
-                </>
-              )}
-            </section>
-          )}
+                        const hasAnyIssue = dntIss.length || urlIss.length || unreleased.length || dntMismatch || svcIssues.length
+                        const pq = (perCountrySearch[c.id] ?? '').trim().toLowerCase()
+                        const isPerMatch = pq
+                          ? ((m?.local ?? '').toLowerCase().includes(pq) || en.toLowerCase().includes(pq))
+                          : true
+                        let cellClass = 'cc-td mg-td-local'
+                        if (isMissing)          cellClass += ' mg-cell-missing'
+                        else if (isTBD)         cellClass += ' mg-cell-tbd'
+                        else if (hasAnyIssue)   cellClass += ' cc-cell-issue'
+                        if (!isPerMatch && pq)  cellClass += ' mg-cell-dim'
 
-        </div>
-      </details>
+                        return (
+                          <td key={c.id} className={cellClass}>
+                            <div
+                              className="mg-local-text"
+                              contentEditable
+                              suppressContentEditableWarning
+                              style={isTBD ? { fontWeight: 700, color: '#b45309' } : {}}
+                              onBlur={e => {
+                                const val = e.currentTarget.textContent.trim()
+                                if (val !== (m?.local ?? '')) updateCountryCell(c.id, i, val)
+                              }}
+                            >{m?.local ?? ''}</div>
+                            {isTBD && (
+                              <div className="mg-tbd-badge">⚠ TBD/N·A 미확정</div>
+                            )}
+                            {urlIss.map((u, ui) => (
+                              <div key={ui} className="mg-url-badge">
+                                🔗 URL 사이트코드 불일치: <code>/{u.found}/</code> → <code>/{u.expected}/</code> 필요
+                              </div>
+                            ))}
+                            {dntIss.map((iss, di) => (
+                              <div key={di} className="cc-launch-badge" style={{ fontSize: 10 }}>
+                                ⚠ DNT: "{iss.alias}" {iss.enCount}→{iss.localCount}
+                              </div>
+                            ))}
+                            {unreleased.map((name, ui) => (
+                              <div key={`unrel-${ui}`} className="cc-launch-badge" style={{ fontSize: 10, background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d' }}>
+                                🚫 미출시: {name}
+                              </div>
+                            ))}
+                            {dntMismatch && (
+                              <div className="cc-launch-badge" style={{ fontSize: 10, background: '#ede9fe', color: '#5b21b6', borderColor: '#c4b5fd' }}>
+                                ⚠ DNT 개수 불일치 EN:{dntMismatch.enCount} / Local:{dntMismatch.lcCount}
+                              </div>
+                            )}
+                            {svcIssues.map((issue, si) => {
+                              if (issue.type === 'not_operated') return (
+                                <div key={`svc-${si}`} className="cc-launch-badge" style={{ fontSize: 10, background: '#fee2e2', color: '#b91c1c', borderColor: '#fca5a5' }}>
+                                  ⛔ 미운영: {issue.service}
+                                </div>
+                              )
+                              if (issue.type === 'wrong_text') return (
+                                <div key={`svc-${si}`} className="cc-launch-badge" style={{ fontSize: 10, background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d' }}>
+                                  ⚠ {issue.service}
+                                  <div style={{ marginTop: 2, fontSize: '0.85em', opacity: 0.75 }}>→ <strong>{issue.expected}</strong></div>
+                                </div>
+                              )
+                              if (issue.type === 'wrong_url') return (
+                                <div key={`svc-${si}`} className="cc-launch-badge" style={{ fontSize: 10, background: '#eff6ff', color: '#1e40af', borderColor: '#93c5fd', wordBreak: 'break-all' }}>
+                                  🔗 {issue.service}
+                                  <div style={{ marginTop: 2, fontSize: '0.85em', opacity: 0.75 }}>→ <strong>{issue.expected}</strong></div>
+                                </div>
+                              )
+                              return null
+                            })}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </div>
   )
 }
@@ -2351,6 +2043,7 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
 export default function MergeTab({ resetKey }) {
   const { dbReady }                   = useDB()
   const [projects, setProjects]       = useState([])
+  const [folders, setFolders]         = useState([])
   const [projLoading, setProjLoading] = useState(false)
   const [openProject, setOpenProject] = useState(null)
   const [products, setProducts]       = useState([])
@@ -2366,7 +2059,10 @@ export default function MergeTab({ resetKey }) {
     setProjLoading(true)
     try {
       const res = await api.mergeListProjects()
-      if (res.ok) setProjects(res.data)
+      if (res.ok) {
+        setProjects(res.data)
+        setFolders(res.folders || [])
+      }
     } catch (e) { console.error(e) }
     finally { setProjLoading(false) }
   }, [dbReady])
@@ -2376,18 +2072,61 @@ export default function MergeTab({ resetKey }) {
     api.getProducts().then(res => { if (res.ok) setProducts(res.data) }).catch(() => {})
   }, [])
 
-  const handleCreate = async (title) => {
+  const handleCreate = async (title, folderId) => {
     const res = await api.mergeCreateProject({ title, enLines: '' })
-    if (res.ok) { await loadProjects(); setOpenProject({ id: res.id, title }) }
+    if (res.ok) {
+      if (folderId) await api.mergeMoveProjectToFolder(res.id, { folderId })
+      await loadProjects()
+      setOpenProject({ id: res.id, title })
+    }
   }
   const handleDelete = async (id, title) => {
-    if (!isRegular()) { alert('정규직만 프로젝트를 삭제할 수 있습니다.'); return }
+    if (!isRegular()) { alert('권한이 없습니다.'); return }
     if (!window.confirm(`"${title}" 프로젝트를 삭제하시겠습니까?`)) return
     await api.mergeDeleteProject(id)
     if (openProject?.id === id) setOpenProject(null)
     loadProjects()
   }
+  const handleRenameProject = async (id, newTitle) => {
+    if (!isRegular()) { alert('권한이 없습니다.'); return }
+    try {
+      await api.mergeUpdateProject(id, { title: newTitle })
+      setProjects(prev => prev.map(p => p.id === id ? { ...p, title: newTitle } : p))
+    } catch (e) { console.error('[Merge] 프로젝트 이름 수정 실패:', e?.message || e) }
+  }
   const handleBack = () => { setOpenProject(null); loadProjects() }
+
+  // ── 폴더 핸들러 (StatusTab과 동일한 패턴) ─────────────────────
+  const createFolder = async (name) => {
+    if (!isRegular()) { alert('권한이 없습니다.'); return }
+    try {
+      const res = await api.mergeCreateFolder({ name })
+      if (res?.ok) setFolders(prev => [...prev, { id: res.id, name, created_at: new Date().toISOString() }])
+    } catch (e) { console.error('[Merge] 폴더 생성 실패:', e?.message || e) }
+  }
+  const renameFolder = async (folderId, newName) => {
+    if (!isRegular()) { alert('권한이 없습니다.'); return }
+    try {
+      await api.mergeUpdateFolder(folderId, { name: newName })
+      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, name: newName } : f))
+    } catch (e) { console.error('[Merge] 폴더 이름 수정 실패:', e?.message || e) }
+  }
+  const deleteFolder = async (folder) => {
+    if (!isRegular()) { alert('권한이 없습니다.'); return }
+    if (!window.confirm(`"${folder.name}" 폴더를 삭제하시겠습니까?\n폴더 내 프로젝트는 최상위로 이동됩니다.`)) return
+    try {
+      await api.mergeDeleteFolder(folder.id)
+      setFolders(prev => prev.filter(f => f.id !== folder.id))
+      setProjects(prev => prev.map(p => p.folder_id === folder.id ? { ...p, folder_id: null } : p))
+    } catch (e) { console.error('[Merge] 폴더 삭제 실패:', e?.message || e) }
+  }
+  const moveProjectToFolder = async (projectId, folderId) => {
+    if (!isRegular()) { alert('권한이 없습니다.'); return }
+    try {
+      await api.mergeMoveProjectToFolder(projectId, { folderId })
+      setProjects(prev => prev.map(p => p.id === projectId ? { ...p, folder_id: folderId } : p))
+    } catch (e) { console.error('[Merge] 폴더 이동 실패:', e?.message || e) }
+  }
 
   if (openProject) {
     return (
@@ -2403,10 +2142,16 @@ export default function MergeTab({ resetKey }) {
   return (
     <ProjectListView
       projects={projects}
+      folders={folders}
       loading={projLoading}
       onCreate={handleCreate}
       onOpen={p => setOpenProject(p)}
       onDelete={handleDelete}
+      onRename={handleRenameProject}
+      onCreateFolder={createFolder}
+      onRenameFolder={renameFolder}
+      onDeleteFolder={deleteFolder}
+      onMoveToFolder={moveProjectToFolder}
     />
   )
 }

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
+import { isStaff } from '../roles.js'
 import SiteDropdown from '../components/SiteDropdown.jsx'
 import { ALL_SITES, SITE_MAP, REGIONS, REGION_COLORS as RC, REGION_BG as RB } from '../constants.js'
 import { parseCol, detectBadges, exportToCSV } from '../utils.js'
@@ -876,7 +877,7 @@ function ProjectManager({ products, resetKey }) {
 
   const handleDelete = async (id, name, e) => {
     e.stopPropagation()
-    if (user?.position !== 'regular') { alert('정규직만 프로젝트를 삭제할 수 있습니다.'); return }
+    if (!isStaff(user?.position)) { alert('권한이 없습니다.'); return }
     if (!window.confirm(`"${name}" 프로젝트를 삭제하시겠습니까?\n저장된 카피 데이터도 모두 삭제됩니다.`)) return
     await api.ccDeleteProject(id)
     if (selectedId === id) { setSelectedId(null); localStorage.removeItem('country_selected_project_id') }
@@ -945,7 +946,7 @@ function ProjectManager({ products, resetKey }) {
           <div key={p.id} className="pj-card" onClick={() => { setSelectedId(p.id); localStorage.setItem('country_selected_project_id', p.id) }}>
             <div className="pj-card-header">
               <span className="pj-card-name">{p.name}</span>
-              {user?.position === 'regular' && (
+              {isStaff(user?.position) && (
                 <button className="act-btn act-delete" style={{ padding: '2px 7px' }}
                   onClick={e => handleDelete(p.id, p.name, e)}>🗑</button>
               )}
@@ -1130,7 +1131,7 @@ function ProductPanel({ onClose, onProductsChanged }) {
   }
 
   const handleDelete = async (id, name) => {
-    if (user?.position !== 'regular') { alert('정규직만 제품을 삭제할 수 있습니다.'); return }
+    if (!isStaff(user?.position)) { alert('권한이 없습니다.'); return }
     if (!window.confirm(`"${name}"을(를) 삭제하시겠습니까?`)) return
     const res = await api.deleteProduct(id)
     if (res.ok) { await load(); onProductsChanged() }
@@ -1177,7 +1178,7 @@ function ProductPanel({ onClose, onProductsChanged }) {
                   <div className="pp-item-actions">
                     <button className="act-btn" style={{ color: '#6366f1', borderColor: '#6366f1' }} onClick={() => setHistoryProduct(p)}>📋 이력</button>
                     <button className="act-btn act-edit" onClick={() => openEdit(p)}>✏ 수정</button>
-                    {user?.position === 'regular' && (
+                    {isStaff(user?.position) && (
                       <button className="act-btn act-delete" onClick={() => handleDelete(p.id, p.name)}>🗑</button>
                     )}
                   </div>

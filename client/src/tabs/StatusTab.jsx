@@ -9,6 +9,7 @@ import { socket } from '../socket.js'
 import { useAuth } from '../auth.jsx'
 import { useDB } from '../DBContext.jsx'
 import { ALL_SITES, REGIONS, REGION_COLORS, REGION_BG } from '../constants.js'
+import { isStaff } from '../roles.js'
 import * as XLSX from 'xlsx'
 
 // ── 상태 정의 (0=미설정, 1~15=단계) ─────────────────────────
@@ -1374,7 +1375,7 @@ function DuplicateModal({ page, onConfirm, onClose }) {
 // ── BillingModal 컴포넌트 ──────────────────────────────────────
 function BillingModal({ page, onClose }) {
   const { user } = useAuth()
-  const isRegular = user?.position === 'regular'
+  const isRegular = isStaff(user?.position)
 
   // 폼 상태
   const [form, setForm] = useState({
@@ -2247,8 +2248,8 @@ function PageDetail({ page, onBack, onUpdate }) {
   }
 
   const removeCountry = async (code) => {
-    if (user?.position !== 'regular') {
-      alert('정규직만 국가를 제거할 수 있습니다.')
+    if (!isStaff(user?.position)) {
+      alert('권한이 없습니다.')
       return
     }
     if (!window.confirm(`${code} 국가를 이 페이지에서 제거하시겠습니까?`)) return
@@ -2288,7 +2289,7 @@ function PageDetail({ page, onBack, onUpdate }) {
           
           <span className="cst-detail-date">생성: {page.createdAt?.slice(0, 10)}</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-            {user?.position === 'regular' && (
+            {isStaff(user?.position) && (
               <button
                 onClick={() => setShowBilling(true)}
                 style={{
@@ -2546,7 +2547,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 handleBranchClose={handleBranchClose}
                 handleBranchDelete={handleBranchDelete}
                 removeCountry={removeCountry}
-                isRegular={user?.position === 'regular'}
+                isRegular={isStaff(user?.position)}
                 pageId={page.id}
                 initialStatusHistory={entry?.statusHistoryItems ?? null}
                 historyBump={historyBumpMap[site.code] || 0}
@@ -2569,8 +2570,9 @@ function DotsMenu({ items }) {
   const btnRef = useRef(null)
   const menuRef = useRef(null)
 
-  // 메뉴 열 때 버튼 위치 기준으로 좌표 계산 (뷰포트 밖으로 안 나가게 보정)
-  const openMenu = () => {
+  // 버튼 위치 기준으로 메뉴 좌표 계산 (뷰포트 밖으로 안 나가게 보정)
+  const calcPos = () => {
+    if (!btnRef.current) return null
     const r = btnRef.current.getBoundingClientRect()
     const MENU_W = 170
     const MENU_MAX_H = 320
@@ -2580,7 +2582,11 @@ function DotsMenu({ items }) {
     if (left + MENU_W > window.innerWidth - 4) left = window.innerWidth - MENU_W - 4
     if (top + MENU_MAX_H > window.innerHeight - 4) top = r.top - MENU_MAX_H - 4 // 아래 공간 부족하면 위로 띄움
     if (top < 4) top = 4
-    setPos({ top, left })
+    return { top, left }
+  }
+
+  const openMenu = () => {
+    setPos(calcPos())
     setOpen(true)
   }
 
@@ -2592,14 +2598,19 @@ function DotsMenu({ items }) {
         menuRef.current && !menuRef.current.contains(e.target)
       ) setOpen(false)
     }
-    function handleScrollResize() { setOpen(false) }
+    // 목록이 스크롤되어도 메뉴를 닫지 않고 버튼을 따라 위치만 다시 계산한다
+    // (긴 폴더 목록처럼 스크롤이 있는 화면에서 메뉴가 사라지던 문제 수정)
+    function reposition() {
+      const next = calcPos()
+      if (next) setPos(next); else setOpen(false)
+    }
     document.addEventListener('mousedown', handle)
-    window.addEventListener('scroll', handleScrollResize, true)
-    window.addEventListener('resize', handleScrollResize)
+    window.addEventListener('scroll', reposition, true)
+    window.addEventListener('resize', reposition)
     return () => {
       document.removeEventListener('mousedown', handle)
-      window.removeEventListener('scroll', handleScrollResize, true)
-      window.removeEventListener('resize', handleScrollResize)
+      window.removeEventListener('scroll', reposition, true)
+      window.removeEventListener('resize', reposition)
     }
   }, [open])
 
@@ -2695,7 +2706,7 @@ function PageCard({ page, onSelect, onDelete, onRename, onRequestDuplicate, user
   const unset = page.countries.filter(c => !c.status).length
   const currentFolder = folders.find(f => f.id === page.folder_id)
 
-  const menuItems = user?.position === 'regular' ? [
+  const menuItems = isStaff(user?.position) ? [
     {
       icon: '✏️', label: '이름 바꾸기',
       action: () => setRenaming(true),
@@ -3045,7 +3056,7 @@ export default function StatusTab({ resetKey }) {
 
   const deletePage = useCallback(async (page, e) => {
     e.stopPropagation()
-    if (user?.position !== 'regular') { alert('정규직만 페이지를 삭제할 수 있습니다.'); return }
+    if (!isStaff(user?.position)) { alert('권한이 없습니다.'); return }
     if (!window.confirm(`"${page.name}" 페이지를 삭제하시겠습니까?\n페이지 내 모든 상태·파일 데이터가  삭제됩니다.`)) return
     try {
       const res = await api.deleteTrackerPage(page.id)
@@ -3067,7 +3078,7 @@ export default function StatusTab({ resetKey }) {
 
   // ── 프로젝트(페이지) 복사 ─────────────────────────────────────
   const duplicatePage = useCallback(async (page, options = {}) => {
-    if (user?.position !== 'regular') { alert('정규직만 프로젝트를 복사할 수 있습니다.'); return }
+    if (!isStaff(user?.position)) { alert('권한이 없습니다.'); return }
     // options 기본값: 전부 true (기존 직접 호출 호환)
     const opt = {
       countries: true, status: true, files: true, statusHistory: true, branches: true, billing: true,
@@ -3306,7 +3317,7 @@ export default function StatusTab({ resetKey }) {
               }}
             >📋 전체 뷰</button>
           </div>
-          {user?.position === 'regular' && viewMode === 'folder' && (
+          {isStaff(user?.position) && viewMode === 'folder' && (
             <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setShowNewFolder(true)}>+ 새 폴더</button>
           )}
           <button className="btn-primary" onClick={() => setShowNewPage(true)}>+ 새 페이지</button>
@@ -3355,7 +3366,7 @@ export default function StatusTab({ resetKey }) {
               {...sharedCardProps}
               onRenameFolder={renameFolder}
               onDeleteFolder={deleteFolder}
-              isRegular={user?.position === 'regular'}
+              isRegular={isStaff(user?.position)}
             />
           ))}
 

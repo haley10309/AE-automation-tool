@@ -117,6 +117,19 @@ router.post('/init', checkDbConnection, async (req, res) => {
       await getPool().execute(`ALTER TABLE merge_countries ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at`);
     } catch (_) { /* 이미 존재하면 무시 */ }
 
+    // ── merge_folders 테이블 (StatusTab의 tracker_folders와 동일한 패턴) ──
+    await getPool().execute(`CREATE TABLE IF NOT EXISTS merge_folders (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      deleted TINYINT(1) NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) COMMENT='MergeTab 폴더 (depth 1)'`);
+
+    // 기존 merge_projects 테이블에 folder_id 컬럼이 없으면 추가
+    try {
+      await getPool().execute(`ALTER TABLE merge_projects ADD COLUMN folder_id INT DEFAULT NULL COMMENT '소속 폴더 (NULL이면 최상위)' AFTER title`);
+    } catch (_) { /* 이미 존재하면 무시 */ }
+
     // ── merge_country_history 테이블 (변경 이력) ──────────────
     await getPool().execute(`CREATE TABLE IF NOT EXISTS merge_country_history (
       id          INT AUTO_INCREMENT PRIMARY KEY,
@@ -142,6 +155,19 @@ router.post('/init', checkDbConnection, async (req, res) => {
     try {
       await getPool().execute(`ALTER TABLE merge_country_history ADD COLUMN saved_by_email VARCHAR(255) AFTER saved_by`);
     } catch (_) {}
+
+    // ── merge_project_history 테이블 (EN 기준 카피 변경 이력) ──
+    await getPool().execute(`CREATE TABLE IF NOT EXISTS merge_project_history (
+      id          INT AUTO_INCREMENT PRIMARY KEY,
+      project_id  INT NOT NULL,
+      title       VARCHAR(255),
+      en_lines    LONGTEXT COMMENT '저장 시점의 전체 EN 기준 카피',
+      diff_json   JSON COMMENT '이전 버전 대비 변경된 행만',
+      saved_by    VARCHAR(100) COMMENT '저장한 사용자 이름',
+      saved_by_email VARCHAR(255) COMMENT '저장한 사용자 이메일',
+      saved_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_project (project_id)
+    ) COMMENT='Merge 프로젝트 EN(기준) 카피 변경 이력'`);
 
     await getPool().execute(`CREATE TABLE IF NOT EXISTS copy_requests (
       id INT AUTO_INCREMENT PRIMARY KEY, product_name VARCHAR(255) NOT NULL,

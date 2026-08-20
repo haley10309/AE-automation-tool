@@ -138,12 +138,67 @@ router.post('/parse-excel', async (req, res) => {
 
 
 
+// ── 폴더 CRUD (StatusTab의 tracker_folders와 동일한 패턴) ──────────
+router.get('/folders', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const [folders] = await getPool().execute(
+      `SELECT id, name, created_at FROM merge_folders WHERE deleted = 0 ORDER BY created_at ASC`
+    )
+    res.json({ ok: true, data: folders })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+router.post('/folders', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const { name } = req.body
+    if (!name?.trim()) return res.json({ ok: false, message: '폴더 이름을 입력하세요.' })
+    const [result] = await getPool().execute(
+      `INSERT INTO merge_folders (name) VALUES (?)`, [name.trim()]
+    )
+    res.json({ ok: true, id: result.insertId })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+router.put('/folders/:id', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const { name } = req.body
+    await getPool().execute(`UPDATE merge_folders SET name = ? WHERE id = ?`, [name, req.params.id])
+    res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+router.delete('/folders/:id', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    // 폴더 삭제 시 소속 프로젝트는 최상위(folder_id=NULL)로 이동
+    await getPool().execute(`UPDATE merge_projects SET folder_id = NULL WHERE folder_id = ?`, [req.params.id])
+    await getPool().execute(`UPDATE merge_folders SET deleted = 1 WHERE id = ?`, [req.params.id])
+    res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+// 프로젝트를 폴더로 이동 / 최상위로 이동
+router.put('/projects/:id/folder', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const { folderId } = req.body // null이면 최상위
+    await getPool().execute(
+      `UPDATE merge_projects SET folder_id = ? WHERE id = ?`,
+      [folderId ?? null, req.params.id]
+    )
+    res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
 // ── 프로젝트 목록
 router.get('/projects', async (req, res) => {
   if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
     const [rows] = await getPool().execute(
-      `SELECT p.id, p.title, p.en_lines, p.created_at, p.updated_at,
+      `SELECT p.id, p.title, p.folder_id, p.en_lines, p.created_at, p.updated_at,
               COUNT(c.id) AS country_count
        FROM merge_projects p
        LEFT JOIN merge_countries c ON c.project_id = p.id AND c.deleted = 0
@@ -151,12 +206,15 @@ router.get('/projects', async (req, res) => {
        GROUP BY p.id
        ORDER BY p.updated_at DESC`
     )
+    const [folders] = await getPool().execute(
+      `SELECT id, name, created_at FROM merge_folders WHERE deleted = 0 ORDER BY created_at ASC`
+    )
     const data = rows.map(p => {
       const enLines = (p.en_lines || '').split('\n').filter(l => l.trim() !== '')
       const { en_lines, ...rest } = p
       return { ...rest, row_count: enLines.length }
     })
-    res.json({ ok: true, data })
+    res.json({ ok: true, data, folders })
   } catch (e) { res.json({ ok: false, message: e.message }) }
 })
 
@@ -196,11 +254,55 @@ router.put('/projects/:id', async (req, res) => {
   if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
     const { title, enLines } = req.body
+    const savedBy      = req.user?.name  || '알 수 없음'
+    const savedByEmail = req.user?.email || ''
+
+    // enLines가 바뀌는 요청일 때만, 이전 값과 비교해서 실제 변경이 있으면 히스토리 기록
+    // (국가별 히스토리와 동일한 방식 — 행 단위로 diff 계산, 위치 기준 비교)
+    if (enLines !== undefined && enLines !== null) {
+      const [[prevRow]] = await getPool().execute(
+        `SELECT title, en_lines FROM merge_projects WHERE id = ?`, [req.params.id]
+      )
+      const prevLines = (prevRow?.en_lines || '').split('\n').filter(l => l.trim() !== '')
+      const newLines  = (enLines || '').split('\n').filter(l => l.trim() !== '')
+      const changed = prevLines.length !== newLines.length || prevLines.some((l, i) => l !== newLines[i])
+
+      if (changed) {
+        const maxLen = Math.max(prevLines.length, newLines.length)
+        const diffRows = []
+        for (let i = 0; i < maxLen; i++) {
+          if (prevLines[i] !== newLines[i]) {
+            diffRows.push({ row: i + 1, prev_en: prevLines[i] ?? null, new_en: newLines[i] ?? null })
+          }
+        }
+        await getPool().execute(
+          `INSERT INTO merge_project_history (project_id, title, en_lines, diff_json, saved_by, saved_by_email)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [req.params.id, prevRow?.title || title || '', enLines, JSON.stringify(diffRows), savedBy, savedByEmail]
+        )
+      }
+    }
+
     await getPool().execute(
       `UPDATE merge_projects SET title = COALESCE(?, title), en_lines = COALESCE(?, en_lines) WHERE id = ?`,
       [title ?? null, enLines ?? null, req.params.id]
     )
     res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+// ── EN(기준) 카피 히스토리 조회
+router.get('/projects/:id/en-history', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const [rows] = await getPool().execute(
+      `SELECT id, title, en_lines, diff_json, saved_by, saved_by_email, saved_at
+       FROM merge_project_history
+       WHERE project_id = ?
+       ORDER BY saved_at DESC`,
+      [req.params.id]
+    )
+    res.json({ ok: true, data: rows })
   } catch (e) { res.json({ ok: false, message: e.message }) }
 })
 

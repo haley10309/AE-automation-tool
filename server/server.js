@@ -19,6 +19,11 @@ const http    = require('http');
 const { Server } = require('socket.io');
 const { initPool } = require('./db');
 const { setIO } = require('./realtime');
+const { setDataDir } = require('./paths');
+
+// db-environments.json 등 로컬 데이터 파일이 실제 exe 위치에 저장되도록,
+// 진입점 스크립트(server.js)의 안전한 __dirname을 공유 모듈에 주입
+setDataDir(__dirname);
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
@@ -40,6 +45,7 @@ const countryRouter = require('./routes/country');
 const statusRouter  = require('./routes/status');
 const mergeRouter   = require('./routes/merge');
 const serviceRouter = require('./routes/service');
+const adminRouter   = require('./routes/admin');
 
 app.use('/api',          initRouter);     // POST /api/connect, /api/init
 app.use('/api/auth',     authRouter);     // POST /api/auth/register, /login, GET /me
@@ -49,6 +55,7 @@ app.use('/api/cc',       countryRouter);  // /api/cc/projects, /copies, /dnt, /l
 app.use('/api',          statusRouter);   // /api/tracker/*, /api/files
 app.use('/api/merge',    mergeRouter);    // /api/merge/projects, /countries, /history
 app.use('/api/services', serviceRouter);  // /api/services
+app.use('/api/admin',    adminRouter);    // /api/admin/users, /environments (관리자 전용)
 
 // ── 정적 파일 & SPA fallback ──────────────────────────────────
 const clientDist = process.env.CLIENT_DIST_PATH

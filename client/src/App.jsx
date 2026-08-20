@@ -8,12 +8,14 @@ import ExtractTab from './tabs/ExtractTab.jsx'
 import CountryTab from './tabs/CountryTab.jsx'
 import StatusTab  from './tabs/StatusTab.jsx'
 import MergeTab   from './tabs/MergeTab.jsx'
+import AdminTab   from './tabs/AdminTab.jsx'
 
 const TABS = {
   EXTRACT:  'extract',
   MERGE:    'merge',
   COUNTRY:  'country',
   STATUS:   'status',
+  ADMIN:    'admin',
   SETTINGS: 'settings',
 }
 
@@ -22,6 +24,14 @@ const DB_BADGE = {
   connecting:   { label: '연결 중...', cls: 'badge-yellow' },
   connected:    { label: 'DB 연결됨',  cls: 'badge-green'  },
   error:        { label: '연결 오류',  cls: 'badge-red'    },
+}
+
+const POSITION_LABELS = {
+  publisher:        '퍼블리셔',
+  ae:                'AE',
+  intern_publisher: '인턴(퍼블리셔)',
+  intern_ae:        '인턴(AE)',
+  admin:             '관리자',
 }
 
 // ── 실제 앱 (로그인 후) ───────────────────────────────────────
@@ -67,9 +77,9 @@ function AppContent() {
           {/* 사용자 정보 + 로그아웃 */}
           <div className="user-info">
             <span className="user-name">{user.name}</span>
-            {/* <span className={`user-position ${user.position}`}>
-              {user.position === 'regular' ? '정규직' : '인턴'}
-            </span> */}
+            <span className={`user-position ${user.position}`}>
+              {POSITION_LABELS[user.position] || user.position}
+            </span>
             <button className="btn-logout" onClick={logout}>로그아웃</button>
           </div>
         </div>
@@ -89,6 +99,13 @@ function AppContent() {
             {t.label}
           </button>
         ))}
+        {user.position === 'admin' && (
+          <button
+            className={`tab-btn ${tab === TABS.ADMIN ? 'active' : ''}`}
+            onClick={() => handleTabChange(TABS.ADMIN)}>
+            👑 Admin
+          </button>
+        )}
         <button
           className={`tab-btn ${tab === TABS.SETTINGS ? 'active' : ''}`}
           style={{ marginLeft: 'auto' }}
@@ -102,6 +119,7 @@ function AppContent() {
         {tab === TABS.MERGE    && <MergeTab resetKey={mergeResetKey} />}
         {tab === TABS.COUNTRY  && <CountryTab resetKey={countryResetKey} />}
         {tab === TABS.STATUS   && <StatusTab resetKey={statusResetKey} />}
+        {tab === TABS.ADMIN && user.position === 'admin' && <AdminTab />}
 
         {/* ═══ DB 설정 탭 ═══ */}
         {tab === TABS.SETTINGS && (
@@ -137,10 +155,7 @@ function AppContent() {
                 )}
               </div>
 
-              {/* 사용자 관리 — 정규직만 표시 */}
-              {user.position === 'regular' && (
-                <UserManagement />
-              )}
+              {/* 사용자 관리는 이제 상단 "Admin" 탭(관리자 전용)에서 통합 관리합니다 */}
 
               <div className="guide-box">
                 <h3>MySQL 설치 가이드</h3>
@@ -183,59 +198,6 @@ users — 사용자 계정`}</pre>
           </div>
         )}
       </main>
-    </div>
-  )
-}
-
-// ── 사용자 관리 (정규직 전용) ─────────────────────────────────
-function UserManagement() {
-  const [users, setUsers]   = useState([])
-  const [loading, setLoading] = useState(false)
-
-  const load = async () => {
-    setLoading(true)
-    const token = localStorage.getItem('ae_tool_token')
-    const res = await fetch('http://localhost:4000/api/auth/users', {
-      headers: { Authorization: `Bearer ${token}` }
-    }).then(r => r.json())
-    if (res.ok) setUsers(res.data)
-    setLoading(false)
-  }
-
-  useEffect(() => { load() }, [])
-
-  const toggleApprove = async (id, current) => {
-    const token = localStorage.getItem('ae_tool_token')
-    await fetch(`http://localhost:4000/api/auth/users/${id}/approve`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ approved: !current }),
-    })
-    load()
-  }
-
-  return (
-    <div className="user-mgmt">
-      <h3 className="user-mgmt-title">사용자 관리 <span className="user-mgmt-badge">관리자</span></h3>
-      {loading && <div className="loading">불러오는 중...</div>}
-      <div className="user-mgmt-list">
-        {users.map(u => (
-          <div key={u.id} className="user-mgmt-item">
-            <div className="user-mgmt-info">
-              <span className="user-mgmt-name">{u.name}</span>
-              <span className="user-mgmt-email">{u.email}</span>
-              <span className={`user-position ${u.position}`}>
-                {u.position === 'regular' ? '정규직' : '인턴'}
-              </span>
-            </div>
-            <button
-              className={`user-mgmt-btn ${u.approved ? 'approved' : 'pending'}`}
-              onClick={() => toggleApprove(u.id, u.approved)}>
-              {u.approved ? '✓ 승인됨' : '대기 중 — 클릭하여 승인'}
-            </button>
-          </div>
-        ))}
-      </div>
     </div>
   )
 }
