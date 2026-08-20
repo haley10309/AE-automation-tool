@@ -903,6 +903,123 @@ function CountryHistoryDrawer({ projectId, country, onClose }) {
 }
 
 // ════════════════════════════════════════════════════════════════
+// EN(기준) 카피 히스토리 드로어 — CountryHistoryDrawer와 동일한 UI 패턴
+// ════════════════════════════════════════════════════════════════
+function EnHistoryDrawer({ projectId, onClose }) {
+  const [history, setHistory] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [expanded, setExpanded] = useState(null)
+
+  useEffect(() => {
+    api.mergeGetEnHistory(projectId)
+      .then(res => { if (res.ok) setHistory(res.data) })
+      .catch(console.error)
+      .finally(() => setLoading(false))
+  }, [projectId])
+
+  const fmt = iso => {
+    if (!iso) return ''
+    const d = new Date(iso)
+    const pad = n => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  }
+
+  const parseSafe = (json) => {
+    if (!json) return []
+    if (typeof json !== 'string') return json
+    try { return JSON.parse(json) } catch { return [] }
+  }
+
+  return (
+    <div className="mg-drawer-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="mg-drawer">
+        <div className="mg-drawer-header">
+          <span className="mg-drawer-title">📋 EN (기준) — 수정 히스토리</span>
+          <button className="cc-remove-btn" onClick={onClose} style={{ fontSize: 18 }}>✕</button>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>불러오는 중...</div>
+        ) : history.length === 0 ? (
+          <div className="empty-state" style={{ padding: 40 }}>
+            <div className="empty-icon">📭</div>
+            <p>아직 수정 이력이 없습니다.</p>
+            <small>EN 기준 카피를 수정하면 이전 버전이 여기에 기록됩니다.</small>
+          </div>
+        ) : (
+          <div className="mg-history-list">
+            {history.map((h, i) => {
+              const diffRows = parseSafe(h.diff_json)
+
+              return (
+                <div key={h.id} className="mg-history-item">
+                  <div className="mg-history-meta" onClick={() => setExpanded(expanded === i ? null : i)}>
+                    <span className="mg-history-ver">v{history.length - i}</span>
+                    <span
+                      className="mg-history-author"
+                      title={h.saved_by_email ? `이메일: ${h.saved_by_email}` : ''}
+                      style={{ color: '#3b82f6', fontWeight: 600, fontSize: 13, marginRight: 8, cursor: h.saved_by_email ? 'help' : 'default' }}
+                    >
+                      👤 {h.saved_by || '알 수 없음'}
+                    </span>
+                    <span className="mg-history-date">{fmt(h.saved_at)}</span>
+                    <span className="mg-history-rows">
+                      {diffRows.length > 0 ? `변경 ${diffRows.length}건` : '변경 없음'}
+                    </span>
+                    <span className="mg-history-toggle">{expanded === i ? '▲ 접기' : '▼ 펼치기'}</span>
+                  </div>
+
+                  {expanded === i && (
+                    <div className="mg-history-body">
+                      <div className="mg-history-table-wrap">
+                        {diffRows.length === 0 ? (
+                          <div style={{ padding: '20px', textAlign: 'center', color: '#6b7280', fontSize: '13px', background: '#f9fafb', borderRadius: '6px' }}>
+                            이전 버전과 비교하여 변경된 행이 없습니다.
+                          </div>
+                        ) : (
+                          <table className="mg-history-table">
+                            <thead>
+                              <tr>
+                                <th style={{ width: 36 }}>#</th>
+                                <th>EN (기준) — 수정된 행만</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {diffRows.map((row, idx) => (
+                                <tr key={idx} className={row.new_en === null ? 'mg-cell-missing' : 'mg-cell-changed'}>
+                                  <td style={{ textAlign: 'center', color: '#9ca3af', fontSize: 11, fontWeight: 'bold' }}>
+                                    {row.row}
+                                  </td>
+                                  <td className="mg-history-local">
+                                    <div className="mg-diff-view">
+                                      <div className="mg-diff-old">
+                                        <span className="mg-diff-label">AS-WAS:</span>
+                                        <del>{row.prev_en || <em className="empty-val">빈 값</em>}</del>
+                                      </div>
+                                      <div className="mg-diff-new">
+                                        <span className="mg-diff-label">TO-BE:</span>
+                                        <ins>{row.new_en || <em className="empty-val">빈 값</em>}</ins>
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ════════════════════════════════════════════════════════════════
 // 엑셀 일괄 가져오기 모달
 // — 드래그/복사/붙여넣기를 국가마다 반복하는 대신, 엑셀 파일을
@@ -1238,6 +1355,7 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
 
   // ── 국가별 히스토리 드로어 ───────────────────────────────────
   const [historyCountry, setHistoryCountry] = useState(null)
+  const [showEnHistory, setShowEnHistory] = useState(false)
 
   // 상세 로드 — 저장된 결과가 있으면 바로 표(그리드)로 표시
   const load = useCallback(async () => {
@@ -1631,6 +1749,13 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
         />
       )}
 
+      {showEnHistory && (
+        <EnHistoryDrawer
+          projectId={project.id}
+          onClose={() => setShowEnHistory(false)}
+        />
+      )}
+
       {showExcelImport && (
         <ExcelImportModal
           onClose={() => setShowExcelImport(false)}
@@ -1743,7 +1868,12 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
               <thead>
                 <tr>
                   <th className="cc-th cc-th-idx">#</th>
-                  <th className="cc-th mg-th-en">EN (기준)</th>
+                  <th className="cc-th mg-th-en">
+                    <span className="cc-th-name">
+                      EN (기준)
+                      <button className="mg-country-hist-btn" onClick={() => setShowEnHistory(true)} title="히스토리">🕐</button>
+                    </span>
+                  </th>
                   {activeCountries.map(c => (
                     <th key={c.id} className="cc-th mg-th-local">
                       <div className="cc-th-inner">

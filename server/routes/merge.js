@@ -254,11 +254,55 @@ router.put('/projects/:id', async (req, res) => {
   if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
   try {
     const { title, enLines } = req.body
+    const savedBy      = req.user?.name  || '알 수 없음'
+    const savedByEmail = req.user?.email || ''
+
+    // enLines가 바뀌는 요청일 때만, 이전 값과 비교해서 실제 변경이 있으면 히스토리 기록
+    // (국가별 히스토리와 동일한 방식 — 행 단위로 diff 계산, 위치 기준 비교)
+    if (enLines !== undefined && enLines !== null) {
+      const [[prevRow]] = await getPool().execute(
+        `SELECT title, en_lines FROM merge_projects WHERE id = ?`, [req.params.id]
+      )
+      const prevLines = (prevRow?.en_lines || '').split('\n').filter(l => l.trim() !== '')
+      const newLines  = (enLines || '').split('\n').filter(l => l.trim() !== '')
+      const changed = prevLines.length !== newLines.length || prevLines.some((l, i) => l !== newLines[i])
+
+      if (changed) {
+        const maxLen = Math.max(prevLines.length, newLines.length)
+        const diffRows = []
+        for (let i = 0; i < maxLen; i++) {
+          if (prevLines[i] !== newLines[i]) {
+            diffRows.push({ row: i + 1, prev_en: prevLines[i] ?? null, new_en: newLines[i] ?? null })
+          }
+        }
+        await getPool().execute(
+          `INSERT INTO merge_project_history (project_id, title, en_lines, diff_json, saved_by, saved_by_email)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [req.params.id, prevRow?.title || title || '', enLines, JSON.stringify(diffRows), savedBy, savedByEmail]
+        )
+      }
+    }
+
     await getPool().execute(
       `UPDATE merge_projects SET title = COALESCE(?, title), en_lines = COALESCE(?, en_lines) WHERE id = ?`,
       [title ?? null, enLines ?? null, req.params.id]
     )
     res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+// ── EN(기준) 카피 히스토리 조회
+router.get('/projects/:id/en-history', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const [rows] = await getPool().execute(
+      `SELECT id, title, en_lines, diff_json, saved_by, saved_by_email, saved_at
+       FROM merge_project_history
+       WHERE project_id = ?
+       ORDER BY saved_at DESC`,
+      [req.params.id]
+    )
+    res.json({ ok: true, data: rows })
   } catch (e) { res.json({ ok: false, message: e.message }) }
 })
 
