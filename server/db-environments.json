@@ -1,0 +1,20 @@
+{
+  "environments": [
+    {
+      "id": "env_1787029892326_dx3mgw",
+      "label": "test-for-db",
+      "host": "localhost",
+      "port": 3306,
+      "user": "root",
+      "password": "0000",
+      "database": "test_for_db",
+      "createdAt": "2026-08-18T05:11:32.326Z",
+      "grantedEmails": [
+        "haley.yoo@cheilpengtai.com",
+        "miley10309@gmail.com",
+        "miley1111@gmail.com",
+        "maya@pt-korea.com"
+      ]
+    }
+  ]
+}
