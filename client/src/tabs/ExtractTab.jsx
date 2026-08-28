@@ -3,7 +3,8 @@ import { api } from '../api.js'
 import { useDB } from '../DBContext.jsx'
 import DiffTable from '../components/DiffTable.jsx'
 import HistoryTable from '../components/HistoryTable.jsx'
-import { parseCol, normalize, isHeaderLike, getStatus, today } from '../utils.js'
+import ExtractExcelImportModal from '../components/ExtractExcelImportModal.jsx'
+import { parseCol, normalize, isHeaderLike, getStatus, today, extractTextLinesFromHtml } from '../utils.js'
 
 export default function ExtractTab() {
   const { dbStatus } = useDB()
@@ -18,6 +19,16 @@ export default function ExtractTab() {
   const [stats,      setStats]      = useState(null)
   const [extractError, setExtractError] = useState('')
   const [copied,     setCopied]     = useState(false)
+
+  // 입력 방식: 'text'(직접 입력) | 'excel'(엑셀 파일) | 'html'(HTML 파일)
+  const [inputMode, setInputMode] = useState(() => localStorage.getItem('extract_input_mode') || 'text')
+  useEffect(() => { localStorage.setItem('extract_input_mode', inputMode) }, [inputMode])
+  const [showExcelImport, setShowExcelImport] = useState(false)
+  const [asWasFileName, setAsWasFileName] = useState('') // 엑셀/HTML 모드에서 불러온 출처 표시용
+  const [toBeFileName,  setToBeFileName]  = useState('')
+  const [asHtmlLines, setAsHtmlLines] = useState(null) // HTML 모드: 두 파일이 모두 로드되면 자동 비교
+  const [toHtmlLines, setToHtmlLines] = useState(null)
+  const [htmlLoadError, setHtmlLoadError] = useState('')
 
   // 저장 메타
   const [saveMeta, setSaveMeta] = useState({ product_name:'', requester:'', request_date:today(), note:'' })
@@ -64,14 +75,17 @@ export default function ExtractTab() {
     if (res.ok) setReqRows(res.data)
   }
 
-  // ── 추출 ───────────────────────────────────────────────────
-  const runDiff = useCallback(() => {
+  // ── 추출 (핵심 로직 — 명시적으로 넘긴 raw 텍스트를 기준으로 비교) ──
+  // 엑셀/HTML 모드에서 값을 세팅한 직후 바로 비교를 실행할 때, state가 아직
+  // 반영되기 전이라 asWasInput/toBeInput을 그대로 읽으면 예전 값이 잡히는
+  // 문제가 있어 raw 값을 인자로 직접 받도록 분리했다.
+  const runDiffFrom = useCallback((asRaw, toRaw) => {
     setExtractError(''); setDiffData(null); setAllData(null); setSaveMsg('')
-    if (!asWasInput.trim() || !toBeInput.trim()) {
+    if (!asRaw.trim() || !toRaw.trim()) {
       setExtractError('AS-WAS와 TO-BE 열을 모두 입력해주세요.'); return
     }
-    let asLines = parseCol(asWasInput)
-    let toLines  = parseCol(toBeInput)
+    let asLines = parseCol(asRaw)
+    let toLines  = parseCol(toRaw)
     if (asLines.length > 0 && isHeaderLike(asLines[0])) asLines = asLines.slice(1)
     if (toLines.length  > 0 && isHeaderLike(toLines[0])) toLines = toLines.slice(1)
 
@@ -98,12 +112,84 @@ export default function ExtractTab() {
     }
     setStats({ total:maxLen, changed, added, removed, diffCount:diff.length })
     setDiffData(diff); setAllData(all)
-  }, [asWasInput, toBeInput])
+  }, [])
+
+  const runDiff = useCallback(() => runDiffFrom(asWasInput, toBeInput), [asWasInput, toBeInput, runDiffFrom])
+
+  // 엑셀/HTML 모드 공통: 추출된 줄 배열을 텍스트박스에 채우고 바로 비교 실행
+  const applyExtractedLines = useCallback((asLines, toLines, meta = {}) => {
+    const asRaw = asLines.join('\n')
+    const toRaw = toLines.join('\n')
+    setAsWasInput(asRaw)
+    setToBeInput(toRaw)
+    setAsWasFileName(meta.asLabel || '')
+    setToBeFileName(meta.toLabel || '')
+    runDiffFrom(asRaw, toRaw)
+  }, [runDiffFrom])
+
+  // ── 엑셀 모드 ──────────────────────────────────────────────
+  const handleExcelApply = (asLines, toLines, meta) => {
+    setShowExcelImport(false)
+    applyExtractedLines(asLines, toLines, meta)
+  }
+
+  // ── HTML 모드 (AS-WAS / TO-BE 파일 각각 업로드) ─────────────
+  const readHtmlFile = (file) => new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(String(r.result || ''))
+    r.onerror = () => reject(new Error('파일을 읽을 수 없습니다.'))
+    r.readAsText(file, 'utf-8')
+  })
+
+  const handleAsHtmlFile = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setHtmlLoadError('')
+    try {
+      const html = await readHtmlFile(file)
+      const lines = extractTextLinesFromHtml(html)
+      if (lines.length === 0) { setHtmlLoadError('AS-WAS 파일에서 텍스트를 찾지 못했습니다.'); return }
+      setAsHtmlLines(lines)
+      setAsWasFileName(`📄 ${file.name} · ${lines.length}줄`)
+    } catch (err) {
+      setHtmlLoadError(err.message || 'AS-WAS 파일 처리 중 오류가 발생했습니다.')
+    }
+  }
+
+  const handleToBeHtmlFile = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setHtmlLoadError('')
+    try {
+      const html = await readHtmlFile(file)
+      const lines = extractTextLinesFromHtml(html)
+      if (lines.length === 0) { setHtmlLoadError('TO-BE 파일에서 텍스트를 찾지 못했습니다.'); return }
+      setToHtmlLines(lines)
+      setToBeFileName(`📄 ${file.name} · ${lines.length}줄`)
+    } catch (err) {
+      setHtmlLoadError(err.message || 'TO-BE 파일 처리 중 오류가 발생했습니다.')
+    }
+  }
+
+  // 두 HTML 파일이 모두 로드되면 자동으로 비교 실행
+  useEffect(() => {
+    if (inputMode === 'html' && asHtmlLines && toHtmlLines) {
+      applyExtractedLines(asHtmlLines, toHtmlLines, { asLabel: asWasFileName, toLabel: toBeFileName })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [asHtmlLines, toHtmlLines])
+
+  const switchInputMode = (nextMode) => {
+    setInputMode(nextMode)
+    setHtmlLoadError('')
+  }
 
   const clearAll = () => {
     setAsWasInput(''); setToBeInput(''); setDiffData(null); setAllData(null)
     setStats(null); setExtractError(''); setSaveMsg('')
     setSaveMeta({ product_name:'', requester:'', request_date:today(), note:'' })
+    setAsWasFileName(''); setToBeFileName('')
+    setAsHtmlLines(null); setToHtmlLines(null); setHtmlLoadError('')
   }
 
   const startNew = () => { setMode('new'); setSelectedReq(null); clearAll(); localStorage.removeItem('extract_selected_req_id'); localStorage.setItem('extract_mode', 'new') }
@@ -236,6 +322,65 @@ export default function ExtractTab() {
         {/* ═══ 새 추출 모드 ═══ */}
         {mode === 'new' && (
           <>
+            <div className="input-mode-tabs">
+              {[
+                ['text',  '✍️ 텍스트 입력'],
+                ['excel', '📊 엑셀 파일'],
+                ['html',  '🌐 HTML 파일'],
+              ].map(([key, label]) => (
+                <button key={key}
+                  className={`input-mode-tab${inputMode === key ? ' active' : ''}`}
+                  onClick={() => switchInputMode(key)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {showExcelImport && (
+              <ExtractExcelImportModal
+                onClose={() => setShowExcelImport(false)}
+                onApply={handleExcelApply}
+              />
+            )}
+
+            {inputMode === 'excel' && (
+              <div className="file-load-bar">
+                <button className="file-load-btn" onClick={() => setShowExcelImport(true)}>
+                  📊 엑셀 업로드
+                </button>
+                <span className="file-load-name">
+                  같은 시트의 두 열을 골라 AS-WAS/TO-BE로 비교합니다. 셀 안 줄바꿈도 한 행으로 정확히 인식됩니다.
+                </span>
+              </div>
+            )}
+
+            {inputMode === 'html' && (
+              <div className="file-load-bar" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <label className="file-load-btn" style={{ display: 'inline-block' }}>
+                    AS-WAS HTML 선택
+                    <input type="file" accept=".html,.htm" onChange={handleAsHtmlFile} style={{ display: 'none' }} />
+                  </label>
+                  <span className={`file-load-name${asHtmlLines ? ' loaded' : ''}`}>
+                    {asWasFileName || '파일을 선택해주세요'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <label className="file-load-btn" style={{ display: 'inline-block' }}>
+                    TO-BE HTML 선택
+                    <input type="file" accept=".html,.htm" onChange={handleToBeHtmlFile} style={{ display: 'none' }} />
+                  </label>
+                  <span className={`file-load-name${toHtmlLines ? ' loaded' : ''}`}>
+                    {toBeFileName || '파일을 선택해주세요'}
+                  </span>
+                </div>
+                {htmlLoadError && <div style={{ fontSize: 11, color: '#dc2626' }}>⚠ {htmlLoadError}</div>}
+                <span className="input-hint" style={{ margin: 0 }}>
+                  두 파일이 모두 선택되면 자동으로 비교가 실행됩니다. HTML 태그는 제거되고, 문단/줄바꿈 태그(&lt;br&gt;, &lt;p&gt; 등) 기준으로 줄이 나뉩니다.
+                </span>
+              </div>
+            )}
+
             <div className="input-grid">
               <div className="input-card as-card">
                 <div className="input-label">
@@ -245,7 +390,7 @@ export default function ExtractTab() {
                   onChange={e => setAsWasInput(e.target.value)}
                   placeholder={"엑셀에서 AS-WAS 열 전체 복사 후 붙여넣기\n\n헤더 포함/미포함 모두 자동 감지합니다."} />
                 <div className="input-hint">
-                  {asWasInput ? `${parseCol(asWasInput).length}행 입력됨` : '헤더 포함/미포함 모두 가능'}
+                  {asWasFileName || (asWasInput ? `${parseCol(asWasInput).length}행 입력됨` : '헤더 포함/미포함 모두 가능')}
                 </div>
               </div>
               <div className="divider-arrow">→</div>
@@ -257,7 +402,7 @@ export default function ExtractTab() {
                   onChange={e => setToBeInput(e.target.value)}
                   placeholder={"엑셀에서 TO-BE 열 전체 복사 후 붙여넣기\n\n행 수가 AS-WAS와 동일해야 합니다."} />
                 <div className="input-hint">
-                  {toBeInput ? `${parseCol(toBeInput).length}행 입력됨` : '행 수가 AS-WAS와 동일해야 함'}
+                  {toBeFileName || (toBeInput ? `${parseCol(toBeInput).length}행 입력됨` : '행 수가 AS-WAS와 동일해야 함')}
                 </div>
               </div>
             </div>
