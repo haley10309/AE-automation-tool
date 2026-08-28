@@ -24,6 +24,25 @@ export function today() {
   return new Date().toISOString().slice(0, 10)
 }
 
+// ── HTML 파일에서 텍스트 줄 추출 ─────────────────────────────
+// 블록 태그(<br>, </p>, </div>, </li>, </h1~6>, </tr>, </td> 등)의 경계를
+// 줄바꿈으로 취급하고, 나머지 태그는 제거한 뒤 줄 단위로 분리한다.
+// (셀/문단 안에 있는 <br>만으로 줄바꿈된 경우까지 정확히 잡아내기 위함)
+export function extractTextLinesFromHtml(htmlStr) {
+  let s = (htmlStr || '')
+    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '') // script/style 내용은 제거
+    .replace(/<(br)\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6]|tr|td|th|blockquote|section|article|header|footer)\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, '') // 나머지 태그 제거
+
+  // HTML 엔티티 디코드 (&amp; &nbsp; 등) — textarea를 이용한 브라우저 네이티브 디코딩
+  const ta = document.createElement('textarea')
+  ta.innerHTML = s
+  s = ta.value
+
+  return s.split(/\r?\n/).map(l => l.trim()).filter(l => l !== '')
+}
+
 export function formatDateTime(isoStr) {
   const d = new Date(isoStr)
   const yy = d.getFullYear()
