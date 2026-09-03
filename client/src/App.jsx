@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import './App.css'
 import { api } from './api.js'
+import { socket } from './socket.js'
 import { AuthProvider, useAuth } from './auth.jsx'
 import { DBProvider, useDB } from './DBContext.jsx'
 import AuthPage from './pages/AuthPage.jsx'
@@ -37,7 +38,7 @@ const POSITION_LABELS = {
 // ── 실제 앱 (로그인 후) ───────────────────────────────────────
 function AppContent() {
   const { dbStatus, dbMessage, connect, dbConfig, setDbConfig } = useDB()  // ← Context에서 가져오기
-  const { user, logout } = useAuth()
+  const { user, logout, authFetch } = useAuth()
 
   const [tab, setTab] = useState(
     () => localStorage.getItem('ae_tool_tab') || TABS.EXTRACT
@@ -48,6 +49,56 @@ function AppContent() {
   const [mergeResetKey, setMergeResetKey] = useState(0)
   const [countryResetKey, setCountryResetKey] = useState(0)
 
+  // ── 회원가입 승인 알림 (관리자 전용) ────────────────────────
+  const [pendingCount, setPendingCount] = useState(0)
+  const [toasts, setToasts] = useState([]) // [{ id, name, email, position }]
+  const isAdmin = user.position === 'admin'
+
+  const fetchPendingCount = async () => {
+    const res = await authFetch('GET', '/api/admin/pending-count')
+    if (res.ok) setPendingCount(res.count)
+  }
+
+  useEffect(() => {
+    if (!isAdmin) return
+
+    // 관리자 전용 room에 참가 — 어느 탭을 보고 있어도 알림을 받기 위함
+    socket.emit('admin:join')
+    fetchPendingCount()
+
+    // 데스크톱 알림 권한 요청 (지원 안 하거나 이미 거부했으면 조용히 무시)
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission()
+    }
+
+    const handleSignupPending = (payload) => {
+      const id = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+      setToasts(prev => [...prev, { id, ...payload }])
+      setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 8000)
+      fetchPendingCount() // 서버 값으로 다시 맞춰서 표시 오차 방지
+
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification('새 회원가입 승인 요청', {
+          body: `${payload.name} (${payload.email})`,
+          icon: './app-icon.png',
+        })
+      }
+    }
+
+    socket.on('signup:pending', handleSignupPending)
+    return () => {
+      socket.off('signup:pending', handleSignupPending)
+      socket.emit('admin:leave')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin])
+
+  const dismissToast = (id) => setToasts(prev => prev.filter(t => t.id !== id))
+  const goToAdminFromToast = (id) => {
+    dismissToast(id)
+    handleTabChange(TABS.ADMIN)
+  }
+
   // 탭 변경 시 localStorage에 저장
   const handleTabChange = (key) => {
     if (key === tab) {
@@ -55,6 +106,7 @@ function AppContent() {
       if (key === TABS.MERGE)   setMergeResetKey(k => k + 1)
       if (key === TABS.COUNTRY) setCountryResetKey(k => k + 1)
     }
+    if (key === TABS.ADMIN && isAdmin) fetchPendingCount() // Admin 탭 열 때마다 최신화
     localStorage.setItem('ae_tool_tab', key)
     setTab(key)
   }
@@ -102,8 +154,16 @@ function AppContent() {
         {user.position === 'admin' && (
           <button
             className={`tab-btn ${tab === TABS.ADMIN ? 'active' : ''}`}
-            onClick={() => handleTabChange(TABS.ADMIN)}>
+            onClick={() => handleTabChange(TABS.ADMIN)}
+            style={{ position: 'relative' }}>
             👑 Admin
+            {pendingCount > 0 && (
+              <span style={{
+                marginLeft: 6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                minWidth: 18, height: 18, padding: '0 5px', borderRadius: 999,
+                background: '#ef4444', color: '#fff', fontSize: 11, fontWeight: 700,
+              }}>{pendingCount}</span>
+            )}
           </button>
         )}
         <button
@@ -198,6 +258,41 @@ users — 사용자 계정`}</pre>
           </div>
         )}
       </main>
+
+      {/* ── 회원가입 승인 요청 알림 토스트 ── */}
+      {toasts.length > 0 && (
+        <div style={{
+          position: 'fixed', top: 20, right: 20, zIndex: 2000,
+          display: 'flex', flexDirection: 'column', gap: 10, width: 320,
+        }}>
+          {toasts.map(t => (
+            <div key={t.id} style={{
+              background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12,
+              boxShadow: '0 10px 30px rgba(0,0,0,0.15)', padding: '14px 16px',
+              display: 'flex', gap: 10, alignItems: 'flex-start',
+            }}>
+              <span style={{ fontSize: 20 }}>🔔</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: '#111827' }}>새 회원가입 승인 요청</div>
+                <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+                  {t.name} ({t.email})
+                </div>
+                <button
+                  onClick={() => goToAdminFromToast(t.id)}
+                  style={{
+                    marginTop: 8, fontSize: 12, padding: '5px 12px', borderRadius: 6,
+                    border: 'none', background: '#4f46e5', color: '#fff', cursor: 'pointer',
+                  }}
+                >지금 확인하기 →</button>
+              </div>
+              <button
+                onClick={() => dismissToast(t.id)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', fontSize: 14, lineHeight: 1, padding: 0 }}
+              >✕</button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

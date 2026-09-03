@@ -85,6 +85,15 @@ io.on('connection', (socket) => {
     if (!pageId) return;
     socket.leave(`page-${pageId}`);
   });
+
+  // 관리자 계정으로 로그인한 클라이언트 전용 room — 회원가입 승인 요청 등
+  // "지금 어느 화면을 보고 있든" 관리자에게 알려야 하는 알림에 사용
+  socket.on('admin:join', () => {
+    socket.join('admins');
+  });
+  socket.on('admin:leave', () => {
+    socket.leave('admins');
+  });
 });
 
 setIO(io);

@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { JWT_SECRET, JWT_EXPIRES } = require('../constants');
 const { ADMIN_EMAIL, POSITION_KEYS, STAFF_POSITIONS } = require('../adminConfig');
+const { getIO } = require('./realtime');
 
 const router = express.Router();
 
@@ -44,6 +45,18 @@ router.post('/register', async (req, res) => {
       `INSERT INTO users (email, name, password, position, approved) VALUES (?,?,?,?,?)`,
       [normalizedEmail, name.trim(), hash, finalPosition, approved]
     )
+
+    // 승인 대기 상태로 가입된 경우, 지금 접속해 있는 관리자에게 실시간으로 알림
+    if (!approved) {
+      const io = getIO()
+      if (io) {
+        io.to('admins').emit('signup:pending', {
+          email: normalizedEmail, name: name.trim(), position: finalPosition,
+          createdAt: new Date().toISOString(),
+        })
+      }
+    }
+
     res.json({ ok:true, message: approved ? '가입이 완료되었습니다. 로그인해주세요.' : '가입 신청이 완료되었습니다. 관리자 승인 후 로그인하실 수 있습니다.' })
   } catch (err) { res.json({ ok:false, message: err.message }) }
 });
