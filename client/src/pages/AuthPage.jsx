@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../auth.jsx'
 import { useDB } from '../DBContext.jsx'
+import { SIGNUP_POSITIONS } from '../roles.js'
 
 // ── 로그인 폼 ─────────────────────────────────────────────────
 function LoginForm({ onSwitch }) {
@@ -105,7 +106,7 @@ function SignupForm({ onSwitch }) {
         <div className="auth-field">
           <label className="auth-label">직책 *</label>
           <div className="auth-position-group">
-            {[{ value:'regular', label:'정규직', icon:'💼' }, { value:'intern', label:'인턴', icon:'🎓' }].map(opt => (
+            {SIGNUP_POSITIONS.map(opt => (
               <label key={opt.value}
                 className={`auth-position-btn ${form.position === opt.value ? 'selected' : ''}`}>
                 <input type="radio" name="position" value={opt.value}

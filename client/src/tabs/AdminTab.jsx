@@ -1,13 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../auth.jsx'
-
-const POSITION_LABELS = {
-  publisher:        '퍼블리셔',
-  ae:                'AE',
-  intern_publisher: '인턴(퍼블리셔)',
-  intern_ae:        '인턴(AE)',
-  admin:             '관리자',
-}
+import { POSITION_LABELS } from '../roles.js'
 
 export default function AdminTab() {
   const { authFetch, user } = useAuth()
