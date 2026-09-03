@@ -45,6 +45,14 @@ router.get('/users', async (req, res) => {
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
+// ── 승인 대기 중인 계정 수 (상단 네비게이션 배지용 — 가벼운 조회) ──
+router.get('/pending-count', async (req, res) => {
+  try {
+    const [[{ cnt }]] = await getPool().execute(`SELECT COUNT(*) AS cnt FROM users WHERE approved = 0`);
+    res.json({ ok: true, count: cnt });
+  } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
 // ── 계정 역할 변경 ──────────────────────────────────────────
 router.put('/users/:id/role', async (req, res) => {
   try {
@@ -154,11 +162,11 @@ async function createDatabase(config) {
   }
 }
 
-// ── 등록된 DB 환경 목록 (비밀번호는 마스킹) ──────────────────
+// ── 등록된 DB 환경 목록 (비밀번호 포함 — 관리자 전용 라우트라 노출 허용) ──
 router.get('/environments', (req, res) => {
   const envs = dbEnv.listEnvironments().map(e => ({
     id: e.id, label: e.label, host: e.host, port: e.port,
-    user: e.user, database: e.database, createdAt: e.createdAt,
+    user: e.user, password: e.password, database: e.database, createdAt: e.createdAt,
     grantedEmails: e.grantedEmails,
   }));
   res.json({ ok: true, data: envs });
@@ -239,6 +247,67 @@ router.post('/environments/:id/grant', async (req, res) => {
     res.json({ ok: true, message: `${account.email} 계정이 "${env.label}" 환경에 연동되었습니다.` });
   } catch (err) {
     res.json({ ok: false, message: `연동 실패: ${err.message}` });
+  }
+});
+
+// ── 대용량 계정 일괄 처리: 여러 계정을 한 번에 특정 DB 환경에 연동 ──
+// 계정마다 새 커넥션을 여는 대신, 대상 DB에 커넥션 하나만 열어서 재사용한다.
+router.post('/environments/:id/grant-bulk', async (req, res) => {
+  const { userIds } = req.body;
+  try {
+    const env = dbEnv.findEnvironment(req.params.id);
+    if (!env) return res.json({ ok: false, message: '등록되지 않은 DB 환경입니다.' });
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.json({ ok: false, message: '선택된 계정이 없습니다.' });
+    }
+
+    const conn = await mysql.createConnection({
+      host: env.host, port: env.port, user: env.user, password: env.password, database: env.database,
+      charset: 'utf8mb4', connectTimeout: 8000,
+    });
+
+    const results = [];
+    try {
+      await ensureUsersPositionColumn(conn); // 대상 DB의 position 컬럼도 5단계 역할을 받을 수 있도록 확장
+
+      for (const userId of userIds) {
+        try {
+          const [[account]] = await getPool().execute(
+            `SELECT email, name, position, password FROM users WHERE id=?`, [userId]
+          );
+          if (!account) { results.push({ userId, ok: false, message: '계정을 찾을 수 없습니다.' }); continue; }
+
+          dbEnv.grantAccess(env.id, account.email);
+
+          const [[existing]] = await conn.execute(`SELECT id FROM users WHERE email=?`, [account.email]);
+          if (existing) {
+            await conn.execute(
+              `UPDATE users SET name=?, password=?, position=?, approved=1 WHERE id=?`,
+              [account.name, account.password, account.position, existing.id]
+            );
+          } else {
+            await conn.execute(
+              `INSERT INTO users (email, name, password, position, approved) VALUES (?,?,?,?,1)`,
+              [account.email, account.name, account.password, account.position]
+            );
+          }
+          results.push({ userId, email: account.email, ok: true });
+        } catch (e) {
+          results.push({ userId, ok: false, message: e.message });
+        }
+      }
+    } finally {
+      await conn.end();
+    }
+
+    const succeeded = results.filter(r => r.ok).length;
+    res.json({
+      ok: true,
+      results,
+      message: `${succeeded}/${userIds.length}개 계정이 "${env.label}" 환경에 연동되었습니다.`,
+    });
+  } catch (err) {
+    res.json({ ok: false, message: `일괄 연동 실패: ${err.message}` });
   }
 });
 
