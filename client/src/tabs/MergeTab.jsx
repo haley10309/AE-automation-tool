@@ -233,7 +233,7 @@ function computeCellIssues(en, m, countryLabel, products) {
   const isMissing = m?.missing || !m
   const local = m?.local ?? ''
   if (isMissing) {
-    return { isMissing: true, isTBD: false, dntIss: [], urlIss: [], unreleased: [], dntMismatch: null, svcIssues: [], hasAnyIssue: false }
+    return { isMissing: true, isTBD: false, dntIss: [], urlIss: [], unreleased: [], dntMismatch: null, svcIssues: [], isEnMatch: false, hasAnyIssue: false }
   }
   const isTBD = hasTBDorNA(local)
   const dntIss      = local ? checkDNT(en, local, products) : []
@@ -241,8 +241,12 @@ function computeCellIssues(en, m, countryLabel, products) {
   const unreleased  = local ? checkUnreleased(local, countryLabel, products) : []
   const dntMismatch = local ? checkDNTCountMismatch(en, local, countryLabel, products) : null
   const svcIssues   = local ? detectServiceIssues(local, countryLabel) : []
-  const hasAnyIssue = dntIss.length > 0 || urlIss.length > 0 || unreleased.length > 0 || !!dntMismatch || svcIssues.length > 0
-  return { isMissing: false, isTBD, dntIss, urlIss, unreleased, dntMismatch, svcIssues, hasAnyIssue }
+  // 로컬 카피가 영문 원문과 완전히 동일 = 번역이 안 된 채로 그대로 머지된 경우 (QA 필요)
+  // 원래 영문 국가(SITE_CODE_LANGUAGE === 'English')는 영문 그대로가 정상이므로 제외
+  const isNativeEnglish = SITE_CODE_LANGUAGE[countryLabel] === 'English'
+  const isEnMatch = !isNativeEnglish && !!local && normCell(local) === normCell(en)
+  const hasAnyIssue = dntIss.length > 0 || urlIss.length > 0 || unreleased.length > 0 || !!dntMismatch || svcIssues.length > 0 || isEnMatch
+  return { isMissing: false, isTBD, dntIss, urlIss, unreleased, dntMismatch, svcIssues, isEnMatch, hasAnyIssue }
 }
 
 // ── 엑셀 추출 시 고정 국가 순서 ──────────────────────────────
@@ -2481,7 +2485,7 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
                       </td>
                       {activeCountries.map(c => {
                         const m = mergeResult.matrix[c.id]?.[i]
-                        const { isMissing, isTBD, dntIss, urlIss, unreleased, dntMismatch, svcIssues, hasAnyIssue } = issuesByCountry[c.id]
+                        const { isMissing, isTBD, dntIss, urlIss, unreleased, dntMismatch, svcIssues, isEnMatch, hasAnyIssue } = issuesByCountry[c.id]
 
                         const pq = (perCountrySearch[c.id] ?? '').trim().toLowerCase()
                         const isPerMatch = pq
@@ -2495,6 +2499,9 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
 
                         return (
                           <td key={c.id} className={cellClass}>
+                            {isEnMatch && (
+                              <span className="mg-en-match-badge" title="영문 원문과 동일 — 번역 확인 필요">EN</span>
+                            )}
                             <div
                               className="mg-local-text"
                               contentEditable
