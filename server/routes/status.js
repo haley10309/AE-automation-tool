@@ -64,11 +64,11 @@ router.put('/tracker/pages/:id/folder', async (req, res) => {
 
 router.post('/tracker/pages', async (req, res) => {
   try {
-    const { id, title } = req.body;
+    const { id, title, mode } = req.body;
     if (!id || !title) return res.json({ ok: false, message: 'id와 title이 필요합니다.' });
     await getPool().execute(
-      `INSERT INTO tracker_pages (id, title) VALUES (?, ?) ON DUPLICATE KEY UPDATE title = VALUES(title)`,
-      [String(id), title]
+      `INSERT INTO tracker_pages (id, title, mode) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE title = VALUES(title)`,
+      [String(id), title, mode || 'ae']
     );
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
@@ -77,7 +77,7 @@ router.post('/tracker/pages', async (req, res) => {
 router.get('/tracker/pages', async (req, res) => {
   if (!getPool()) return res.json({ ok: false });
   try {
-    const [pages] = await getPool().execute(`SELECT id, title, folder_id, created_at FROM tracker_pages WHERE deleted = 0 ORDER BY created_at DESC`);
+    const [pages] = await getPool().execute(`SELECT id, title, folder_id, mode, created_at FROM tracker_pages WHERE deleted = 0 ORDER BY created_at DESC`);
     const [statuses] = await getPool().execute(`SELECT page_id, site_code, status FROM tracker_site_status WHERE deleted = 0`);
     const [folders] = await getPool().execute(
       `SELECT id, name, created_at FROM tracker_folders WHERE deleted = 0 ORDER BY created_at ASC`
@@ -130,9 +130,14 @@ router.get('/tracker/pages/:id', async (req, res) => {
 
 router.put('/tracker/pages/:id', async (req, res) => {
   try {
-    const { title } = req.body;
-    if (!title?.trim()) return res.json({ ok: false, message: '제목을 입력하세요.' });
-    await getPool().execute(`UPDATE tracker_pages SET title = ? WHERE id = ?`, [title.trim(), req.params.id]);
+    const { title, mode } = req.body;
+    if (title !== undefined) {
+      if (!title?.trim()) return res.json({ ok: false, message: '제목을 입력하세요.' });
+      await getPool().execute(`UPDATE tracker_pages SET title = ? WHERE id = ?`, [title.trim(), req.params.id]);
+    }
+    if (mode !== undefined) {
+      await getPool().execute(`UPDATE tracker_pages SET mode = ? WHERE id = ?`, [mode, req.params.id]);
+    }
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });

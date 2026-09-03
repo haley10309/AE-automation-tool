@@ -32,8 +32,32 @@ const COPY_STATUSES = [
   { value: 'qa_done',           label: 'QA 완료',              color: '#15803d', bg: '#bbf7d0',  step: 15 },
 ]
 const TOTAL_STEPS = 15
-function getStatusStyle(value) {
-  return COPY_STATUSES.find(s => s.value === value) || COPY_STATUSES[0]
+
+// ── Publisher 모드 상태 정의 (0=미설정, 1~9=단계) ─────────────
+const PUBLISHER_STATUSES = [
+  { value: '',                    label: '— 미설정 —',      color: '#9ca3af', bg: '#f9fafb', step: 0 },
+  { value: 'pub_prod_needed',     label: 'Production 필요', color: '#c2410c', bg: '#ffedd5', step: 1 },
+  { value: 'pub_prod_wip',        label: 'Production 중',   color: '#ea580c', bg: '#fed7aa', step: 2 },
+  { value: 'pub_prod_done',       label: 'Production 완료', color: '#166534', bg: '#dcfce7', step: 3 },
+  { value: 'pub_qa_needed',       label: 'QA 필요',         color: '#7c2d12', bg: '#fef2f2', step: 4 },
+  { value: 'pub_qa_wip',          label: 'QA 중',           color: '#b91c1c', bg: '#fee2e2', step: 5 },
+  { value: 'pub_qa_done',         label: 'QA 완료',         color: '#15803d', bg: '#bbf7d0', step: 6 },
+  { value: 'pub_revision_needed', label: '수정 필요',       color: '#9d174d', bg: '#fce7f3', step: 7 },
+  { value: 'pub_revision_wip',    label: '수정 중',         color: '#be185d', bg: '#fbcfe8', step: 8 },
+  { value: 'pub_reflect_done',    label: '반영 완료',       color: '#0f766e', bg: '#ccfbf1', step: 9 },
+]
+const PUBLISHER_TOTAL_STEPS = 9
+
+// mode: 'ae'(기본, 13단계 카피 프로세스) | 'publisher'(9단계 퍼블리셔 프로세스)
+function getStatusList(mode) {
+  return mode === 'publisher' ? PUBLISHER_STATUSES : COPY_STATUSES
+}
+function getTotalSteps(mode) {
+  return mode === 'publisher' ? PUBLISHER_TOTAL_STEPS : TOTAL_STEPS
+}
+function getStatusStyle(value, mode = 'ae') {
+  const list = getStatusList(mode)
+  return list.find(s => s.value === value) || list[0]
 }
 // ── [최적화] 메인 메모 입력 컴포넌트 (반응성 향상) ────────────────
 const NoteInput = memo(({ onSave }) => {
@@ -333,6 +357,8 @@ const SITE_ORDER_META = [
 ]
 
 function exportStatusXLSX(page) {
+  const mode = page.mode || 'ae'
+  const statusList = getStatusList(mode)
   const statusMap = {}
   page.countries.forEach(c => { statusMap[c.code] = c })
 
@@ -343,7 +369,7 @@ function exportStatusXLSX(page) {
   const dataRows = SITE_ORDER_META.filter(m => statusMap[m.code])
   dataRows.forEach(m => {
     const c = statusMap[m.code]
-    const statusLabel = COPY_STATUSES.find(s => s.value === c.status)?.label || '미설정'
+    const statusLabel = statusList.find(s => s.value === c.status)?.label || '미설정'
     aoa.push([m.local, m.code, m.lang, statusLabel, c.note || ''])
   })
 
@@ -352,7 +378,7 @@ function exportStatusXLSX(page) {
   page.countries
     .filter(c => !orderedCodes.has(c.code))
     .forEach(c => {
-      const statusLabel = COPY_STATUSES.find(s => s.value === c.status)?.label || '미설정'
+      const statusLabel = statusList.find(s => s.value === c.status)?.label || '미설정'
       aoa.push(['', c.code, '', statusLabel, c.note || ''])
     })
 
@@ -400,14 +426,14 @@ if (merges.length) ws['!merges'] = merges
 const DEFAULT_COUNTRIES = ['']
 
 // ── 상태 셀 ───────────────────────────────────────────────────
-function CountryStatusCell({ siteCode, entry, onStatusChange }) {
-  const statusStyle = getStatusStyle(entry?.status || '')
+function CountryStatusCell({ siteCode, entry, onStatusChange, mode = 'ae' }) {
+  const statusStyle = getStatusStyle(entry?.status || '', mode)
   return (
     <select className="cst-status-select"
       value={entry?.status || ''}
       onChange={e => onStatusChange(siteCode, e.target.value, entry?.note)}
       style={{ borderColor: statusStyle.color, color: statusStyle.color, background: statusStyle.bg }}>
-      {COPY_STATUSES.map(s => (
+      {getStatusList(mode).map(s => (
         <option key={s.value} value={s.value}>{s.label}</option>
       ))}
     </select>
@@ -498,7 +524,7 @@ function FileCell({ siteCode, entry, onFileUpload, onUpdateHistoryNote }) {
 }
 // ── [신규] 분기 생성 및 Git Graph 컴포넌트 ─────────────────────
 // ── [업그레이드] 분기별 Git Graph 및 Push 기능 컴포넌트 ─────────────────────
-const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBranchNote, onCloseBranch, onDeleteBranch }) => {
+const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBranchNote, onCloseBranch, onDeleteBranch, mode = 'ae' }) => {
   const { user } = useAuth()
   const [showNewBranchForm, setShowNewBranchForm] = useState(false)
   const [activePushBranch, setActivePushBranch] = useState(null)
@@ -599,7 +625,7 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
           <input className="form-input" style={{ width: 160 }} placeholder="새 분기명 (예: Meta 배너)" 
             value={form.branchName} onChange={e => setForm({...form, branchName: e.target.value})} autoFocus />
           <select className="form-input" value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
-            {COPY_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+            {getStatusList(mode).map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
           <input className="form-input" style={{ flex: 1 }} placeholder="최초 메모" 
             value={form.note} onChange={e => setForm({...form, note: e.target.value})} />
@@ -618,7 +644,7 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
         <div style={{ display: 'flex', gap: 8, marginBottom: 16, padding: 12, background: '#f0f9ff', borderRadius: 6, border: '1px solid #bae6fd', alignItems: 'center' }}>
           <span style={{ fontSize: 12, color: '#0369a1', fontWeight: 600, whiteSpace: 'nowrap' }}>🌿 {activePushBranch}</span>
           <select className="form-input" style={{ width: 160 }} value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
-            {COPY_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+            {getStatusList(mode).map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
           <input className="form-input" style={{ flex: 1 }} placeholder="진행 상황 메모 입력..."
             value={form.note} onChange={e => setForm({...form, note: e.target.value})} autoFocus />
@@ -641,7 +667,7 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
           const closedInfo = closedMap[bName]
           const isClosed = !!closedInfo?.is_closed
           const latestRecord = history[0]
-          const latestSt = getStatusStyle(latestRecord?.status)
+          const latestSt = getStatusStyle(latestRecord?.status, mode)
           const isActive = activePushBranch === bName
           return (
             <div key={bName} style={{
@@ -752,7 +778,7 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
                   <div style={{ flex: 1, overflowY: 'auto', maxHeight: 240, position: 'relative', paddingLeft: 20, paddingRight: 12, paddingTop: 8, paddingBottom: 8 }}>
                     <div style={{ position: 'absolute', left: 12, top: 0, bottom: 0, width: 2, background: '#e2e8f0' }} />
                     {history.map((record, idx) => {
-                      const st = getStatusStyle(record.status)
+                      const st = getStatusStyle(record.status, mode)
                       const isLatest = idx === 0
                       return (
                         <div key={record.id} style={{ position: 'relative', marginBottom: idx === history.length - 1 ? 4 : 12, opacity: isLatest ? 1 : 0.55 }}>
@@ -816,7 +842,7 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
                     <div style={{ position: 'relative', paddingLeft: 20, paddingRight: 12, paddingTop: 6, paddingBottom: 8, maxHeight: 220, overflowY: 'auto' }}>
                       <div style={{ position: 'absolute', left: 12, top: 0, bottom: 0, width: 2, background: '#e2e8f0' }} />
                       {history.map((record, idx) => {
-                        const st = getStatusStyle(record.status)
+                        const st = getStatusStyle(record.status, mode)
                         const isLatest = idx === 0
                         return (
                           <div key={record.id} style={{ position: 'relative', marginBottom: idx === history.length - 1 ? 4 : 12, opacity: isLatest ? 1 : 0.55 }}>
@@ -885,7 +911,7 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
 }
 
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
-const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId, initialStatusHistory, historyBump }) => {
+const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId, initialStatusHistory, historyBump, mode = 'ae' }) => {
   const [isExpanded, setIsExpanded] = useState(false)
   const [showUnifiedHistory, setShowUnifiedHistory] = useState(false)
   const [statusHistory, setStatusHistory] = useState(initialStatusHistory ?? null) // null = 미로딩
@@ -1022,7 +1048,7 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
           </div>
         </td>
         <td className="cst-td">
-          <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChangeWithRefresh} />
+          <CountryStatusCell siteCode={site.code} entry={entry} onStatusChange={handleStatusChangeWithRefresh} mode={mode} />
         </td>
         <td className="cst-td">
           <FileCell
@@ -1084,8 +1110,8 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                 mergedHistory.map((item, i) => {
                   if (item.type === 'status') {
                     const h = item.data
-                    const fromStyle    = getStatusStyle(h.from_status || '')
-                    const toStyle      = getStatusStyle(h.to_status   || '')
+                    const fromStyle    = getStatusStyle(h.from_status || '', mode)
+                    const toStyle      = getStatusStyle(h.to_status   || '', mode)
                     const statusChanged = h.from_status !== h.to_status
                     const noteChanged   = h.note != null
                     return (
@@ -1115,7 +1141,7 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                     )
                   } else {
                     const f = item.data
-                    const statusStyle = getStatusStyle(f.statusAtUpload || '')
+                    const statusStyle = getStatusStyle(f.statusAtUpload || '', mode)
                     return (
                       <div key={`f-${f._idx}`} className="cst-unified-item">
                         <span className="cst-unified-item-icon">📎</span>
@@ -1162,7 +1188,7 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
       {isExpanded && (
         <tr>
           <td colSpan={colSpan} style={{ padding: 0 }}>
-            <BranchTimeline branches={branches} branchStatuses={entry?.branchStatuses || []} onCreateBranch={(data) => handleBranchCreate(site.code, data)} onUpdateBranchNote={(id, note) => handleBranchNoteUpdate(site.code, id, note)} onCloseBranch={(siteCode, bName, isClosed) => handleBranchClose(siteCode, bName, isClosed)} onDeleteBranch={(siteCode, bName) => handleBranchDelete(siteCode, bName)} />
+            <BranchTimeline branches={branches} branchStatuses={entry?.branchStatuses || []} onCreateBranch={(data) => handleBranchCreate(site.code, data)} onUpdateBranchNote={(id, note) => handleBranchNoteUpdate(site.code, id, note)} onCloseBranch={(siteCode, bName, isClosed) => handleBranchClose(siteCode, bName, isClosed)} onDeleteBranch={(siteCode, bName) => handleBranchDelete(siteCode, bName)} mode={mode} />
           </td>
         </tr>
       )}
@@ -1808,6 +1834,20 @@ function PageDetail({ page, onBack, onUpdate }) {
   const [showBilling, setShowBilling] = useState(false)
   const dropRef = useRef(null)
 
+  // ── [신규] Publishing mode 토글 (AE 13단계 ↔ Publisher 9단계) ──
+  const mode = page.mode || 'ae'
+  const [modeSaving, setModeSaving] = useState(false)
+  const toggleMode = async () => {
+    if (modeSaving) return
+    const newMode = mode === 'publisher' ? 'ae' : 'publisher'
+    setModeSaving(true)
+    onUpdate({ ...page, mode: newMode }, true)
+    try {
+      await api.updateTrackerPage(page.id, { mode: newMode })
+    } catch (_) {}
+    finally { setModeSaving(false) }
+  }
+
   // ── [신규] 일괄 상태 변경 (체크박스 다중 선택 + 텍스트 일괄 입력) ──
   const [showBulkPanel, setShowBulkPanel] = useState(false)
   const [selectedCodes, setSelectedCodes] = useState(() => new Set())
@@ -1876,7 +1916,7 @@ function PageDetail({ page, onBack, onUpdate }) {
       setLoadingDetail(true)
       try {
         // 1. tracker_pages upsert (기존 localStorage 페이지도 DB에 등록 보장)
-        await api.createTrackerPage({ id: String(page.id), title: page.name })
+        await api.createTrackerPage({ id: String(page.id), title: page.name, mode: page.mode || 'ae' })
 
         // 2. 상태/메모 + 파일 + 분기 히스토리 한번에 조회
         const res = await api.getTrackerDetail(String(page.id))
@@ -2264,19 +2304,19 @@ function PageDetail({ page, onBack, onUpdate }) {
   // ── 통계 계산 ──────────────────────────────────────────────
   const totalCountries = page.countries.length
   const statusCounts = {}
-  COPY_STATUSES.forEach(s => {
+  getStatusList(mode).forEach(s => {
     if (s.value) statusCounts[s.value] = page.countries.filter(c => c.status === s.value).length
   })
   // 진행도: 각 국가 step 합산 → (합계 / 전체국가 × TOTAL_STEPS) × 100
   const totalStepSum = page.countries.reduce((sum, c) => {
-    return sum + (COPY_STATUSES.find(s => s.value === c.status)?.step || 0)
+    return sum + (getStatusList(mode).find(s => s.value === c.status)?.step || 0)
   }, 0)
   const progressPct = totalCountries > 0
-    ? Math.round((totalStepSum / (totalCountries * TOTAL_STEPS)) * 100)
+    ? Math.round((totalStepSum / (totalCountries * getTotalSteps(mode))) * 100)
     : 0
   const avgStep = totalCountries > 0 ? totalStepSum / totalCountries : 0
   const avgStepRounded = Math.round(avgStep)
-  const avgStatus = COPY_STATUSES.find(s => s.step === avgStepRounded) || COPY_STATUSES[0]
+  const avgStatus = getStatusList(mode).find(s => s.step === avgStepRounded) || getStatusList(mode)[0]
 
   return (
     <div className="cst-page-detail">
@@ -2288,7 +2328,24 @@ function PageDetail({ page, onBack, onUpdate }) {
           <h2 className="cst-detail-title">{page.name}</h2>
           
           <span className="cst-detail-date">생성: {page.createdAt?.slice(0, 10)}</span>
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              onClick={toggleMode}
+              disabled={modeSaving}
+              title="AE 모드(13단계) ↔ Publisher 모드(9단계) 전환"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                background: mode === 'publisher' ? '#0f766e' : '#334155',
+                color: '#fff', border: 'none',
+                borderRadius: 'var(--r-sm)', padding: '6px 13px', fontSize: 12,
+                fontFamily: "'Noto Sans KR', sans-serif", fontWeight: 600,
+                cursor: modeSaving ? 'not-allowed' : 'pointer', transition: 'opacity .15s',
+                opacity: modeSaving ? 0.6 : 1,
+              }}
+            >
+              {mode === 'publisher' ? '📗 Publisher 모드' : '📘 AE 모드'}
+              <span style={{ fontSize: 10, opacity: 0.8 }}>전환</span>
+            </button>
             {isStaff(user?.position) && (
               <button
                 onClick={() => setShowBilling(true)}
@@ -2310,7 +2367,7 @@ function PageDetail({ page, onBack, onUpdate }) {
         </div>
 
         <div className="cst-status-summary">
-          {COPY_STATUSES.filter(s => s.value && statusCounts[s.value] > 0).map(s => (
+          {getStatusList(mode).filter(s => s.value && statusCounts[s.value] > 0).map(s => (
             <span key={s.value} className="cst-summary-badge"
               style={{ background: s.bg, color: s.color, borderColor: s.color }}>
               {s.label}: {statusCounts[s.value]}
@@ -2323,14 +2380,14 @@ function PageDetail({ page, onBack, onUpdate }) {
             <span>
               전체 진행도
               <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 6 }}>
-                ({avgStatus.label} 수준 · avg {avgStep.toFixed(1)} / {TOTAL_STEPS} 단계)
+                ({avgStatus.label} 수준 · avg {avgStep.toFixed(1)} / {getTotalSteps(mode)} 단계)
               </span>
             </span>
             <span style={{ fontWeight: 700, color: avgStatus.color }}>{progressPct}%</span>
           </div>
           {/* 단계별 컬러 스트립 */}
           <div style={{ display: 'flex', gap: 2, marginBottom: 4 }}>
-            {COPY_STATUSES.filter(s => s.value).map(s => (
+            {getStatusList(mode).filter(s => s.value).map(s => (
               <div key={s.value} title={s.label} style={{
                 flex: 1, height: 6, borderRadius: 3,
                 background: s.step <= avgStepRounded && avgStepRounded > 0 ? s.color : '#e5e7eb',
@@ -2435,7 +2492,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 value={bulkStatus}
                 onChange={e => setBulkStatus(e.target.value)}
               >
-                {COPY_STATUSES.map(s => (
+                {getStatusList(mode).map(s => (
                   <option key={s.value} value={s.value}>{s.label}</option>
                 ))}
               </select>
@@ -2480,7 +2537,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 value={bulkTextStatus}
                 onChange={e => setBulkTextStatus(e.target.value)}
               >
-                {COPY_STATUSES.map(s => (
+                {getStatusList(mode).map(s => (
                   <option key={s.value} value={s.value}>{s.label}</option>
                 ))}
               </select>
@@ -2551,6 +2608,7 @@ function PageDetail({ page, onBack, onUpdate }) {
                 pageId={page.id}
                 initialStatusHistory={entry?.statusHistoryItems ?? null}
                 historyBump={historyBumpMap[site.code] || 0}
+                mode={mode}
               />
             )
           })}
@@ -2692,15 +2750,16 @@ function PageCard({ page, onSelect, onDelete, onRename, onRequestDuplicate, user
   const [renaming, setRenaming] = useState(false)
   const [duplicating, setDuplicating] = useState(false)
 
+  const mode = page.mode || 'ae'
   const total = page.countries.length
   const stepSum = page.countries.reduce((sum, c) => {
-    return sum + (COPY_STATUSES.find(s => s.value === c.status)?.step || 0)
+    return sum + (getStatusList(mode).find(s => s.value === c.status)?.step || 0)
   }, 0)
-  const pct = total > 0 ? Math.round((stepSum / (total * TOTAL_STEPS)) * 100) : 0
+  const pct = total > 0 ? Math.round((stepSum / (total * getTotalSteps(mode))) * 100) : 0
   const avgS = total > 0 ? stepSum / total : 0
-  const cardStatus = COPY_STATUSES.find(s => s.step === Math.round(avgS)) || COPY_STATUSES[0]
+  const cardStatus = getStatusList(mode).find(s => s.step === Math.round(avgS)) || getStatusList(mode)[0]
   const statusCounts = {}
-  COPY_STATUSES.forEach(s => {
+  getStatusList(mode).forEach(s => {
     if (s.value) statusCounts[s.value] = page.countries.filter(c => c.status === s.value).length
   })
   const unset = page.countries.filter(c => !c.status).length
@@ -2762,7 +2821,7 @@ function PageCard({ page, onSelect, onDelete, onRename, onRequestDuplicate, user
       )}
 
       <div style={{ display: 'flex', gap: 2, margin: '8px 0 4px' }}>
-        {COPY_STATUSES.filter(s => s.value).map(s => (
+        {getStatusList(mode).filter(s => s.value).map(s => (
           <div key={s.value} title={`${s.label}: ${statusCounts[s.value] || 0}개국`} style={{
             flex: 1, height: 6, borderRadius: 3,
             background: s.step <= Math.round(avgS) && Math.round(avgS) > 0 ? s.color : '#e5e7eb',
@@ -2781,7 +2840,7 @@ function PageCard({ page, onSelect, onDelete, onRename, onRequestDuplicate, user
       </div>
 
       <div className="cst-page-card-badges">
-        {COPY_STATUSES.filter(s => s.value && statusCounts[s.value] > 0).map(s => (
+        {getStatusList(mode).filter(s => s.value && statusCounts[s.value] > 0).map(s => (
           <span key={s.value} className="cst-mini-badge"
             style={{ background: s.bg, color: s.color, border: `1px solid ${s.color}` }}>
             {s.label} <strong>{statusCounts[s.value]}</strong>
@@ -2951,6 +3010,7 @@ export default function StatusTab({ resetKey }) {
             id: pageId,
             name: p.title,
             folder_id: p.folder_id ?? null,
+            mode: p.mode || 'ae',
             createdAt: p.created_at,
             countries: baseCountries,
             _loadedFromDB: true,
@@ -3098,7 +3158,7 @@ export default function StatusTab({ resetKey }) {
     }
 
     try {
-      const res = await api.createTrackerPage({ id: newPageId, title: newPageName })
+      const res = await api.createTrackerPage({ id: newPageId, title: newPageName, mode: page.mode || 'ae' })
       if (!res?.ok) {
         alert('복사에 실패했습니다: ' + (res?.message || '서버 오류'))
         return
@@ -3237,6 +3297,7 @@ export default function StatusTab({ resetKey }) {
       id: newPageId,
       name: newPageName,
       folder_id: page.folder_id ?? null,
+      mode: page.mode || 'ae',
       createdAt: new Date().toISOString(),
       // 상세 데이터(파일/분기 포함)는 페이지를 열 때 getTrackerDetail로 다시 로드되므로
       // 여기서는 목록 표시에 필요한 최소 정보만 채워둔다.
