@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import * as XLSX from 'xlsx'
 import { api } from '../api.js'
 import { useDB } from '../DBContext.jsx'
 import DiffTable from '../components/DiffTable.jsx'
@@ -265,25 +266,29 @@ export default function ExtractTab() {
       .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800) })
   }
 
-  // 이력 조회 CSV 추출
-  const exportHistoryToCSV = (rows, req, diffOnly) => {
+  // 이력 조회 Excel 추출
+  const exportHistoryToXLSX = (rows, req, diffOnly) => {
     if (!rows?.length) return
-    const esc = v => {
-      const s = String(v ?? '')
-      return s.includes(',') || s.includes('"') || s.includes('\n')
-        ? `"${s.replace(/"/g, '""')}"` : s
-    }
     const header = ['행번호', 'AS-WAS', 'TO-BE', '상태']
     const dataRows = rows.map(r => [r.row_index, r.as_was ?? '', r.to_be ?? '', r.status])
-    const csv = [header, ...dataRows].map(r => r.map(esc).join(',')).join('\r\n')
+    const aoa = [header, ...dataRows]
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+    ws['!cols'] = [
+      { wch: 8 },   // 행번호
+      { wch: 50 },  // AS-WAS
+      { wch: 50 },  // TO-BE
+      { wch: 10 },  // 상태
+    ]
+
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'History')
+
     const now = new Date()
     const ds = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`
     const label = diffOnly ? '변경행' : '전체'
-    const filename = `${req.product_name}_${label}_${ds}.csv`
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
-    URL.revokeObjectURL(url)
+    const filename = `${req.product_name}_${label}_${ds}.xlsx`
+    XLSX.writeFile(wb, filename)
   }
 
   const filteredRequests = requests.filter(r =>
@@ -528,12 +533,12 @@ export default function ExtractTab() {
                   변경행만 보기
                 </label>
                 <button className="btn-export"
-                  onClick={() => exportHistoryToCSV(
+                  onClick={() => exportHistoryToXLSX(
                     diffOnlyView ? reqRows.filter(r => r.status !== '동일') : reqRows,
                     selectedReq,
                     diffOnlyView
                   )}>
-                  ⬇ CSV 추출
+                  ⬇ Excel 추출
                 </button>
                 {/* <button className="btn-merge-send" onClick={() => {
                           // TO-BE 카피를 MergeTab으로 전달 (localStorage 경유)

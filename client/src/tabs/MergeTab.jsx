@@ -6,6 +6,7 @@
  */
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import * as XLSX from 'xlsx'
 import { api } from '../api.js'
 import { useDB } from '../DBContext.jsx'
 import SiteDropdown from '../components/SiteDropdown.jsx'
@@ -82,8 +83,55 @@ function makePairConsumer(pairs) {
  *   paste 개수 === baseEnLines 등장 횟수이고 순서대로 1:1 대응이 명확한 경우
  *   예) baseEnLines에 Performance 2번, paste에도 Performance 2번(순서대로) → 그냥 순서 매핑
  *
- * 반환: [{ enKey, positions, candidates, uniqueCandidates, caseType }]
+ * 실제 구현: findCountMismatches() 가 케이스 A/B를 함께 감지해 mismatches 배열로 반환하고,
+ * CountMismatchModal 이 사용자에게 위치별 매핑을 확인받는다 (buildExcelUnionMerge에서 사용).
  */
+/**
+ * (Solution 2, 3) 이미 baseEnLines에 등장하는 EN 키인데, 새로 업로드된 엑셀에서
+ * 그 키에 대해 들어온 로컬 값 개수가 baseEnLines 내 등장 횟수와 다른 경우를 찾는다.
+ * (개수가 같으면 순서대로 1:1 자동 매핑 — 모달 불필요)
+ *
+ * 반환: [{ countryCode, countryLabel, enKey, existingPositions, existingLocals, newLocals }]
+ */
+function findCountMismatches(existingBase, existingMatrix, activeCountries, countryPasteMap) {
+  const keyPositions = {}
+  existingBase.forEach((en, i) => {
+    const key = en.trim()
+    if (!key) return
+    if (!keyPositions[key]) keyPositions[key] = []
+    keyPositions[key].push(i)
+  })
+
+  const mismatches = []
+  Object.entries(countryPasteMap).forEach(([code, rawPaste]) => {
+    const pairs = parseConfirmedPaste(rawPaste)
+    if (pairs.length === 0) return
+    const byKey = {}
+    pairs.forEach(({ en, local }) => {
+      const key = en.trim()
+      if (!byKey[key]) byKey[key] = []
+      byKey[key].push(local)
+    })
+    const matched = activeCountries.find(c => (c.label || '').toUpperCase() === code.toUpperCase())
+    const countryLabel = matched ? matched.label : code
+    const existingRows = matched ? (existingMatrix[matched.id] || []) : []
+
+    Object.entries(byKey).forEach(([key, newLocals]) => {
+      const positions = keyPositions[key]
+      if (!positions) return // 완전히 새로운 EN 키 → union 단계에서 파일 순서 그대로 위치 매핑되므로 충돌 아님
+      if (newLocals.length === positions.length) return // 개수 일치 → 순서대로 자동 매핑
+      mismatches.push({
+        countryCode: code, countryLabel,
+        enKey: key,
+        existingPositions: positions,
+        existingLocals: positions.map(p => existingRows[p]?.local ?? ''),
+        newLocals,
+      })
+    })
+  })
+  return mismatches
+}
+
 function checkDNT(en, local, products) {
   const issues = []
   for (const p of products) {
@@ -96,6 +144,28 @@ function checkDNT(en, local, products) {
     }
   }
   return issues
+}
+
+/** 셀 값 정규화 — Alt+Enter 줄바꿈을 공백으로 치환하고 앞뒤 공백 제거 */
+function normCell(v) {
+  return (v ?? '').toString().replace(/\r\n|\r|\n/g, ' ').trim()
+}
+
+/**
+ * (Solution 1) 한 줄바꿈 텍스트(엑셀 원문 컬럼 하나) 안에서 동일한 EN 카피가
+ * 2번 이상 등장하는 그룹을 찾는다. 엑셀을 불러온 직후, 국가 매핑을 적용하기
+ * 전에 사용자에게 "모두 유지 / 1개만 남기기" 확인을 받기 위해 사용 (ExcelImportModal).
+ * 반환: [{ key, en, positions }]  (positions: lines 배열 내 0-based 인덱스들)
+ */
+function findDuplicateEnGroups(lines) {
+  const groups = {}
+  lines.forEach((en, i) => {
+    const key = en.trim()
+    if (!key) return
+    if (!groups[key]) groups[key] = { key, en, positions: [] }
+    groups[key].positions.push(i)
+  })
+  return Object.values(groups).filter(g => g.positions.length > 1)
 }
 
 /**
@@ -222,12 +292,7 @@ const SITE_CODE_LANGUAGE = {
   AL: 'Albanian',      MK: 'Macedonian',   BA: 'Bosnian',   UA: 'Ukrainian',
 }
 
-function exportCSV(baseEnLines, countries, projectTitle) {
-  const esc = v => {
-    const s = String(v ?? '')
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"` : s
-  }
+function exportXLSX(baseEnLines, countries, projectTitle) {
   const sorted = [...countries].sort((a, b) => {
     const aLang = SITE_CODE_LANGUAGE[a.label] ?? ''
     const bLang = SITE_CODE_LANGUAGE[b.label] ?? ''
@@ -259,14 +324,22 @@ function exportCSV(baseEnLines, countries, projectTitle) {
     }),
   ])
 
-  const csv = [row1, row2, ...rows].map(r => r.map(esc).join(',')).join('\r\n')
+  const aoa = [row1, row2, ...rows]
+  const ws = XLSX.utils.aoa_to_sheet(aoa)
+
+  // ── 열 너비 ──────────────────────────────────────────────────
+  ws['!cols'] = [
+    { wch: 6 },   // #
+    { wch: 40 },  // EN (기준)
+    ...sorted.map(() => ({ wch: 30 })),
+  ]
+
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Merge')
+
   const ds = new Date().toISOString().slice(0, 10).replace(/-/g, '')
   const safeName = (projectTitle || 'merge').replace(/[\\/:*?"<>|]/g, '_')  // 파일명 특수문자 제거
-  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = `merge_${safeName}_${ds}.csv`; a.click()
-  URL.revokeObjectURL(url)
+  XLSX.writeFile(wb, `merge_${safeName}_${ds}.xlsx`)
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -334,7 +407,7 @@ function ImportConflictModal({ conflicts, onConfirm, onCancel }) {
         {/* 본문 */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '14px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
           {conflicts.map((c, i) => (
-            <div key={i} style={{ borderRadius: 10, border: '1.5px solid #e5e7eb', overflow: 'hidden' }}>
+            <div key={i} style={{ borderRadius: 10, border: '1.5px solid #e5e7eb', overflow: 'hidden', flexShrink: 0 }}>
               <div style={{
                 background: '#f9fafb', padding: '8px 12px', borderBottom: '1px solid #e5e7eb',
                 display: 'flex', gap: 8, alignItems: 'center',
@@ -386,6 +459,271 @@ function ImportConflictModal({ conflicts, onConfirm, onCancel }) {
             padding: '8px 24px', borderRadius: 8, border: 'none',
             background: '#6366f1', color: '#fff', fontSize: 14, cursor: 'pointer', fontWeight: 700,
           }}>✅ 선택 적용 후 저장</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════
+// (Solution 1) 동일 EN 카피 2개 이상 발견 시 확인 모달 — ExcelImportModal에서 사용
+// ════════════════════════════════════════════════════════════════
+/**
+ * groups: findDuplicateEnGroups() 결과
+ * previewFor(rowIndex): 각 행을 구분하기 위한 미리보기 텍스트(선택) 반환 함수
+ * onConfirm(decisions) — decisions: { [key]: 'keepAll' | rowIndexToKeep(number) }
+ * onCancel()
+ */
+function DuplicateEnConfirmModal({ groups, previewFor, onConfirm, onCancel }) {
+  const [decisions, setDecisions] = useState(
+    Object.fromEntries(groups.map(g => [g.key, 'keepAll']))
+  )
+  const [filter, setFilter] = useState('')
+  const setDecision = (key, value) => setDecisions(prev => ({ ...prev, [key]: value }))
+
+  // 항목이 많을 때(수십~수백 건) 전체를 스크롤해서 찾는 대신 검색으로 좁힐 수 있게 함
+  const q = filter.trim().toLowerCase()
+  const visibleGroups = q ? groups.filter(g => g.en.toLowerCase().includes(q)) : groups
+
+  // 일괄 적용 — 항목이 많을 때 하나씩 클릭하지 않아도 되도록
+  const setAllKeepAll = () => setDecisions(Object.fromEntries(groups.map(g => [g.key, 'keepAll'])))
+  const setAllKeepFirst = () => setDecisions(Object.fromEntries(groups.map(g => [g.key, g.positions[0]])))
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 10050,
+      background: 'rgba(0,0,0,0.6)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+    }} onClick={onCancel}>
+      <div style={{
+        background: '#fff', borderRadius: 14, width: '100%', maxWidth: 760,
+        maxHeight: '86vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ padding: '18px 24px 14px', borderBottom: '1px solid #e5e7eb', display: 'flex', gap: 12 }}>
+          <span style={{ fontSize: 24 }}>⚠️</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: '#111827' }}>
+              동일한 영문 카피가 {groups.length}건 발견됐습니다
+            </div>
+            <div style={{ fontSize: 13, color: '#6b7280', marginTop: 4 }}>
+              같은 영문 카피가 2행 이상 있습니다. 그대로 모두 유지할지, 1개만 남기고 나머지를 삭제할지 항목별로 선택해주세요.
+            </div>
+          </div>
+          <button onClick={onCancel} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: '#9ca3af', lineHeight: 1, padding: 0 }}>✕</button>
+        </div>
+
+        {/* 검색 필터 + 일괄 적용 — 중복 건수가 많을 때 항목을 찾고 한번에 처리하기 위함 */}
+        <div style={{ padding: '10px 24px', borderBottom: '1px solid #f0f1f3', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            type="text"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            placeholder="🔍 영문 카피로 검색..."
+            style={{ flex: '1 1 200px', minWidth: 160, fontSize: 12, padding: '6px 10px', borderRadius: 6, border: '1px solid #d1d5db' }}
+          />
+          <button className="btn-ghost" style={{ fontSize: 12 }} onClick={setAllKeepAll}>전체 모두 유지</button>
+          <button className="btn-ghost" style={{ fontSize: 12 }} onClick={setAllKeepFirst}>전체 첫 번째만 남기기</button>
+          {q && (
+            <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>
+              {groups.length}건 중 {visibleGroups.length}건 표시 중
+            </span>
+          )}
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {visibleGroups.length === 0 && (
+            <div style={{ fontSize: 13, color: '#9ca3af', textAlign: 'center', padding: '20px 0' }}>검색 결과가 없습니다.</div>
+          )}
+          {visibleGroups.map((g) => (
+            <div key={g.key} style={{ border: '1.5px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', flexShrink: 0 }}>
+              <div style={{ background: '#f9fafb', padding: '8px 12px', borderBottom: '1px solid #e5e7eb', fontSize: 12, fontWeight: 600, color: '#111827', wordBreak: 'break-word' }}>
+                "{g.en.length > 100 ? g.en.slice(0, 100) + '…' : g.en}" — {g.positions.length}회 등장 ({g.positions.map(p => p + 1).join(', ')}행)
+              </div>
+              <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+                  <input type="radio" checked={decisions[g.key] === 'keepAll'} onChange={() => setDecision(g.key, 'keepAll')} />
+                  모두 유지 ({g.positions.length}행 그대로 머지)
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+                  <input type="radio" checked={decisions[g.key] !== 'keepAll'} onChange={() => setDecision(g.key, g.positions[0])} />
+                  1개만 남기기 —
+                  <select
+                    disabled={decisions[g.key] === 'keepAll'}
+                    value={decisions[g.key] === 'keepAll' ? g.positions[0] : decisions[g.key]}
+                    onChange={e => setDecision(g.key, Number(e.target.value))}
+                    style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, border: '1px solid #d1d5db' }}
+                  >
+                    {g.positions.map(p => (
+                      <option key={p} value={p}>{p + 1}행{previewFor ? ` — ${previewFor(p)}` : ''}</option>
+                    ))}
+                  </select>
+                  유지 (나머지 삭제)
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ padding: '14px 24px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: 10, background: '#f9fafb' }}>
+          <button onClick={onCancel} style={{ padding: '8px 20px', borderRadius: 8, border: '1.5px solid #d1d5db', background: '#fff', color: '#374151', fontSize: 14, cursor: 'pointer', fontWeight: 500 }}>취소</button>
+          <button onClick={() => onConfirm(decisions)} style={{ padding: '8px 24px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', fontSize: 14, cursor: 'pointer', fontWeight: 700 }}>✅ 선택 반영하고 계속 ({groups.length}건)</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════
+// (Solution 2, 3) 중복 EN 개수 불일치 확인 모달 — buildExcelUnionMerge에서 사용
+// ════════════════════════════════════════════════════════════════
+/**
+ * mismatches: findCountMismatches() 결과
+ * onConfirm(assignments)
+ *   assignments: { [countryCode]: { [enKey]: Array<{ isExisting, position, existingLocal, value, include }> } }
+ * onCancel()
+ */
+function CountMismatchModal({ mismatches, onConfirm, onCancel }) {
+  const [filter, setFilter] = useState('')
+  const [assignments, setAssignments] = useState(() => {
+    const a = {}
+    mismatches.forEach(m => {
+      const maxLen = Math.max(m.existingPositions.length, m.newLocals.length)
+      const slots = []
+      for (let i = 0; i < maxLen; i++) {
+        const isExisting = i < m.existingPositions.length
+        slots.push({
+          isExisting,
+          position: isExisting ? m.existingPositions[i] : null,
+          existingLocal: isExisting ? m.existingLocals[i] : null,
+          value: m.newLocals[i] ?? null,
+          include: true, // 새 행(넘치는 값)인 경우 기본 포함 — 체크 해제 시 반영 제외
+        })
+      }
+      if (!a[m.countryCode]) a[m.countryCode] = {}
+      a[m.countryCode][m.enKey] = slots
+    })
+    return a
+  })
+
+  const setSlotValue = (code, key, idx, value) => {
+    setAssignments(prev => {
+      const slots = [...prev[code][key]]
+      slots[idx] = { ...slots[idx], value: value === '__none__' ? null : value }
+      return { ...prev, [code]: { ...prev[code], [key]: slots } }
+    })
+  }
+  const setSlotInclude = (code, key, idx, include) => {
+    setAssignments(prev => {
+      const slots = [...prev[code][key]]
+      slots[idx] = { ...slots[idx], include }
+      return { ...prev, [code]: { ...prev[code], [key]: slots } }
+    })
+  }
+
+  // 불일치 건수가 많을 때 국가/영문 카피로 검색해 좁혀볼 수 있게 함
+  const q = filter.trim().toLowerCase()
+  const visibleMismatches = q
+    ? mismatches.filter(m => m.enKey.toLowerCase().includes(q) || m.countryLabel.toLowerCase().includes(q))
+    : mismatches
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 10050,
+      background: 'rgba(0,0,0,0.6)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+    }} onClick={onCancel}>
+      <div style={{
+        background: '#fff', borderRadius: 14, width: '100%', maxWidth: 920,
+        maxHeight: '88vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ padding: '18px 24px 14px', borderBottom: '1px solid #e5e7eb', display: 'flex', gap: 12 }}>
+          <span style={{ fontSize: 24 }}>⚠️</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: '#111827' }}>
+              중복 카피 개수 불일치 확인 필요 ({mismatches.length}건)
+            </div>
+            <div style={{ fontSize: 13, color: '#6b7280', marginTop: 4 }}>
+              동일한 영문 카피가 기존 카피덱에 있는 개수와 새로 업로드한 엑셀 파일의 개수가 다릅니다.
+              각 값을 어느 행에 매핑할지 선택해주세요. ("매핑 안 함"을 선택하면 기존 값은 유지되고, 넘치는 새 값은 반영되지 않습니다)
+            </div>
+          </div>
+          <button onClick={onCancel} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: '#9ca3af', lineHeight: 1, padding: 0 }}>✕</button>
+        </div>
+
+        {/* 검색 필터 — 불일치 건수가 많을 때 국가/영문 카피로 좁혀 찾기 위함 */}
+        <div style={{ padding: '10px 24px', borderBottom: '1px solid #f0f1f3', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            type="text"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            placeholder="🔍 국가 코드 또는 영문 카피로 검색..."
+            style={{ flex: '1 1 200px', minWidth: 160, fontSize: 12, padding: '6px 10px', borderRadius: 6, border: '1px solid #d1d5db' }}
+          />
+          {q && (
+            <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>
+              {mismatches.length}건 중 {visibleMismatches.length}건 표시 중
+            </span>
+          )}
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {visibleMismatches.length === 0 && (
+            <div style={{ fontSize: 13, color: '#9ca3af', textAlign: 'center', padding: '20px 0' }}>검색 결과가 없습니다.</div>
+          )}
+          {visibleMismatches.map((m, mi) => {
+            const slots = assignments[m.countryCode][m.enKey]
+            return (
+              <div key={mi} style={{ border: '1.5px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', flexShrink: 0 }}>
+                <div style={{ background: '#f9fafb', padding: '8px 12px', borderBottom: '1px solid #e5e7eb', display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ background: '#2563eb', color: '#fff', borderRadius: 4, fontSize: 10, fontWeight: 700, padding: '2px 7px', whiteSpace: 'nowrap' }}>{m.countryLabel}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: '#111827', flex: 1, wordBreak: 'break-word' }}>
+                    {m.enKey.length > 90 ? m.enKey.slice(0, 90) + '…' : m.enKey}
+                  </span>
+                  <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>
+                    기존 {m.existingPositions.length}행 / 새 파일 {m.newLocals.length}개
+                  </span>
+                </div>
+                <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {slots.map((slot, si) => (
+                    <div key={si} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, flexWrap: 'wrap' }}>
+                      <span style={{ width: 90, flexShrink: 0, color: '#4f46e5', fontWeight: 600 }}>
+                        {slot.isExisting ? `기존 ${slot.position + 1}행` : '새 행 추가'}
+                      </span>
+                      {slot.isExisting && (
+                        <span style={{ width: 170, flexShrink: 0, color: '#9ca3af', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          현재: {slot.existingLocal || '(빈 값)'}
+                        </span>
+                      )}
+                      <span>→</span>
+                      <select
+                        value={slot.value ?? '__none__'}
+                        onChange={e => setSlotValue(m.countryCode, m.enKey, si, e.target.value)}
+                        style={{ fontSize: 11, padding: '3px 6px', borderRadius: 4, border: '1px solid #d1d5db', flex: 1, minWidth: 140 }}
+                      >
+                        <option value="__none__">{slot.isExisting ? '매핑 안 함 (기존 값 유지)' : '매핑 안 함 (반영 안 함)'}</option>
+                        {m.newLocals.map((v, vi) => (
+                          <option key={vi} value={v}>{vi + 1}번째 값: {v.length > 40 ? v.slice(0, 40) + '…' : v}</option>
+                        ))}
+                      </select>
+                      {!slot.isExisting && (
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+                          <input type="checkbox" checked={slot.include} onChange={e => setSlotInclude(m.countryCode, m.enKey, si, e.target.checked)} />
+                          새 행으로 추가
+                        </label>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        <div style={{ padding: '14px 24px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: 10, background: '#f9fafb' }}>
+          <button onClick={onCancel} style={{ padding: '8px 20px', borderRadius: 8, border: '1.5px solid #d1d5db', background: '#fff', color: '#374151', fontSize: 14, cursor: 'pointer', fontWeight: 500 }}>취소</button>
+          <button onClick={() => onConfirm(assignments)} style={{ padding: '8px 24px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', fontSize: 14, cursor: 'pointer', fontWeight: 700 }}>✅ 선택 반영 후 머지 ({mismatches.length}건)</button>
         </div>
       </div>
     </div>
@@ -841,7 +1179,7 @@ function CountryHistoryDrawer({ projectId, country, onClose }) {
                   prevLocal: prevRow.local,
                   isChanged
                 }
-              }).filter(row => row.isChanged || row.missing)
+              }).filter(row => row.isChanged) // 실제로 이전 버전과 달라진 행만 — 계속 매핑 안 된 채로 값이 그대로면(변화 없으면) 표시하지 않음
 
               return (
                 <div key={h.id} className="mg-history-item">
@@ -1060,6 +1398,10 @@ function ExcelImportModal({ onClose, onApply }) {
   const [originalCopyColIndex, setOriginalCopyColIndex] = useState(null)
   const [codeOverrides, setCodeOverrides]           = useState({}) // { colIndex: 'CA_FR' | '__exclude__' }
 
+  // ── (Solution 1) 동일 EN 카피 2개 이상 확인 모달 상태 ──────────
+  const [dupGroups, setDupGroups]         = useState(null) // null = 미확인, [...] = 확인 필요
+  const [pendingValidRows, setPendingValidRows] = useState(null)
+
   const colLetter = (i) => {
     let s = '', n = i
     do { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1 } while (n >= 0)
@@ -1130,6 +1472,19 @@ function ExcelImportModal({ onClose, onApply }) {
 
   const canApply = grid && originalCopyColIndex != null && countryColumns.some(c => c.code)
 
+  // 실제 enLines/countryPasteMap을 만들어 상위로 넘긴다 (중복 확인이 끝난 뒤 호출됨)
+  const finalizeApply = (validRows) => {
+    const enLines = validRows.map(row => normCell(row[originalCopyColIndex])).join('\n')
+    const countryPasteMap = {}
+    countryColumns.forEach(({ colIdx, code }) => {
+      if (!code) return
+      countryPasteMap[code] = validRows
+        .map(row => `${normCell(row[originalCopyColIndex])}\t${normCell(row[colIdx])}`)
+        .join('\n')
+    })
+    onApply(enLines, countryPasteMap)
+  }
+
   const handleApply = () => {
     if (!canApply) return
     // 셀 안에 Alt+Enter 줄바꿈(\n, \r\n)이 있으면 공백으로 치환한다.
@@ -1137,18 +1492,45 @@ function ExcelImportModal({ onClose, onApply }) {
     // 이후 parseEnLines/parseConfirmedPaste가 그 텍스트를 다시 '\n' 기준으로
     // 쪼개 "줄 = 행"으로 취급하기 때문에, 셀 내부 줄바꿈을 남겨두면
     // 원래 한 행(한 셀)이 여러 행으로 쪼개져 국가별 매핑이 밀려버린다.
-    const norm = v => (v ?? '').toString().replace(/\r\n|\r|\n/g, ' ').trim()
-    const validRows = grid.slice(dataStartRow).filter(row => norm(row[originalCopyColIndex]) !== '')
-    const enLines = validRows.map(row => norm(row[originalCopyColIndex])).join('\n')
+    const validRows = grid.slice(dataStartRow).filter(row => normCell(row[originalCopyColIndex]) !== '')
 
-    const countryPasteMap = {}
-    countryColumns.forEach(({ colIdx, code }) => {
-      if (!code) return
-      countryPasteMap[code] = validRows
-        .map(row => `${norm(row[originalCopyColIndex])}\t${norm(row[colIdx])}`)
-        .join('\n')
+    // ── (Solution 1) 원문(영문) 컬럼 안에 동일 카피가 2개 이상이면 먼저 확인받는다 ──
+    const enArr = validRows.map(row => normCell(row[originalCopyColIndex]))
+    const groups = findDuplicateEnGroups(enArr)
+    if (groups.length > 0) {
+      setPendingValidRows(validRows)
+      setDupGroups(groups)
+      return
+    }
+    finalizeApply(validRows)
+  }
+
+  // 중복 확인 모달에서 각 그룹별 미리보기 텍스트 (첫 번째로 매핑된 국가 컬럼 값)
+  const dupPreviewFor = (rowIndex) => {
+    const row = pendingValidRows?.[rowIndex]
+    if (!row) return ''
+    const withCode = countryColumns.find(c => c.code)
+    if (!withCode) return ''
+    const val = normCell(row[withCode.colIdx])
+    return val ? `${withCode.code}: ${val.slice(0, 30)}${val.length > 30 ? '…' : ''}` : `${withCode.code}: (빈 값)`
+  }
+
+  const handleDupConfirm = (decisions) => {
+    const dropRowIdx = new Set()
+    dupGroups.forEach(g => {
+      const decision = decisions[g.key] ?? 'keepAll'
+      if (decision === 'keepAll') return
+      const keepPos = decision // 유지할 실제 row index
+      g.positions.forEach(p => { if (p !== keepPos) dropRowIdx.add(p) })
     })
-    onApply(enLines, countryPasteMap)
+    const filteredRows = pendingValidRows.filter((_, i) => !dropRowIdx.has(i))
+    setDupGroups(null)
+    setPendingValidRows(null)
+    finalizeApply(filteredRows)
+  }
+  const handleDupCancel = () => {
+    setDupGroups(null)
+    setPendingValidRows(null)
   }
 
   return (
@@ -1344,6 +1726,15 @@ function ExcelImportModal({ onClose, onApply }) {
           </div>
         </div>
       </div>
+
+      {dupGroups && dupGroups.length > 0 && (
+        <DuplicateEnConfirmModal
+          groups={dupGroups}
+          previewFor={dupPreviewFor}
+          onConfirm={handleDupConfirm}
+          onCancel={handleDupCancel}
+        />
+      )}
     </>
   )
 }
@@ -1375,6 +1766,9 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
   const [importConflictModal, setImportConflictModal] = useState(null)
   // importConflictModal = { conflicts, unionEnLines, matrix, activeCountries }
   const [showExcelImport, setShowExcelImport] = useState(false)
+  // ── (Solution 2, 3) 중복 EN 개수 불일치 확인 모달 상태 ─────────
+  const [countMismatchModal, setCountMismatchModal] = useState(null)
+  // countMismatchModal = { mismatches, enLinesJoined, countryPasteMap }
 
   // ── 자동 저장 상태 ('idle' | 'editing' | 'saving' | 'saved' | 'error') ──
   const [saveStatus, setSaveStatus] = useState('idle')
@@ -1576,40 +1970,70 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
 
   // ── 엑셀 업로드 → 합집합 병합 ────────────────────────────────
   /**
-   *  - 기존에 없던 EN 행(새 카피)      → 그대로 뒤에 추가 (합집합, 충돌 아님)   [경우 1, 3]
-   *  - 기존에 없던 국가(새 카피덱)      → 국가 열 새로 추가, 충돌 없이 매핑     [경우 1, 3]
-   *  - 기존 행인데 그 국가 값이 비어있음 → 새 값으로 채움 (합집합, 충돌 아님)    [경우 1, 3]
-   *  - 기존 행 + 값 있음 + 새 값도 있음 + 서로 다름 → 충돌 목록에 수집          [경우 2]
+   *  - 기존에 없던 EN 행(새 카피)      → 그대로 뒤에 추가 (합집합, 충돌 아님, 중복이어도 모두 보존) [경우 1, 3]
+   *  - 기존에 없던 국가(새 카피덱)      → 국가 열 새로 추가, 충돌 없이 매핑                        [경우 1, 3]
+   *  - 기존 행인데 그 국가 값이 비어있음 → 새 값으로 채움 (합집합, 충돌 아님)                        [경우 1, 3]
+   *  - 기존 행 + 값 있음 + 새 값도 있음 + 서로 다름 → 충돌 목록에 수집 (ImportConflictModal)         [경우 2]
    *  - 새 파일에 해당 행 자체가 없거나 빈 칸 → 기존 값 그대로 유지
+   *  - 동일 EN이 기존에 N번(N≥1) 있는데 새 파일의 해당 EN 로컬 값 개수가 N과 다른 경우
+   *    → 자동 매핑하지 않고 needsMismatchResolution을 반환, CountMismatchModal로 사용자 확인 (Solution 2, 3)
    *  (mergeResult가 비어있어도 그대로 동작 — existingBase가 빈 배열일 뿐이라
    *   모든 값이 "비어있음 → 채움" 경로로 처리되어 최초 업로드와 결과가 같다.)
+   *
+   * mismatchAssignments가 없으면 먼저 개수 불일치를 검사해서 있으면 즉시 반환한다.
+   * 사용자가 CountMismatchModal에서 확인한 뒤에는 mismatchAssignments를 채워 다시 호출한다.
    */
-  const buildExcelUnionMerge = (newEnLinesJoined, countryPasteMap) => {
+  const buildExcelUnionMerge = (newEnLinesJoined, countryPasteMap, mismatchAssignments = null) => {
     const newEnLines = parseEnLines(newEnLinesJoined)
     const existingBase = mergeResult?.baseEnLines || []
     const existingMatrix = mergeResult?.matrix || {}
     const existingSet = new Set(existingBase.map(en => en.trim()))
+    const baseActiveCountries = mergeResult?.activeCountries || []
 
-    const seenNew = new Set()
+    // ── (Solution 2, 3) 등장 횟수 불일치가 아직 해결되지 않았으면 먼저 확인받는다 ──
+    if (!mismatchAssignments) {
+      const mismatches = findCountMismatches(existingBase, existingMatrix, baseActiveCountries, countryPasteMap)
+      if (mismatches.length > 0) {
+        return { needsMismatchResolution: true, mismatches }
+      }
+    }
+
+    // 완전히 새로운 EN 행만 뒤에 추가한다. 중복이어도 그대로 모두 보존 —
+    // ExcelImportModal에서 이미 "동일 카피 2개 이상" 확인(Solution 1)을 거쳤으므로
+    // 여기서 다시 하나로 합치지 않는다.
     const appendedEn = []
     newEnLines.forEach(en => {
       const key = en.trim()
-      if (existingSet.has(key) || seenNew.has(key)) return
-      seenNew.add(key)
+      if (existingSet.has(key)) return
       appendedEn.push(en)
     })
-    const unionEnLines = [...existingBase, ...appendedEn]
+
+    // (Solution 3) 개수 불일치 해결 과정에서 사용자가 "새 행으로 추가"를 선택한 값들
+    const extraRows = [] // [{ countryCode, enKey, local }]
+    if (mismatchAssignments) {
+      Object.entries(mismatchAssignments).forEach(([code, byKey]) => {
+        Object.entries(byKey).forEach(([key, slots]) => {
+          slots.forEach(slot => {
+            if (!slot.isExisting && slot.include && (slot.value ?? '').trim() !== '') {
+              extraRows.push({ countryCode: code, enKey: key, local: slot.value })
+            }
+          })
+        })
+      })
+    }
+
+    const unionEnLines = [...existingBase, ...appendedEn, ...extraRows.map(r => r.enKey)]
+    const extraRowStartIdx = existingBase.length + appendedEn.length
 
     const matrix = {}
     const conflicts = []
     const touchedIds = new Set()
     let seq = idSeq
-    const activeCountries = [...(mergeResult?.activeCountries || [])]
+    const activeCountries = [...baseActiveCountries]
 
     Object.entries(countryPasteMap).forEach(([code, rawPaste]) => {
       const pairs = parseConfirmedPaste(rawPaste)
       if (pairs.length === 0) return
-      const consume = makePairConsumer(pairs)
 
       let matched = activeCountries.find(c => (c.label || '').toUpperCase() === code.toUpperCase())
       if (!matched) {
@@ -1620,12 +2044,21 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
       touchedIds.add(matched.id)
 
       const existingRows = existingMatrix[matched.id] || []
-      matrix[matched.id] = unionEnLines.map((en, i) => {
+      const resolvedByKey = mismatchAssignments?.[code] || {}
+      // FIFO 소비 — 개수가 일치하는 기존 키, 완전히 새로운 키에만 사용 (개수 불일치 키는 resolvedByKey로 처리)
+      const consume = makePairConsumer(pairs)
+
+      const rows = unionEnLines.slice(0, extraRowStartIdx).map((en, i) => {
+        const key = en.trim()
         const existingLocal = (existingRows[i]?.local ?? '').trim()
-        const newLocal = consume(en)
+
+        // 이번에 사용자가 직접 위치를 확정한 키(개수 불일치였던 키)는 FIFO 대신 확정값을 그대로 사용
+        const slots = resolvedByKey[key]
+        const slot = slots ? slots.find(s => s.isExisting && s.position === i) : null
+        const newLocal = slots ? (slot ? slot.value : null) : consume(en)
         const newLocalTrim = (newLocal ?? '').trim()
 
-        if (newLocal === undefined || newLocalTrim === '') {
+        if (newLocal === undefined || newLocal === null || newLocalTrim === '') {
           return { en, local: existingRows[i]?.local ?? '', missing: !(existingRows[i]?.local) }
         }
         if (!existingLocal) {
@@ -1640,6 +2073,18 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
         })
         return { en, local: existingRows[i].local, missing: false }
       })
+
+      // 개수 불일치 해결 중 "새 행으로 추가"된 행들 — 이 국가 자신이 추가한 값만 채우고,
+      // 다른 국가가 추가한 행은 이 국가에서는 빈 칸으로 둔다
+      extraRows.forEach(r => {
+        rows.push({
+          en: r.enKey,
+          local: r.countryCode === code ? r.local : '',
+          missing: r.countryCode !== code,
+        })
+      })
+
+      matrix[matched.id] = rows
     })
 
     activeCountries.forEach(c => {
@@ -1712,9 +2157,29 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
   }
   const handleImportConflictCancel = () => setImportConflictModal(null)
 
+  // ── (Solution 2, 3) 중복 EN 개수 불일치 확인 모달 처리 ──────────
+  const handleCountMismatchConfirm = (assignments) => {
+    const { enLinesJoined, countryPasteMap } = countMismatchModal
+    setCountMismatchModal(null)
+    const result = buildExcelUnionMerge(enLinesJoined, countryPasteMap, assignments)
+    if (result.needsMismatchResolution) return // 이론상 발생하지 않음 (assignments 전달 시)
+    const { unionEnLines, matrix, conflicts, activeCountries } = result
+    if (conflicts.length > 0) {
+      setImportConflictModal({ conflicts, unionEnLines, matrix, activeCountries })
+      return
+    }
+    commitExcelReimport(unionEnLines, matrix, activeCountries)
+  }
+  const handleCountMismatchCancel = () => setCountMismatchModal(null)
+
   const applyExcelImport = (enLinesJoined, countryPasteMap) => {
-    const { unionEnLines, matrix, conflicts, activeCountries } = buildExcelUnionMerge(enLinesJoined, countryPasteMap)
+    const result = buildExcelUnionMerge(enLinesJoined, countryPasteMap)
     setShowExcelImport(false)
+    if (result.needsMismatchResolution) {
+      setCountMismatchModal({ mismatches: result.mismatches, enLinesJoined, countryPasteMap })
+      return
+    }
+    const { unionEnLines, matrix, conflicts, activeCountries } = result
     if (conflicts.length > 0) {
       setImportConflictModal({ conflicts, unionEnLines, matrix, activeCountries })
       return
@@ -1733,7 +2198,7 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
 
   const handleExport = () => {
     if (!mergeResult) return
-    exportCSV(
+    exportXLSX(
       mergeResult.baseEnLines,
       (mergeResult.activeCountries || []).map(c => ({ ...c, mappedJson: JSON.stringify(mergeResult.matrix[c.id] || []) })),
       project.title
@@ -1773,6 +2238,14 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
           conflicts={importConflictModal.conflicts}
           onConfirm={handleImportConflictConfirm}
           onCancel={handleImportConflictCancel}
+        />
+      )}
+
+      {countMismatchModal && (
+        <CountMismatchModal
+          mismatches={countMismatchModal.mismatches}
+          onConfirm={handleCountMismatchConfirm}
+          onCancel={handleCountMismatchCancel}
         />
       )}
 
