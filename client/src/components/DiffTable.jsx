@@ -18,9 +18,9 @@ const DiffTable = memo(function DiffTable({ rows }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map(d => (
-            <tr key={d.row}>
-              <td className="td-row">{d.row}</td>
+          {rows.map((d, i) => (
+            <tr key={i}>
+              <td className="td-row">{d.rowLabel ?? d.row}</td>
               <td className="td-as"><DiffHighlight asWas={d.asWas} toBe={d.toBe} side="as" /></td>
               <td className="td-to"><DiffHighlight asWas={d.asWas} toBe={d.toBe} side="to" /></td>
               <td className="td-status">

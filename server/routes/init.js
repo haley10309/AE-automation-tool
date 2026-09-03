@@ -176,7 +176,7 @@ router.post('/init', checkDbConnection, async (req, res) => {
 
     await getPool().execute(`CREATE TABLE IF NOT EXISTS copy_rows (
       id INT AUTO_INCREMENT PRIMARY KEY, request_id INT NOT NULL,
-      row_index INT NOT NULL, as_was TEXT, to_be TEXT,
+      row_index INT NOT NULL, as_was LONGTEXT, to_be LONGTEXT,
       status ENUM('변경','추가','삭제','동일') NOT NULL DEFAULT '동일',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (request_id) REFERENCES copy_requests(id) ON DELETE CASCADE)`);
@@ -420,7 +420,18 @@ router.post('/init', checkDbConnection, async (req, res) => {
       `ALTER TABLE merge_countries     ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0`,
     ]) {
       try { await getPool().execute(ddl) } catch (_) { /* 이미 존재하면 무시 */ }
-    }    res.json({ ok: true });
+    }
+
+    // ── copy_rows.as_was/to_be를 LONGTEXT로 확장 (기존 테이블 호환) ──
+    // TEXT는 최대 약 64KB(utf8mb4 기준 실질적으로 더 적음)라서, HTML 모드처럼
+    // 줄바꿈 없이 압축된 한 줄이 그대로 들어오는 경우 "Data too long" 에러가 났다.
+    for (const ddl of [
+      `ALTER TABLE copy_rows MODIFY COLUMN as_was LONGTEXT`,
+      `ALTER TABLE copy_rows MODIFY COLUMN to_be  LONGTEXT`,
+    ]) {
+      try { await getPool().execute(ddl) } catch (_) { /* 이미 LONGTEXT면 무시 */ }
+    }
+    res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
 });
 
