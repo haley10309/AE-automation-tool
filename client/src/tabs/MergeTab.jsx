@@ -152,6 +152,29 @@ function hasTBDorNA(local) {
   return /\bTBD\b/i.test(local) || /\bN\/A\b/i.test(local)
 }
 
+/**
+ * 셀 하나(행×국가)의 모든 이슈를 한 번만 계산한다.
+ * 이전에는 "행에 이슈가 있는지" 판단할 때와 "셀 배지를 그릴 때" 두 곳에서
+ * 각각 checkDNT/checkUnreleased/... 를 따로 호출해 국가 수×행 수만큼 계산이
+ * 두 배로 들었다 (국가 30개·행 300개 환경에서 브라우저가 멈추는 주요 원인).
+ * 계산 결과를 한 번만 만들어서 행 하이라이트와 셀 렌더링 양쪽에서 재사용한다.
+ */
+function computeCellIssues(en, m, countryLabel, products) {
+  const isMissing = m?.missing || !m
+  const local = m?.local ?? ''
+  if (isMissing) {
+    return { isMissing: true, isTBD: false, dntIss: [], urlIss: [], unreleased: [], dntMismatch: null, svcIssues: [], hasAnyIssue: false }
+  }
+  const isTBD = hasTBDorNA(local)
+  const dntIss      = local ? checkDNT(en, local, products) : []
+  const urlIss      = local ? checkUrlSiteCode(local, countryLabel) : []
+  const unreleased  = local ? checkUnreleased(local, countryLabel, products) : []
+  const dntMismatch = local ? checkDNTCountMismatch(en, local, countryLabel, products) : null
+  const svcIssues   = local ? detectServiceIssues(local, countryLabel) : []
+  const hasAnyIssue = dntIss.length > 0 || urlIss.length > 0 || unreleased.length > 0 || !!dntMismatch || svcIssues.length > 0
+  return { isMissing: false, isTBD, dntIss, urlIss, unreleased, dntMismatch, svcIssues, hasAnyIssue }
+}
+
 // ── 엑셀 추출 시 고정 국가 순서 ──────────────────────────────
 const SITE_CODE_ORDER = [
   'CA_FR','CA',
@@ -1341,6 +1364,13 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
   const [globalSearch, setGlobalSearch]     = useState('')
   const [perCountrySearch, setPerCountrySearch] = useState({}) // { [countryId]: string }
 
+  // ── 페이지네이션 ────────────────────────────────────────────
+  // 국가 30개 × 행 300개처럼 커지면 한 번에 전부(9,000+ 셀)를 그리려다
+  // 브라우저/PC가 멈추는 문제가 있었다. 한 번에 그리는 행 수를 제한한다.
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(50)
+  useEffect(() => { setPage(0) }, [globalSearch, perCountrySearch])
+
   // ── 엑셀 재업로드(합집합 병합) 충돌 모달 상태 ─────────────────
   const [importConflictModal, setImportConflictModal] = useState(null)
   // importConflictModal = { conflicts, unionEnLines, matrix, activeCountries }
@@ -1725,6 +1755,11 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
     return acc
   }, [])
 
+  // ── 페이지네이션 ──────────────────────────────────────────────
+  const pageCount = Math.max(1, Math.ceil(filteredIndices.length / pageSize))
+  const clampedPage = Math.min(page, pageCount - 1)
+  const pagedIndices = filteredIndices.slice(clampedPage * pageSize, (clampedPage + 1) * pageSize)
+
   const saveStatusText = {
     idle: '', editing: '편집 중…', saving: '저장 중…',
     saved: '모든 변경사항 저장됨', error: '저장 실패 — 다시 시도해주세요',
@@ -1863,6 +1898,33 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
             </span>
           </div>
 
+          {/* ── 페이지네이션 바 ──
+               국가·행이 많아지면(예: 30개국 × 300행 = 9,000셀) 한 번에 다 그리면
+               브라우저/PC가 멈추기 때문에, 화면에는 한 번에 pageSize개 행만 그린다. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 10px', flexWrap: 'wrap' }}>
+            <button className="act-btn act-cancel" style={{ fontSize: 12 }}
+              disabled={clampedPage === 0}
+              onClick={() => setPage(p => Math.max(0, p - 1))}>◀ 이전</button>
+            <span style={{ fontSize: 12, color: '#374151', fontWeight: 600 }}>
+              {filteredIndices.length === 0 ? '0' : `${clampedPage * pageSize + 1}–${Math.min((clampedPage + 1) * pageSize, filteredIndices.length)}`}
+              {' / '}{filteredIndices.length}행
+            </span>
+            <button className="act-btn act-cancel" style={{ fontSize: 12 }}
+              disabled={clampedPage >= pageCount - 1}
+              onClick={() => setPage(p => Math.min(pageCount - 1, p + 1))}>다음 ▶</button>
+            <span style={{ fontSize: 12, color: '#9ca3af' }}>({clampedPage + 1}/{pageCount}페이지)</span>
+            <select
+              className="form-input"
+              style={{ fontSize: 12, padding: '4px 8px', marginLeft: 'auto' }}
+              value={pageSize}
+              onChange={e => { setPageSize(Number(e.target.value)); setPage(0) }}
+            >
+              <option value={25}>25행씩</option>
+              <option value={50}>50행씩</option>
+              <option value={100}>100행씩</option>
+            </select>
+          </div>
+
           <div className="cc-table-wrap">
             <table className="cc-table mg-table">
               <thead>
@@ -1905,7 +1967,7 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
                 </tr>
               </thead>
               <tbody>
-                {filteredIndices.map(i => {
+                {pagedIndices.map(i => {
                   const en = baseEnLines[i]
 
                   const perCountryVisible = (c) => {
@@ -1917,16 +1979,14 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
                   const hasAnyPerSearch = Object.values(perCountrySearch).some(v => v.trim())
                   if (hasAnyPerSearch && !activeCountries.some(c => perCountryVisible(c))) return null
 
-                  const rowHasIssue = activeCountries.some(c => {
+                  // 국가별 이슈를 한 번만 계산해서 행 하이라이트 + 셀 배지 양쪽에서 재사용
+                  const issuesByCountry = {}
+                  let rowHasIssue = false
+                  activeCountries.forEach(c => {
                     const m = mergeResult.matrix[c.id]?.[i]
-                    if (m?.missing) return true
-                    const local = m?.local ?? ''
-                    return (
-                      checkDNT(en, local, products).length > 0 ||
-                      checkUnreleased(local, c.label, products).length > 0 ||
-                      checkDNTCountMismatch(en, local, c.label, products) !== null ||
-                      detectServiceIssues(local, c.label).length > 0
-                    )
+                    const issues = computeCellIssues(en, m, c.label, products)
+                    issuesByCountry[c.id] = issues
+                    if (issues.isMissing || issues.hasAnyIssue) rowHasIssue = true
                   })
 
                   return (
@@ -1948,15 +2008,8 @@ function ProjectDetailView({ project, products, onBack, onUpdated }) {
                       </td>
                       {activeCountries.map(c => {
                         const m = mergeResult.matrix[c.id]?.[i]
-                        const dntIss        = m?.local ? checkDNT(en, m.local, products) : []
-                        const urlIss        = m?.local ? checkUrlSiteCode(m.local, c.label) : []
-                        const isTBD         = hasTBDorNA(m?.local)
-                        const isMissing     = m?.missing || !m
-                        const unreleased    = (!isMissing && m?.local) ? checkUnreleased(m.local, c.label, products) : []
-                        const dntMismatch   = (!isMissing && m?.local) ? checkDNTCountMismatch(en, m.local, c.label, products) : null
-                        const svcIssues     = (!isMissing && m?.local) ? detectServiceIssues(m.local, c.label) : []
+                        const { isMissing, isTBD, dntIss, urlIss, unreleased, dntMismatch, svcIssues, hasAnyIssue } = issuesByCountry[c.id]
 
-                        const hasAnyIssue = dntIss.length || urlIss.length || unreleased.length || dntMismatch || svcIssues.length
                         const pq = (perCountrySearch[c.id] ?? '').trim().toLowerCase()
                         const isPerMatch = pq
                           ? ((m?.local ?? '').toLowerCase().includes(pq) || en.toLowerCase().includes(pq))

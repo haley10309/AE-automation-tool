@@ -20,27 +20,130 @@ export function getStatus(a, b) {
   return '변경'
 }
 
-export function today() {
-  return new Date().toISOString().slice(0, 10)
+// ── 줄 단위 diff (VSCode의 "Compare Selected"와 동일한 방식) ──────
+// 이전 방식은 "같은 줄 번호끼리" 무조건 비교했기 때문에, 중간에 한 줄만
+// 추가/삭제돼도 그 아래 모든 줄이 밀려서 전부 "변경"으로 잘못 표시됐다.
+// 이제는 실제 diff 알고리즘(LCS)으로 두 배열 사이에서 실제로 같은 줄을
+// 찾아 정렬하고, 진짜로 달라진 부분만 추가/삭제/변경으로 표시한다.
+const DIFF_SIZE_LIMIT = 4_000_000 // 이 이상이면 정밀 비교 대신 단순 비교로 대체(먹통 방지)
+
+function diffPositionalFallback(a, b) {
+  const maxLen = Math.max(a.length, b.length)
+  const ops = []
+  for (let i = 0; i < maxLen; i++) {
+    const hasA = i < a.length, hasB = i < b.length
+    if (hasA && hasB) {
+      if (a[i] === b[i]) ops.push({ type: 'equal', aIndex: i, bIndex: i })
+      else { ops.push({ type: 'delete', aIndex: i, bIndex: -1 }); ops.push({ type: 'insert', aIndex: -1, bIndex: i }) }
+    } else if (hasA) { ops.push({ type: 'delete', aIndex: i, bIndex: -1 }) }
+    else { ops.push({ type: 'insert', aIndex: -1, bIndex: i }) }
+  }
+  return ops
 }
 
-// ── HTML 파일에서 텍스트 줄 추출 ─────────────────────────────
-// 블록 태그(<br>, </p>, </div>, </li>, </h1~6>, </tr>, </td> 등)의 경계를
-// 줄바꿈으로 취급하고, 나머지 태그는 제거한 뒤 줄 단위로 분리한다.
-// (셀/문단 안에 있는 <br>만으로 줄바꿈된 경우까지 정확히 잡아내기 위함)
-export function extractTextLinesFromHtml(htmlStr) {
-  let s = (htmlStr || '')
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '') // script/style 내용은 제거
-    .replace(/<(br)\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|h[1-6]|tr|td|th|blockquote|section|article|header|footer)\s*>/gi, '\n')
-    .replace(/<[^>]+>/g, '') // 나머지 태그 제거
+function diffMiddleBounded(a, b) {
+  const N = a.length, M = b.length
+  if (N === 0 && M === 0) return []
+  if (N === 0) return b.map((_, i) => ({ type: 'insert', aIndex: -1, bIndex: i }))
+  if (M === 0) return a.map((_, i) => ({ type: 'delete', aIndex: i, bIndex: -1 }))
 
-  // HTML 엔티티 디코드 (&amp; &nbsp; 등) — textarea를 이용한 브라우저 네이티브 디코딩
-  const ta = document.createElement('textarea')
-  ta.innerHTML = s
-  s = ta.value
+  // 너무 크면(둘 다 완전히 다른 대용량 파일 등) O(N*M) LCS는 화면/PC를 멈추게
+  // 할 수 있어 단순 비교로 대체한다.
+  if (N * M > DIFF_SIZE_LIMIT) return diffPositionalFallback(a, b)
 
-  return s.split(/\r?\n/).map(l => l.trim()).filter(l => l !== '')
+  const row = M + 1
+  const dp = new Int32Array((N + 1) * row)
+  for (let i = N - 1; i >= 0; i--) {
+    for (let j = M - 1; j >= 0; j--) {
+      if (a[i] === b[j]) {
+        dp[i * row + j] = dp[(i + 1) * row + (j + 1)] + 1
+      } else {
+        const down = dp[(i + 1) * row + j]
+        const right = dp[i * row + (j + 1)]
+        dp[i * row + j] = down >= right ? down : right
+      }
+    }
+  }
+
+  const ops = []
+  let i = 0, j = 0
+  while (i < N && j < M) {
+    if (a[i] === b[j]) { ops.push({ type: 'equal', aIndex: i, bIndex: j }); i++; j++ }
+    else if (dp[(i + 1) * row + j] >= dp[i * row + (j + 1)]) { ops.push({ type: 'delete', aIndex: i, bIndex: -1 }); i++ }
+    else { ops.push({ type: 'insert', aIndex: -1, bIndex: j }); j++ }
+  }
+  while (i < N) { ops.push({ type: 'delete', aIndex: i, bIndex: -1 }); i++ }
+  while (j < M) { ops.push({ type: 'insert', aIndex: -1, bIndex: j }); j++ }
+  return ops
+}
+
+/** 두 줄 배열을 비교해 {type:'equal'|'delete'|'insert', aIndex, bIndex} 편집 스크립트를 반환 */
+export function diffLines(a, b) {
+  const N = a.length, M = b.length
+
+  // 앞/뒤 공통 부분을 먼저 잘라내는 건 실제 diff 도구들의 표준 최적화 —
+  // 파일이 아무리 커도 실제로 바뀐 구간만 LCS 계산 대상이 되어 훨씬 빠르다.
+  let start = 0
+  while (start < N && start < M && a[start] === b[start]) start++
+  let endA = N, endB = M
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) { endA--; endB-- }
+
+  const ops = []
+  for (let i = 0; i < start; i++) ops.push({ type: 'equal', aIndex: i, bIndex: i })
+
+  const midOps = diffMiddleBounded(a.slice(start, endA), b.slice(start, endB))
+  for (const op of midOps) {
+    if (op.type === 'equal') ops.push({ type: 'equal', aIndex: op.aIndex + start, bIndex: op.bIndex + start })
+    else if (op.type === 'delete') ops.push({ type: 'delete', aIndex: op.aIndex + start, bIndex: -1 })
+    else ops.push({ type: 'insert', aIndex: -1, bIndex: op.bIndex + start })
+  }
+
+  const tailLen = N - endA
+  for (let t = 0; t < tailLen; t++) ops.push({ type: 'equal', aIndex: endA + t, bIndex: endB + t })
+  return ops
+}
+
+/** diffLines()의 편집 스크립트를 화면에 뿌릴 행 목록으로 변환 (인접한 삭제+추가는 "변경"으로 묶음) */
+export function buildDiffRows(ops, aLines, bLines) {
+  const rows = []
+  let i = 0
+  while (i < ops.length) {
+    const op = ops[i]
+    if (op.type === 'equal') {
+      rows.push({
+        asRow: op.aIndex + 1, toRow: op.bIndex + 1,
+        asWas: aLines[op.aIndex], toBe: bLines[op.bIndex], status: '동일',
+      })
+      i++
+      continue
+    }
+    let delStart = i
+    while (i < ops.length && ops[i].type === 'delete') i++
+    const delOps = ops.slice(delStart, i)
+    let insStart = i
+    while (i < ops.length && ops[i].type === 'insert') i++
+    const insOps = ops.slice(insStart, i)
+
+    const pairLen = Math.min(delOps.length, insOps.length)
+    for (let p = 0; p < pairLen; p++) {
+      rows.push({
+        asRow: delOps[p].aIndex + 1, toRow: insOps[p].bIndex + 1,
+        asWas: aLines[delOps[p].aIndex], toBe: bLines[insOps[p].bIndex], status: '변경',
+      })
+    }
+    for (let p = pairLen; p < delOps.length; p++) {
+      rows.push({ asRow: delOps[p].aIndex + 1, toRow: null, asWas: aLines[delOps[p].aIndex], toBe: '', status: '삭제' })
+    }
+    for (let p = pairLen; p < insOps.length; p++) {
+      rows.push({ asRow: null, toRow: insOps[p].bIndex + 1, asWas: '', toBe: bLines[insOps[p].bIndex], status: '추가' })
+    }
+  }
+  return rows
+}
+
+
+export function today() {
+  return new Date().toISOString().slice(0, 10)
 }
 
 export function formatDateTime(isoStr) {

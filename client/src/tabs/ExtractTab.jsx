@@ -4,7 +4,7 @@ import { useDB } from '../DBContext.jsx'
 import DiffTable from '../components/DiffTable.jsx'
 import HistoryTable from '../components/HistoryTable.jsx'
 import ExtractExcelImportModal from '../components/ExtractExcelImportModal.jsx'
-import { parseCol, normalize, isHeaderLike, getStatus, today, extractTextLinesFromHtml } from '../utils.js'
+import { parseCol, normalize, isHeaderLike, today, diffLines, buildDiffRows } from '../utils.js'
 
 export default function ExtractTab() {
   const { dbStatus } = useDB()
@@ -79,38 +79,45 @@ export default function ExtractTab() {
   // 엑셀/HTML 모드에서 값을 세팅한 직후 바로 비교를 실행할 때, state가 아직
   // 반영되기 전이라 asWasInput/toBeInput을 그대로 읽으면 예전 값이 잡히는
   // 문제가 있어 raw 값을 인자로 직접 받도록 분리했다.
+  //
+  // VSCode의 "Compare Selected"와 동일한 방식: 같은 줄 번호끼리 억지로 맞추는
+  // 대신, 실제 diff 알고리즘(LCS)으로 두 텍스트 사이의 진짜 대응 관계를 찾는다.
+  // 그래서 중간에 한 줄이 추가/삭제돼도 그 아래 줄들이 전부 "변경"으로
+  // 잘못 표시되지 않는다.
   const runDiffFrom = useCallback((asRaw, toRaw) => {
     setExtractError(''); setDiffData(null); setAllData(null); setSaveMsg('')
     if (!asRaw.trim() || !toRaw.trim()) {
       setExtractError('AS-WAS와 TO-BE 열을 모두 입력해주세요.'); return
     }
-    let asLines = parseCol(asRaw)
-    let toLines  = parseCol(toRaw)
+    let asLines = parseCol(asRaw).map(normalize)
+    let toLines = parseCol(toRaw).map(normalize)
     if (asLines.length > 0 && isHeaderLike(asLines[0])) asLines = asLines.slice(1)
-    if (toLines.length  > 0 && isHeaderLike(toLines[0])) toLines = toLines.slice(1)
+    if (toLines.length > 0 && isHeaderLike(toLines[0])) toLines = toLines.slice(1)
 
-    const maxLen = Math.max(asLines.length, toLines.length)
-    while (asLines.length < maxLen) asLines.push('')
-    while (toLines.length  < maxLen) toLines.push('')
+    const ops = diffLines(asLines, toLines)
+    const rawRows = buildDiffRows(ops, asLines, toLines)
 
-    if (Math.abs(asLines.length - toLines.length) > 5 && maxLen > 10)
-      setExtractError(`행 수 차이가 큽니다 (AS-WAS: ${asLines.length}행, TO-BE: ${toLines.length}행)`)
+    // 화면에 보여줄 행 번호 라벨: 두 쪽 번호가 같으면 하나만, 다르면 "AS→TO"로 표시.
+    // row 자체는 DB의 row_index(정수) 컬럼과 호환되도록 출력 순서 그대로 1,2,3...을 사용.
+    const withLabel = (r, i) => ({
+      ...r,
+      row: i + 1,
+      rowLabel: r.asRow != null && r.toRow != null
+        ? (r.asRow === r.toRow ? `${r.asRow}` : `${r.asRow}→${r.toRow}`)
+        : r.asRow != null ? `${r.asRow}` : `${r.toRow}`,
+    })
 
-    const diff = [], all = []
+    const all = rawRows.map(withLabel)
+    const diff = all.filter(r => r.status !== '동일')
+
     let changed = 0, added = 0, removed = 0
+    diff.forEach(r => {
+      if (r.status === '변경') changed++
+      else if (r.status === '추가') added++
+      else if (r.status === '삭제') removed++
+    })
 
-    for (let i = 0; i < maxLen; i++) {
-      const a = normalize(asLines[i] || '')
-      const b = normalize(toLines[i]  || '')
-      if (a === b) { all.push({ row:i+1, asWas:a, toBe:b, status:'동일' }); continue }
-      const status = getStatus(a, b)
-      if (status === '변경') changed++
-      else if (status === '추가') added++
-      else removed++
-      const row = { row:i+1, asWas:a, toBe:b, status }
-      diff.push(row); all.push(row)
-    }
-    setStats({ total:maxLen, changed, added, removed, diffCount:diff.length })
+    setStats({ total: Math.max(asLines.length, toLines.length), changed, added, removed, diffCount: diff.length })
     setDiffData(diff); setAllData(all)
   }, [])
 
@@ -134,6 +141,10 @@ export default function ExtractTab() {
   }
 
   // ── HTML 모드 (AS-WAS / TO-BE 파일 각각 업로드) ─────────────
+  // vscode의 "Compare Selected"와 똑같이, 태그를 해석하거나 속성을 따로
+  // 뽑아내지 않고 파일의 실제 텍스트(원본 그대로)를 줄 단위로만 비교한다.
+  // (이전에 태그마다 속성을 전부 별도 줄로 뽑아내던 방식은 줄 수가 폭발적으로
+  // 늘어나 화면과 PC가 멈추는 원인이었다.)
   const readHtmlFile = (file) => new Promise((resolve, reject) => {
     const r = new FileReader()
     r.onload = () => resolve(String(r.result || ''))
@@ -146,9 +157,9 @@ export default function ExtractTab() {
     if (!file) return
     setHtmlLoadError('')
     try {
-      const html = await readHtmlFile(file)
-      const lines = extractTextLinesFromHtml(html)
-      if (lines.length === 0) { setHtmlLoadError('AS-WAS 파일에서 텍스트를 찾지 못했습니다.'); return }
+      const text = await readHtmlFile(file)
+      const lines = text.split(/\r?\n/)
+      if (lines.length === 0) { setHtmlLoadError('AS-WAS 파일이 비어 있습니다.'); return }
       setAsHtmlLines(lines)
       setAsWasFileName(`📄 ${file.name} · ${lines.length}줄`)
     } catch (err) {
@@ -161,9 +172,9 @@ export default function ExtractTab() {
     if (!file) return
     setHtmlLoadError('')
     try {
-      const html = await readHtmlFile(file)
-      const lines = extractTextLinesFromHtml(html)
-      if (lines.length === 0) { setHtmlLoadError('TO-BE 파일에서 텍스트를 찾지 못했습니다.'); return }
+      const text = await readHtmlFile(file)
+      const lines = text.split(/\r?\n/)
+      if (lines.length === 0) { setHtmlLoadError('TO-BE 파일이 비어 있습니다.'); return }
       setToHtmlLines(lines)
       setToBeFileName(`📄 ${file.name} · ${lines.length}줄`)
     } catch (err) {
@@ -249,7 +260,7 @@ export default function ExtractTab() {
   const copyTSV = () => {
     if (!diffData?.length) return
     const h = '행번호\tAS-WAS\tTO-BE\t상태'
-    const rows = diffData.map(d => `${d.row}\t${d.asWas}\t${d.toBe}\t${d.status}`)
+    const rows = diffData.map(d => `${d.rowLabel ?? d.row}\t${d.asWas}\t${d.toBe}\t${d.status}`)
     navigator.clipboard.writeText([h, ...rows].join('\n'))
       .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800) })
   }
