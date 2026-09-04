@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import { isStaff } from '../roles.js'
@@ -278,6 +279,173 @@ function ProjectDetail({ project, products, onBack, onUpdated }) {
 }
 
 // ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
+// ── 엑셀 업로드로 EN + 국가별 로컬어 한번에 가져오기 (MergeTab의
+//    ExcelImportModal과 동일한 파싱 흐름 재사용 — 국가마다 따로
+//    붙여넣는 대신, 엑셀 파일 하나로 한번에 매핑) ─────────────────
+// ════════════════════════════════════════════════════════════════
+function CcExcelImportModal({ onClose, onApply }) {
+  const [fileName, setFileName] = useState('')
+  const [loading, setLoading]   = useState(false)
+  const [error, setError]       = useState('')
+  const [grid, setGrid]         = useState(null) // 2차원 배열 (전체)
+
+  const [headerRowIndex, setHeaderRowIndex] = useState(0)
+  const [enColIndex, setEnColIndex]         = useState(null)
+  const [codeOverrides, setCodeOverrides]   = useState({}) // { colIndex: 'US' | '__exclude__' }
+
+  const colLetter = (i) => {
+    let s = '', n = i
+    do { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1 } while (n >= 0)
+    return s
+  }
+  const norm = v => (v ?? '').toString().replace(/\r\n|\r|\n/g, ' ').trim()
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setFileName(file.name)
+    setLoading(true); setError(''); setGrid(null)
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const r = new FileReader()
+        r.onload = () => resolve(r.result)
+        r.onerror = () => reject(new Error('파일을 읽을 수 없습니다.'))
+        r.readAsDataURL(file)
+      })
+      const res = await api.mergeParseExcel({ fileName: file.name, dataUrl })
+      if (!res.ok) { setError(res.message || '파싱 실패'); return }
+      const g = res.grid || []
+      setGrid(g)
+      setHeaderRowIndex(0)
+      setEnColIndex(null)
+      setCodeOverrides({})
+    } catch (e) {
+      setError(e.message || '파일 처리 중 오류가 발생했습니다.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const headerRow = grid?.[headerRowIndex] || []
+  const dataStartRow = headerRowIndex + 1
+  const previewRows = grid ? grid.slice(dataStartRow, dataStartRow + 5) : []
+  const colCount = grid ? Math.max(...grid.map(r => r.length), 0) : 0
+
+  // 헤더 텍스트를 국가 코드와 자동 매칭 (EN 컬럼 제외)
+  const resolveCountryCode = (colIdx) => {
+    if (colIdx === enColIndex) return null
+    if (codeOverrides[colIdx] === '__exclude__') return null
+    if (codeOverrides[colIdx]) return codeOverrides[colIdx]
+    const headerText = (headerRow[colIdx] || '').trim()
+    if (!headerText) return null
+    const matched = ALL_SITES.find(s => s.code.toUpperCase() === headerText.toUpperCase())
+    return matched ? matched.code : null
+  }
+
+  const allColumns = Array.from({ length: colCount }, (_, i) => i)
+    .map(colIdx => ({ colIdx, code: resolveCountryCode(colIdx), headerText: headerRow[colIdx] || '' }))
+  const countryColumns = allColumns.filter(c => c.colIdx !== enColIndex)
+
+  const canApply = grid && enColIndex != null && countryColumns.some(c => c.code)
+
+  const handleApply = () => {
+    if (!canApply) return
+    const dataRows = grid.slice(dataStartRow)
+    const enLines = dataRows.map(row => norm(row[enColIndex]))
+    const locals = {}
+    countryColumns.forEach(({ colIdx, code }) => {
+      if (!code) return
+      locals[code] = dataRows.map(row => norm(row[colIdx])).join('\n')
+    })
+    onApply(enLines.join('\n'), locals, countryColumns.filter(c => c.code).map(c => c.code))
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 10050, background: 'rgba(0,0,0,0.6)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+    }} onClick={onClose}>
+      <div style={{
+        background: '#fff', borderRadius: 14, width: '100%', maxWidth: 820,
+        maxHeight: '86vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ padding: '18px 24px 14px', borderBottom: '1px solid #e5e7eb', display: 'flex', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: '#111827' }}>엑셀로 가져오기</div>
+            <div style={{ fontSize: 13, color: '#6b7280', marginTop: 4 }}>
+              영문 원본 컬럼과 국가별 로컬어 컬럼이 들어있는 엑셀 파일을 업로드하세요. 헤더가 국가 코드(예: US, CA_FR)와 일치하면 자동으로 매핑됩니다.
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: '#9ca3af', lineHeight: 1, padding: 0 }}>✕</button>
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <input type="file" accept=".xlsx,.xls" onChange={handleFile} />
+          {loading && <div style={{ fontSize: 13, color: '#6b7280' }}>엑셀 파싱 중...</div>}
+          {error && <div style={{ fontSize: 13, color: '#ef4444' }}>❌ {error}</div>}
+
+          {grid && (
+            <>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                <label style={{ fontSize: 12, color: '#374151' }}>
+                  헤더 행:
+                  <select value={headerRowIndex} onChange={e => setHeaderRowIndex(Number(e.target.value))}
+                    style={{ marginLeft: 6, fontSize: 12, padding: '3px 6px', borderRadius: 5, border: '1px solid #d1d5db' }}>
+                    {grid.slice(0, 10).map((_, i) => <option key={i} value={i}>{i + 1}행</option>)}
+                  </select>
+                </label>
+                <label style={{ fontSize: 12, color: '#374151' }}>
+                  영문(EN) 원본 컬럼:
+                  <select value={enColIndex ?? ''} onChange={e => setEnColIndex(e.target.value === '' ? null : Number(e.target.value))}
+                    style={{ marginLeft: 6, fontSize: 12, padding: '3px 6px', borderRadius: 5, border: '1px solid #d1d5db' }}>
+                    <option value="">선택하세요</option>
+                    {Array.from({ length: colCount }, (_, i) => (
+                      <option key={i} value={i}>{colLetter(i)}열 — {(headerRow[i] || '(빈 헤더)').slice(0, 20)}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>국가 컬럼 매핑</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {countryColumns.map(c => (
+                    <div key={c.colIdx} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                      <span style={{ width: 36, color: '#9ca3af' }}>{colLetter(c.colIdx)}열</span>
+                      <span style={{ width: 140, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.headerText || '(빈 헤더)'}</span>
+                      <select
+                        value={codeOverrides[c.colIdx] ?? (c.code || '')}
+                        onChange={e => setCodeOverrides(prev => ({ ...prev, [c.colIdx]: e.target.value || '__exclude__' }))}
+                        style={{ fontSize: 12, padding: '3px 6px', borderRadius: 5, border: '1px solid #d1d5db' }}
+                      >
+                        <option value="__exclude__">제외</option>
+                        {ALL_SITES.map(s => <option key={s.code} value={s.code}>{s.flag} {s.code}</option>)}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {previewRows.length > 0 && (
+                <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                  미리보기 (상위 {previewRows.length}행): {previewRows.map((r, i) => (enColIndex != null ? (r[enColIndex] || '').slice(0, 30) : '')).filter(Boolean).join(' / ')}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <div style={{ padding: '14px 24px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: 10, background: '#f9fafb' }}>
+          <button onClick={onClose} style={{ padding: '8px 20px', borderRadius: 8, border: '1.5px solid #d1d5db', background: '#fff', color: '#374151', fontSize: 14, cursor: 'pointer', fontWeight: 500 }}>취소</button>
+          <button onClick={handleApply} disabled={!canApply} style={{ padding: '8px 24px', borderRadius: 8, border: 'none', background: canApply ? '#6366f1' : '#c7d2fe', color: '#fff', fontSize: 14, cursor: canApply ? 'pointer' : 'not-allowed', fontWeight: 700 }}>✅ 가져오기</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── DNT 검증 패널 (ProjectDetail 내부) ───────────────────────
 // ════════════════════════════════════════════════════════════════
 function DntPanel({ projectId, sites: propSites, cells, products, onAddSite }) {
@@ -292,10 +460,20 @@ function DntPanel({ projectId, sites: propSites, cells, products, onAddSite }) {
   const [saving, setSaving]       = useState(false)
   const [saveMsg, setSaveMsg]     = useState('')
   const [expandedSnap, setExpandedSnap] = useState(null)
+  const [showExcelImport, setShowExcelImport] = useState(false)
   const localSaveTimer = useRef(null)
   const initialized = useRef(false)
 
   const enLines = enRaw.split(/\r?\n/).map(l => l.trimEnd()).filter(l => l !== '')
+
+  // 엑셀 업로드로 EN + 국가별 로컬어를 한번에 가져오기 (CcExcelImportModal에서 호출)
+  const handleExcelApply = (enLinesJoined, localsMap, siteCodes) => {
+    setEnRaw(enLinesJoined)
+    setResult(null)
+    setDntSites(siteCodes.map(c => SITE_MAP[c]).filter(Boolean))
+    setLocals(prev => ({ ...prev, ...localsMap }))
+    setShowExcelImport(false)
+  }
 
   // 스냅샷 목록 로드 + 최근 스냅샷으로 전체 상태 복원
   const loadSnapshots = useCallback(async () => {
@@ -443,6 +621,7 @@ const runAnalysis = async () => {
   }
 
   return (
+    <>
     <div className="dnt-panel-wrap">
               <div className="dnt-panel-body">
 
@@ -450,11 +629,9 @@ const runAnalysis = async () => {
           <div className="dnt-section">
             <div className="dnt-section-title">
               <span className="mg-step">1</span>영문 원본 카피
-              {/* {sites.length > 0 && (
-                <button className="btn-sm" style={{ marginLeft: 10 }} onClick={autoFillEN}>
-                  ↑ {sites[0]?.code} 열에서 가져오기
-                </button>
-              )} */}
+              <button className="btn-sm" style={{ marginLeft: 10 }} onClick={() => setShowExcelImport(true)}>
+                📥 엑셀로 가져오기
+              </button>
             </div>
             <textarea className="paste-area dnt-en-area" value={enRaw}
               onChange={e => { setEnRaw(e.target.value); setResult(null) }}
@@ -685,6 +862,13 @@ const runAnalysis = async () => {
 
         </div>
           </div>
+      {showExcelImport && (
+        <CcExcelImportModal
+          onClose={() => setShowExcelImport(false)}
+          onApply={handleExcelApply}
+        />
+      )}
+    </>
   )
 }
 // ════════════════════════════════════════════════════════════════
@@ -837,11 +1021,237 @@ function CountryHistoryDrawer({ projectId, country, onClose }) {
 }
 
 // ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
+// ── 옵션 메뉴(점 세개) — MergeTab의 DotsMenu와 동일한 패턴 ────────
+// ════════════════════════════════════════════════════════════════
+function CcDotsMenu({ items }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState(null)
+  const btnRef = useRef(null)
+  const menuRef = useRef(null)
+
+  const calcPos = () => {
+    if (!btnRef.current) return null
+    const r = btnRef.current.getBoundingClientRect()
+    const MENU_W = 170
+    const MENU_MAX_H = 320
+    let left = r.right - MENU_W
+    let top = r.bottom + 4
+    if (left < 4) left = 4
+    if (left + MENU_W > window.innerWidth - 4) left = window.innerWidth - MENU_W - 4
+    if (top + MENU_MAX_H > window.innerHeight - 4) top = r.top - MENU_MAX_H - 4
+    if (top < 4) top = 4
+    return { top, left }
+  }
+
+  const openMenu = () => { setPos(calcPos()); setOpen(true) }
+
+  useEffect(() => {
+    if (!open) return
+    function handle(e) {
+      if (
+        btnRef.current && !btnRef.current.contains(e.target) &&
+        menuRef.current && !menuRef.current.contains(e.target)
+      ) setOpen(false)
+    }
+    function reposition() {
+      const next = calcPos()
+      if (next) setPos(next); else setOpen(false)
+    }
+    document.addEventListener('mousedown', handle)
+    window.addEventListener('scroll', reposition, true)
+    window.addEventListener('resize', reposition)
+    return () => {
+      document.removeEventListener('mousedown', handle)
+      window.removeEventListener('scroll', reposition, true)
+      window.removeEventListener('resize', reposition)
+    }
+  }, [open])
+
+  return (
+    <div style={{ position: 'relative', display: 'inline-block' }} onClick={e => e.stopPropagation()}>
+      <button
+        ref={btnRef}
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer',
+          padding: '3px 5px', borderRadius: 5, lineHeight: 1,
+          color: '#9ca3af', fontSize: 16, fontWeight: 700, letterSpacing: 1,
+          transition: 'background 0.15s, color 0.15s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = '#f1f5f9'; e.currentTarget.style.color = '#374151' }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#9ca3af' }}
+        title="옵션"
+      >⋯</button>
+      {open && pos && createPortal(
+        <div
+          ref={menuRef}
+          style={{
+            position: 'fixed', top: pos.top, left: pos.left, zIndex: 9999,
+            background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.13)', minWidth: 170, padding: '4px 0',
+            maxHeight: 320, overflowY: 'auto',
+          }}
+        >
+          {items.map((item, i) => item === 'divider' ? (
+            <div key={i} style={{ height: 1, background: '#f1f5f9', margin: '3px 0' }} />
+          ) : (
+            <div
+              key={i}
+              onClick={() => { item.action(); setOpen(false) }}
+              style={{
+                padding: '8px 14px', cursor: 'pointer', fontSize: 13,
+                color: item.danger ? '#ef4444' : '#374151',
+                display: 'flex', alignItems: 'center', gap: 8,
+                transition: 'background 0.1s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = item.danger ? '#fef2f2' : '#f8fafc'}
+              onMouseLeave={e => e.currentTarget.style.background = ''}
+            >
+              <span style={{ fontSize: 14, width: 18, textAlign: 'center' }}>{item.icon}</span>
+              <span>{item.label}</span>
+              {item.sub && <span style={{ marginLeft: 'auto', fontSize: 11, color: '#94a3b8' }}>{item.sub}</span>}
+            </div>
+          ))}
+        </div>,
+        document.body
+      )}
+    </div>
+  )
+}
+
+// ── 인라인 이름 수정 Input ──────────────────────────────────────
+function CcInlineRename({ value, onSave, onCancel }) {
+  const [val, setVal] = useState(value)
+  const inputRef = useRef(null)
+  useEffect(() => { inputRef.current?.focus(); inputRef.current?.select() }, [])
+  return (
+    <input
+      ref={inputRef}
+      value={val}
+      onChange={e => setVal(e.target.value)}
+      onBlur={() => { if (val.trim() && val !== value) onSave(val.trim()); else onCancel() }}
+      onKeyDown={e => {
+        e.stopPropagation()
+        if (e.key === 'Enter') { if (val.trim() && val !== value) onSave(val.trim()); else onCancel() }
+        if (e.key === 'Escape') onCancel()
+      }}
+      onClick={e => e.stopPropagation()}
+      style={{ fontSize: 14, fontWeight: 600, border: '1.5px solid #6366f1', borderRadius: 5, padding: '2px 7px', flex: 1, outline: 'none', minWidth: 0 }}
+    />
+  )
+}
+
+// ── 프로젝트 카드 ─────────────────────────────────────────────
+function CcProjectCard({ p, canManage, onOpen, onDelete, onRename, folders, onMoveToFolder }) {
+  const [renaming, setRenaming] = useState(false)
+  const currentFolder = folders.find(f => f.id === p.folder_id)
+
+  const menuItems = canManage ? [
+    { icon: '✏️', label: '이름 바꾸기', action: () => setRenaming(true) },
+    'divider',
+    { icon: '📋', label: '최상위로 이동', sub: p.folder_id ? '' : '✓ 현재', action: () => onMoveToFolder(p.id, null) },
+    ...folders.map(f => ({
+      icon: '📂', label: f.name,
+      sub: p.folder_id === f.id ? '✓ 현재' : '',
+      action: () => onMoveToFolder(p.id, f.id),
+    })),
+    'divider',
+    { icon: '🗑️', label: '삭제', danger: true, action: () => onDelete(p.id, p.name) },
+  ] : []
+
+  return (
+    <div className="pj-card" onClick={() => !renaming && onOpen(p)}>
+      <div className="pj-card-header">
+        {renaming ? (
+          <CcInlineRename
+            value={p.name}
+            onSave={(newName) => { onRename(p.id, newName); setRenaming(false) }}
+            onCancel={() => setRenaming(false)}
+          />
+        ) : (
+          <span className="pj-card-name">{p.name}</span>
+        )}
+        {menuItems.length > 0 && <CcDotsMenu items={menuItems} />}
+      </div>
+      {currentFolder && (
+        <div style={{ fontSize: 10, color: '#6366f1', marginBottom: 2 }}>📂 {currentFolder.name}</div>
+      )}
+      {p.note && <div className="pj-card-note">{p.note}</div>}
+      <div className="pj-card-meta">
+        <span>{p.country_count || 0}개국</span>
+        <span>·</span>
+        <span>{p.max_row || 0}행</span>
+        <span>·</span>
+        <span>{(p.updated_at || p.created_at || '').slice(0, 10)}</span>
+      </div>
+      <div className="pj-card-arrow">열기 →</div>
+    </div>
+  )
+}
+
+// ── 프로젝트 폴더 블록 — MergeTab의 ProjectFolderBlock과 동일한 패턴 ──
+function CcProjectFolderBlock({ folder, projects, canManage, onOpen, onDelete, onRename, folders, onMoveToFolder, onRenameFolder, onDeleteFolder }) {
+  const [isOpen, setIsOpen] = useState(true)
+  const [renaming, setRenaming] = useState(false)
+
+  const menuItems = canManage ? [
+    { icon: '✏️', label: '이름 바꾸기', action: () => setRenaming(true) },
+    'divider',
+    { icon: '🗑️', label: '폴더 삭제', danger: true, action: () => onDeleteFolder(folder) },
+  ] : []
+
+  return (
+    <div className="mg-folder-block">
+      <div className="mg-folder-header">
+        <span
+          onClick={() => setIsOpen(v => !v)}
+          className="mg-folder-caret"
+          style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
+        >▶</span>
+        <span onClick={() => setIsOpen(v => !v)} style={{ fontSize: 16, cursor: 'pointer' }}>📂</span>
+        {renaming ? (
+          <CcInlineRename
+            value={folder.name}
+            onSave={(newName) => { onRenameFolder(folder.id, newName); setRenaming(false) }}
+            onCancel={() => setRenaming(false)}
+          />
+        ) : (
+          <span onClick={() => setIsOpen(v => !v)} className="mg-folder-name">{folder.name}</span>
+        )}
+        <span className="mg-folder-count">{projects.length}개</span>
+        {menuItems.length > 0 && (
+          <div onClick={e => e.stopPropagation()}>
+            <CcDotsMenu items={menuItems} />
+          </div>
+        )}
+      </div>
+      {isOpen && (
+        <div className="mg-folder-body">
+          {projects.length === 0 ? (
+            <div style={{ fontSize: 12, color: '#9ca3af', padding: '8px 4px', textAlign: 'center' }}>빈 폴더입니다.</div>
+          ) : (
+            <div className="pj-grid">
+              {projects.map(p => (
+                <CcProjectCard key={p.id} p={p} canManage={canManage} onOpen={onOpen} onDelete={onDelete} onRename={onRename}
+                  folders={folders} onMoveToFolder={onMoveToFolder} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════
 // ── 프로젝트 목록 ─────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════
 function ProjectManager({ products, resetKey }) {
   const { user } = useAuth()
+  const canManage = isStaff(user?.position)
   const [projects, setProjects]   = useState([])
+  const [folders, setFolders]     = useState([])
   const [loading, setLoading]     = useState(true)
   const [selectedId, setSelectedId] = useState(() => localStorage.getItem('country_selected_project_id'))
   const [showCreate, setShowCreate] = useState(false)
@@ -850,6 +1260,10 @@ function ProjectManager({ products, resetKey }) {
   const [creating, setCreating]   = useState(false)
   const [msg, setMsg]             = useState('')
   const [search, setSearch]       = useState('')
+  const [viewMode, setViewMode]   = useState('folder') // 'folder' | 'flat'
+  const [showNewFolder, setShowNewFolder] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [newProjectFolderId, setNewProjectFolderId] = useState(null)
 
   // 상단 네비게이션의 "Product reflection" 탭을 이미 이 탭에 있는 상태에서 다시 클릭하면
   // (App.jsx에서 resetKey가 증가) 프로젝트 상세 화면에 있어도 목록으로 돌아감
@@ -860,7 +1274,7 @@ function ProjectManager({ products, resetKey }) {
   const load = useCallback(async () => {
     setLoading(true)
     const res = await api.ccListProjects()
-    if (res.ok) setProjects(res.data)
+    if (res.ok) { setProjects(res.data); setFolders(res.folders || []) }
     setLoading(false)
   }, [])
 
@@ -870,18 +1284,62 @@ function ProjectManager({ products, resetKey }) {
     if (!newName.trim()) { setMsg('❌ 프로젝트명을 입력해주세요.'); return }
     setCreating(true)
     const res = await api.ccCreateProject({ name: newName.trim(), note: newNote, site_codes: [] })
+    if (res.ok) {
+      const folderId = viewMode === 'folder' ? newProjectFolderId : null
+      if (folderId) await api.ccMoveProjectToFolder(res.id, { folderId })
+      setNewName(''); setNewNote(''); setNewProjectFolderId(null); setShowCreate(false); setMsg('')
+      await load()
+      setSelectedId(res.id); localStorage.setItem('country_selected_project_id', res.id)
+    } else setMsg('❌ ' + res.message)
     setCreating(false)
-    if (res.ok) { setNewName(''); setNewNote(''); setShowCreate(false); setMsg(''); await load(); setSelectedId(res.id); localStorage.setItem('country_selected_project_id', res.id) }
-    else setMsg('❌ ' + res.message)
   }
 
-  const handleDelete = async (id, name, e) => {
-    e.stopPropagation()
-    if (!isStaff(user?.position)) { alert('권한이 없습니다.'); return }
+  const handleDelete = async (id, name) => {
+    if (!canManage) { alert('권한이 없습니다.'); return }
     if (!window.confirm(`"${name}" 프로젝트를 삭제하시겠습니까?\n저장된 카피 데이터도 모두 삭제됩니다.`)) return
     await api.ccDeleteProject(id)
     if (selectedId === id) { setSelectedId(null); localStorage.removeItem('country_selected_project_id') }
     load()
+  }
+
+  const handleRename = async (id, newNameVal) => {
+    if (!canManage) { alert('권한이 없습니다.'); return }
+    try {
+      await api.ccUpdateProject(id, { name: newNameVal })
+      setProjects(prev => prev.map(p => p.id === id ? { ...p, name: newNameVal } : p))
+    } catch (e) { console.error('[CC] 프로젝트 이름 수정 실패:', e?.message || e) }
+  }
+
+  // ── 폴더 핸들러 (MergeTab과 동일한 패턴) ─────────────────────
+  const createFolder = async (name) => {
+    if (!canManage) { alert('권한이 없습니다.'); return }
+    try {
+      const res = await api.ccCreateFolder({ name })
+      if (res?.ok) setFolders(prev => [...prev, { id: res.id, name, created_at: new Date().toISOString() }])
+    } catch (e) { console.error('[CC] 폴더 생성 실패:', e?.message || e) }
+  }
+  const renameFolder = async (folderId, newNameVal) => {
+    if (!canManage) { alert('권한이 없습니다.'); return }
+    try {
+      await api.ccUpdateFolder(folderId, { name: newNameVal })
+      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, name: newNameVal } : f))
+    } catch (e) { console.error('[CC] 폴더 이름 수정 실패:', e?.message || e) }
+  }
+  const deleteFolder = async (folder) => {
+    if (!canManage) { alert('권한이 없습니다.'); return }
+    if (!window.confirm(`"${folder.name}" 폴더를 삭제하시겠습니까?\n폴더 내 프로젝트는 최상위로 이동됩니다.`)) return
+    try {
+      await api.ccDeleteFolder(folder.id)
+      setFolders(prev => prev.filter(f => f.id !== folder.id))
+      setProjects(prev => prev.map(p => p.folder_id === folder.id ? { ...p, folder_id: null } : p))
+    } catch (e) { console.error('[CC] 폴더 삭제 실패:', e?.message || e) }
+  }
+  const moveProjectToFolder = async (projectId, folderId) => {
+    if (!canManage) { alert('권한이 없습니다.'); return }
+    try {
+      await api.ccMoveProjectToFolder(projectId, { folderId })
+      setProjects(prev => prev.map(p => p.id === projectId ? { ...p, folder_id: folderId } : p))
+    } catch (e) { console.error('[CC] 폴더 이동 실패:', e?.message || e) }
   }
 
   // 복원된 id가 실제 목록에 없으면 무시
@@ -901,7 +1359,20 @@ function ProjectManager({ products, resetKey }) {
     )
   }
 
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim()) return
+    await createFolder(newFolderName.trim())
+    setNewFolderName(''); setShowNewFolder(false)
+  }
+
   const filtered = projects.filter(p => !search || p.name.toLowerCase().includes(search.toLowerCase()))
+  const topLevel = filtered.filter(p => !p.folder_id)
+  const folderProjectMap = {}
+  folders.forEach(f => { folderProjectMap[f.id] = filtered.filter(p => p.folder_id === f.id) })
+  const sharedCardProps = {
+    canManage, onOpen: p => { setSelectedId(p.id); localStorage.setItem('country_selected_project_id', p.id) },
+    onDelete: handleDelete, onRename: handleRename, folders, onMoveToFolder: moveProjectToFolder,
+  }
 
   return (
     <div className="pj-manager">
@@ -913,11 +1384,39 @@ function ProjectManager({ products, resetKey }) {
         <div className="pj-list-actions">
           <input className="form-input" placeholder="프로젝트 검색" value={search}
             onChange={e => setSearch(e.target.value)} style={{ fontSize: 13, width: 200 }} />
+          <div style={{ display: 'flex', border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+            <button onClick={() => setViewMode('folder')} style={{
+              padding: '6px 12px', fontSize: 12, border: 'none', cursor: 'pointer',
+              background: viewMode === 'folder' ? '#6366f1' : '#fff',
+              color: viewMode === 'folder' ? '#fff' : '#6b7280',
+              fontWeight: viewMode === 'folder' ? 600 : 400,
+            }}>📂 폴더 뷰</button>
+            <button onClick={() => setViewMode('flat')} style={{
+              padding: '6px 12px', fontSize: 12, border: 'none', cursor: 'pointer',
+              background: viewMode === 'flat' ? '#6366f1' : '#fff',
+              color: viewMode === 'flat' ? '#fff' : '#6b7280',
+              fontWeight: viewMode === 'flat' ? 600 : 400,
+            }}>📋 전체 뷰</button>
+          </div>
+          {canManage && viewMode === 'folder' && (
+            <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setShowNewFolder(true)}>+ 새 폴더</button>
+          )}
           <button className="btn-primary" onClick={() => setShowCreate(v => !v)}>
             {showCreate ? '취소' : '+ 새 프로젝트'}
           </button>
         </div>
       </div>
+
+      {showNewFolder && (
+        <div className="pj-create-form">
+          <input className="form-input" placeholder="폴더 이름" value={newFolderName}
+            onChange={e => setNewFolderName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleCreateFolder(); if (e.key === 'Escape') setShowNewFolder(false) }}
+            autoFocus style={{ flex: 1 }} />
+          <button className="btn-primary" onClick={handleCreateFolder}>만들기</button>
+          <button className="btn-ghost" onClick={() => { setShowNewFolder(false); setNewFolderName('') }}>취소</button>
+        </div>
+      )}
 
       {showCreate && (
         <div className="pj-create-form">
@@ -926,6 +1425,14 @@ function ProjectManager({ products, resetKey }) {
             style={{ flex: 1 }} />
           <input className="form-input" placeholder="메모 (선택)" value={newNote}
             onChange={e => setNewNote(e.target.value)} style={{ width: 200 }} />
+          {viewMode === 'folder' && (
+            <select className="form-input" style={{ minWidth: 160, flex: 'none' }}
+              value={newProjectFolderId ?? ''}
+              onChange={e => setNewProjectFolderId(e.target.value ? Number(e.target.value) : null)}>
+              <option value="">폴더 없음 (최상위)</option>
+              {folders.map(f => <option key={f.id} value={f.id}>📂 {f.name}</option>)}
+            </select>
+          )}
           <button className="btn-primary" onClick={handleCreate} disabled={creating}>
             {creating ? '생성 중...' : '생성'}
           </button>
@@ -941,28 +1448,40 @@ function ProjectManager({ products, resetKey }) {
           {projects.length === 0 && <small>"+ 새 프로젝트"로 시작해보세요.</small>}
         </div>
       )}
-      <div className="pj-grid">
-        {filtered.map(p => (
-          <div key={p.id} className="pj-card" onClick={() => { setSelectedId(p.id); localStorage.setItem('country_selected_project_id', p.id) }}>
-            <div className="pj-card-header">
-              <span className="pj-card-name">{p.name}</span>
-              {isStaff(user?.position) && (
-                <button className="act-btn act-delete" style={{ padding: '2px 7px' }}
-                  onClick={e => handleDelete(p.id, p.name, e)}>🗑</button>
+
+      {!loading && filtered.length > 0 && viewMode === 'folder' && (
+        <div>
+          {folders.map(folder => (
+            <CcProjectFolderBlock
+              key={folder.id}
+              folder={folder}
+              projects={folderProjectMap[folder.id] || []}
+              onRenameFolder={renameFolder}
+              onDeleteFolder={deleteFolder}
+              {...sharedCardProps}
+            />
+          ))}
+
+          {topLevel.length > 0 && (
+            <div>
+              {folders.length > 0 && (
+                <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, margin: '4px 0 8px' }}>
+                  📋 폴더 미지정
+                </div>
               )}
+              <div className="pj-grid">
+                {topLevel.map(p => <CcProjectCard key={p.id} p={p} {...sharedCardProps} />)}
+              </div>
             </div>
-            {p.note && <div className="pj-card-note">{p.note}</div>}
-            <div className="pj-card-meta">
-              <span>{p.country_count || 0}개국</span>
-              <span>·</span>
-              <span>{p.max_row || 0}행</span>
-              <span>·</span>
-              <span>{(p.updated_at || p.created_at || '').slice(0, 10)}</span>
-            </div>
-            <div className="pj-card-arrow">열기 →</div>
-          </div>
-        ))}
-      </div>
+          )}
+        </div>
+      )}
+
+      {!loading && filtered.length > 0 && viewMode === 'flat' && (
+        <div className="pj-grid">
+          {filtered.map(p => <CcProjectCard key={p.id} p={p} {...sharedCardProps} />)}
+        </div>
+      )}
     </div>
   )
 }

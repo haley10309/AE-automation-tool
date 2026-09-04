@@ -8,6 +8,61 @@ const router = express.Router();
 
 router.use(checkDbConnection);
 
+// ── 폴더 CRUD (MergeTab의 merge_folders와 동일한 패턴) ──────────
+router.get('/folders', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const [folders] = await getPool().execute(
+      `SELECT id, name, created_at FROM cc_folders WHERE deleted = 0 ORDER BY created_at ASC`
+    )
+    res.json({ ok: true, data: folders })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+router.post('/folders', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const { name } = req.body
+    if (!name?.trim()) return res.json({ ok: false, message: '폴더 이름을 입력하세요.' })
+    const [result] = await getPool().execute(
+      `INSERT INTO cc_folders (name) VALUES (?)`, [name.trim()]
+    )
+    res.json({ ok: true, id: result.insertId })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+router.put('/folders/:id', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const { name } = req.body
+    await getPool().execute(`UPDATE cc_folders SET name = ? WHERE id = ?`, [name, req.params.id])
+    res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+router.delete('/folders/:id', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    // 폴더 삭제 시 소속 프로젝트는 최상위(folder_id=NULL)로 이동
+    await getPool().execute(`UPDATE cc_projects SET folder_id = NULL WHERE folder_id = ?`, [req.params.id])
+    await getPool().execute(`UPDATE cc_folders SET deleted = 1 WHERE id = ?`, [req.params.id])
+    res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
+// 프로젝트를 폴더로 이동 / 최상위로 이동
+router.put('/projects/:id/folder', async (req, res) => {
+  if (!getPool()) return res.json({ ok: false, message: 'DB 연결 없음' })
+  try {
+    const { folderId } = req.body // null이면 최상위
+    await getPool().execute(
+      `UPDATE cc_projects SET folder_id = ? WHERE id = ?`,
+      [folderId ?? null, req.params.id]
+    )
+    res.json({ ok: true })
+  } catch (e) { res.json({ ok: false, message: e.message }) }
+})
+
 // ── 1. 프로젝트 목록 (GET /projects) ──
 router.get('/projects', async (req, res) => {
   try {
@@ -28,6 +83,10 @@ router.get('/projects', async (req, res) => {
       WHERE p.deleted = 0
       ORDER BY p.updated_at DESC
     `);
+
+    const [folders] = await getPool().execute(
+      `SELECT id, name, created_at FROM cc_folders WHERE deleted = 0 ORDER BY created_at ASC`
+    )
 
     const data = rows.map(p => {
       // 1. 우선순위: DNT 기록의 site_codes를 우선 사용하고, 없으면 프로젝트 기본값 사용
@@ -53,7 +112,7 @@ router.get('/projects', async (req, res) => {
       };
     });
 
-    res.json({ ok: true, data });
+    res.json({ ok: true, data, folders });
   } catch (err) { 
     res.json({ ok: false, message: err.message }); 
   }

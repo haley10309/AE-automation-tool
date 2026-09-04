@@ -225,20 +225,29 @@ export function exportToCSV(filename, headers, rows) {
 }
 
 // ── 미출시 배지 감지 ──────────────────────────────────────────
+// "감지 키워드"를 안 채우고 "제품명"만 등록한 경우에도 최소한 제품명 자체는
+// 항상 검사 대상에 포함시킨다 (그렇지 않으면 aliases가 빈 배열이 되어
+// 미출시 국가를 지정해도 절대 감지되지 않는 버그가 있었음).
+function effectiveAliases(p) {
+  const list = [p.name, ...(p.aliases || [])].filter(Boolean)
+  return [...new Set(list)]
+}
+
 export function detectBadges(text, siteCode, products) {
   if (!text || !products.length) return []
   const lower = text.toLowerCase()
   const sorted = [...products].sort((a, b) =>
-    Math.max(...b.aliases.map(x => x.length)) - Math.max(...a.aliases.map(x => x.length))
+    Math.max(...effectiveAliases(b).map(x => x.length)) - Math.max(...effectiveAliases(a).map(x => x.length))
   )
   const used = new Set()
   const found = []
   for (const p of sorted) {
-    const hit = p.aliases.find(alias => {
+    const aliases = effectiveAliases(p)
+    const hit = aliases.find(alias => {
       const a = alias.toLowerCase()
       return lower.includes(a) && ![...used].some(u => u.includes(a) || a.includes(u))
     })
-    if (hit) { found.push(p); p.aliases.forEach(a => used.add(a.toLowerCase())) }
+    if (hit) { found.push(p); aliases.forEach(a => used.add(a.toLowerCase())) }
   }
   return found.filter(p => (p.excluded_countries || []).includes(siteCode)).map(p => p.name)
 }
