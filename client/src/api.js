@@ -45,6 +45,13 @@ export const api = window.electronAPI || {
   ccSaveCopies:     (id, body) => call('POST',   `/api/cc/projects/${id}/copies`, body),
   ccUpdateCell:     (body)     => call('PUT',    '/api/cc/copies/cell', body),
 
+  // CC 폴더 (MergeTab 폴더와 동일한 패턴)
+  ccGetFolders:          ()           => call('GET',    '/api/cc/folders'),
+  ccCreateFolder:        (body)       => call('POST',   '/api/cc/folders', body),
+  ccUpdateFolder:        (id, body)   => call('PUT',    `/api/cc/folders/${id}`, body),
+  ccDeleteFolder:        (id)         => call('DELETE', `/api/cc/folders/${id}`),
+  ccMoveProjectToFolder: (id, body)   => call('PUT',    `/api/cc/projects/${id}/folder`, body),
+
   // DNT 사전 검증 스냅샷
   ccSaveDNT:   (id, body) => call('POST',   `/api/cc/projects/${id}/dnt`, body),
   ccGetDNT:    (id)       => call('GET',    `/api/cc/projects/${id}/dnt`),

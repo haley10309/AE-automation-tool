@@ -313,6 +313,19 @@ router.post('/init', checkDbConnection, async (req, res) => {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) COMMENT='국가별 카피 프로젝트'`);
 
+    // ── cc_folders 테이블 (MergeTab의 merge_folders와 동일한 패턴, depth 1) ──
+    await getPool().execute(`CREATE TABLE IF NOT EXISTS cc_folders (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      deleted TINYINT(1) NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) COMMENT='Product reflection(CC) 탭 폴더 (depth 1)'`);
+
+    // 기존 cc_projects 테이블에 folder_id 컬럼이 없으면 추가
+    try {
+      await getPool().execute(`ALTER TABLE cc_projects ADD COLUMN folder_id INT DEFAULT NULL COMMENT '소속 폴더 (NULL이면 최상위)' AFTER name`);
+    } catch (_) { /* 이미 존재하면 무시 */ }
+
     await getPool().execute(`CREATE TABLE IF NOT EXISTS cc_project_copies (
       id INT AUTO_INCREMENT PRIMARY KEY, project_id INT NOT NULL,
       site_code VARCHAR(50) NOT NULL, row_index INT NOT NULL, copy_text TEXT,
