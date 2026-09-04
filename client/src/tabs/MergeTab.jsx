@@ -152,6 +152,26 @@ function normCell(v) {
 }
 
 /**
+ * EN 미번역 감지(isEnMatch) 전용 비교 정규화.
+ * normCell보다 관대하게 처리한다 — 텍스트가 길수록 엑셀 붙여넣기 과정에서
+ * non-breaking space, 스마트 따옴표, 연속 공백 같은 눈에 안 보이는 차이가
+ * 섞여 들어오기 쉬워서, 이런 것들 때문에 "육안으론 동일한데 EN 배지가 안 뜨는"
+ * 오탐(누락)이 생기는 걸 막기 위함.
+ */
+function normForEnCompare(v) {
+  return (v ?? '')
+    .toString()
+    .replace(/\r\n|\r|\n/g, ' ')        // 줄바꿈 → 공백
+    .replace(/\u00A0/g, ' ')            // non-breaking space → 공백
+    .replace(/[\u2018\u2019\u02BC]/g, "'")  // 스마트 작은따옴표 → 일반 작은따옴표
+    .replace(/[\u201C\u201D]/g, '"')    // 스마트 큰따옴표 → 일반 큰따옴표
+    .replace(/[\u2013\u2014]/g, '-')    // en/em dash → 하이픈
+    .replace(/\s+/g, ' ')               // 연속 공백/탭 → 공백 1개
+    .trim()
+    .toLowerCase()
+}
+
+/**
  * (Solution 1) 한 줄바꿈 텍스트(엑셀 원문 컬럼 하나) 안에서 동일한 EN 카피가
  * 2번 이상 등장하는 그룹을 찾는다. 엑셀을 불러온 직후, 국가 매핑을 적용하기
  * 전에 사용자에게 "모두 유지 / 1개만 남기기" 확인을 받기 위해 사용 (ExcelImportModal).
@@ -242,9 +262,8 @@ function computeCellIssues(en, m, countryLabel, products) {
   const dntMismatch = local ? checkDNTCountMismatch(en, local, countryLabel, products) : null
   const svcIssues   = local ? detectServiceIssues(local, countryLabel) : []
   // 로컬 카피가 영문 원문과 완전히 동일 = 번역이 안 된 채로 그대로 머지된 경우 (QA 필요)
-  // 원래 영문 국가(SITE_CODE_LANGUAGE === 'English')는 영문 그대로가 정상이므로 제외
-  const isNativeEnglish = SITE_CODE_LANGUAGE[countryLabel] === 'English'
-  const isEnMatch = !isNativeEnglish && !!local && normCell(local) === normCell(en)
+  // 영문 국가 포함 전체 국가를 검사 대상으로 함 (원래 영문 국가 제외 로직 제거)
+  const isEnMatch = !!local && normForEnCompare(local) === normForEnCompare(en)
   const hasAnyIssue = dntIss.length > 0 || urlIss.length > 0 || unreleased.length > 0 || !!dntMismatch || svcIssues.length > 0 || isEnMatch
   return { isMissing: false, isTBD, dntIss, urlIss, unreleased, dntMismatch, svcIssues, isEnMatch, hasAnyIssue }
 }
