@@ -912,9 +912,12 @@ const BranchTimeline = ({ branches, branchStatuses, onCreateBranch, onUpdateBran
 
 // ── [최적화] 테이블 행 (React.memo) ───────────────────────────
 const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusChange, handleFileUpload, handleHistoryNoteUpdate, handleBranchCreate, handleBranchNoteUpdate, handleBranchClose, handleBranchDelete, removeCountry, isRegular, showCheckbox, pageId, initialStatusHistory, historyBump, mode = 'ae' }) => {
+  const { user } = useAuth()
   const [isExpanded, setIsExpanded] = useState(false)
   const [showUnifiedHistory, setShowUnifiedHistory] = useState(false)
   const [statusHistory, setStatusHistory] = useState(initialStatusHistory ?? null) // null = 미로딩
+  const [editingHistoryId, setEditingHistoryId] = useState(null)
+  const [editingHistoryText, setEditingHistoryText] = useState('')
   const branches = entry?.branches || []
 
   // initialStatusHistory prop이 업데이트되면 state에 동기화
@@ -963,6 +966,46 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
     // 패널을 열 때 항상 최신 데이터로 fetch (실시간 동기화 보장)
     if (!showUnifiedHistory) await fetchStatusHistory()
     setShowUnifiedHistory(v => !v)
+  }
+
+  // [soft delete] 국가별 카피 히스토리 메모 수정/삭제
+  // 수정/삭제는 본인이 남긴 기록에만 허용되며, 삭제는 DB에서 deleted=1로 처리됩니다.
+  const handleHistoryEditStart = (h) => {
+    setEditingHistoryId(h.id)
+    setEditingHistoryText(h.note || '')
+  }
+
+  const handleHistoryEditCancel = () => {
+    setEditingHistoryId(null)
+    setEditingHistoryText('')
+  }
+
+  const handleHistoryEditSave = async (id) => {
+    const res = await api.updateStatusHistoryNote(id, { note: editingHistoryText })
+    if (res?.ok) {
+      setStatusHistory(prev =>
+        Array.isArray(prev)
+          ? prev.map(h => h.id === id ? { ...h, note: editingHistoryText } : h)
+          : prev
+      )
+      setEditingHistoryId(null)
+      setEditingHistoryText('')
+    } else {
+      alert(res?.message || '수정에 실패했습니다.')
+    }
+  }
+
+  const handleHistoryDelete = async (id) => {
+    if (!window.confirm('이 히스토리 항목을 삭제하시겠습니까?')) return
+
+    const res = await api.deleteStatusHistory(id)
+    if (res?.ok) {
+      setStatusHistory(prev =>
+        Array.isArray(prev) ? prev.filter(h => h.id !== id) : prev
+      )
+    } else {
+      alert(res?.message || '삭제에 실패했습니다.')
+    }
   }
 
   // 상태 이력 + 파일 이력을 시간순으로 머지
@@ -1114,6 +1157,10 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                     const toStyle      = getStatusStyle(h.to_status   || '', mode)
                     const statusChanged = h.from_status !== h.to_status
                     const noteChanged   = h.note != null
+                    const isMine = user && h.changed_by && (
+                      h.changed_by === user.name || h.changed_by === user.email
+                    )
+                    const isEditing = editingHistoryId === h.id
                     return (
                       <div key={`s-${h.id}`} className="cst-unified-item">
                         <span className="cst-unified-item-icon">{noteChanged && !statusChanged ? '📝' : '🔄'}</span>
@@ -1129,12 +1176,71 @@ const StatusRow = memo(({ site, entry, selected, onToggleSelect, handleStatusCha
                               <span className="cst-sh-badge" style={{ color: toStyle.color, background: toStyle.bg }}>{toStyle.label}</span>
                             )}
                             {/* 가운데: 메모 (margin-left:auto로 상태 배지와 분리) */}
-                            {noteChanged && (
-                              <span className="cst-unified-note-tag" style={{ marginLeft: 'auto' }}>메모: {h.note}</span>
+                            {!isEditing && noteChanged && (
+                              <span className="cst-unified-note-tag" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                메모: {h.note}
+                                {isMine && (
+                                  <button
+                                    onClick={() => handleHistoryEditStart(h)}
+                                    title="메모 수정"
+                                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: 0 }}
+                                  >
+                                    ✏️
+                                  </button>
+                                )}
+                              </span>
                             )}
-                            {/* 오른쪽: 시간 */}
-                            <span className="cst-unified-item-time" style={{ marginLeft: noteChanged ? 12 : 'auto' }}>{formatDateTime(h.changed_at)}</span>
+                            {/* 오른쪽: 시간 + 본인 기록이면 삭제 */}
+                            <span
+                              className="cst-unified-item-time"
+                              style={{
+                                marginLeft: (noteChanged && !isEditing) ? 12 : 'auto',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 6
+                              }}
+                            >
+                              {formatDateTime(h.changed_at)}
+                              {isMine && (
+                                <button
+                                  onClick={() => handleHistoryDelete(h.id)}
+                                  title="이 기록 삭제"
+                                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, padding: 0, color: '#ef4444' }}
+                                >
+                                  🗑
+                                </button>
+                              )}
+                            </span>
                           </div>
+                          {isEditing && (
+                            <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                              <input
+                                className="form-input"
+                                style={{ fontSize: 11, padding: '2px 6px', flex: 1 }}
+                                value={editingHistoryText}
+                                onChange={e => setEditingHistoryText(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') handleHistoryEditSave(h.id)
+                                  if (e.key === 'Escape') handleHistoryEditCancel()
+                                }}
+                                autoFocus
+                              />
+                              <button
+                                className="btn-sm"
+                                style={{ fontSize: 10, padding: '2px 6px' }}
+                                onClick={() => handleHistoryEditSave(h.id)}
+                              >
+                                저장
+                              </button>
+                              <button
+                                className="btn-ghost"
+                                style={{ fontSize: 10, padding: '2px 6px' }}
+                                onClick={handleHistoryEditCancel}
+                              >
+                                취소
+                              </button>
+                            </div>
+                          )}
                           {h.changed_by && <div className="cst-unified-item-meta">👤 {h.changed_by}</div>}
                         </div>
                       </div>

@@ -89,6 +89,9 @@ export const api = window.electronAPI || {
   updateHistoryNote: (id, body) => call('PUT',   `/api/files/${id}/note`, body),
   // 카피 상태 변경 이력 일괄 삽입 (프로젝트 복제용)
   bulkInsertStatusHistory: (body) => call('POST', '/api/tracker/status-history/bulk', body),
+  // [신규] 국가별 카피 히스토리(전체 이력) 개별 항목 수정/삭제 — 본인이 남긴 기록만 가능
+  updateStatusHistoryNote: (id, body) => call('PUT',    `/api/tracker/status-history/${id}/note`, body),
+  deleteStatusHistory:     (id)       => call('PUT',    `/api/tracker/status-history/${id}/delete`),
   createTrackerPage: (body)     => call('POST',  '/api/tracker/pages', body),
   updateTrackerPage: (id, body) => call('PUT',   `/api/tracker/pages/${id}`, body),
   deleteTrackerPage: (id)       => call('DELETE', `/api/tracker/pages/${id}`),
