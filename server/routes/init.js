@@ -208,18 +208,12 @@ router.post('/init', checkDbConnection, async (req, res) => {
       id VARCHAR(100) PRIMARY KEY,
       title VARCHAR(255) NOT NULL,
       folder_id INT DEFAULT NULL COMMENT '소속 폴더 (NULL이면 최상위)',
-      mode VARCHAR(20) NOT NULL DEFAULT 'ae' COMMENT 'Status Tab 진행 모드: ae(13단계) / publisher(9단계)',
       deleted TINYINT(1) NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
 
     // 기존 테이블에 folder_id 컬럼이 없으면 추가
     try {
       await getPool().execute(`ALTER TABLE tracker_pages ADD COLUMN folder_id INT DEFAULT NULL COMMENT '소속 폴더' AFTER title`);
-    } catch (_) { /* 이미 존재하면 무시 */ }
-
-    // 기존 테이블에 mode 컬럼이 없으면 추가 (Publishing mode 기능)
-    try {
-      await getPool().execute(`ALTER TABLE tracker_pages ADD COLUMN mode VARCHAR(20) NOT NULL DEFAULT 'ae' COMMENT 'Status Tab 진행 모드: ae(13단계) / publisher(9단계)' AFTER folder_id`);
     } catch (_) { /* 이미 존재하면 무시 */ }
 
     await getPool().execute(`CREATE TABLE IF NOT EXISTS tracker_site_status (
@@ -267,6 +261,11 @@ router.post('/init', checkDbConnection, async (req, res) => {
     // tracker_status_history에 note 컬럼 추가 (메모 변경 이력 기록용)
     try {
       await getPool().execute(`ALTER TABLE tracker_status_history ADD COLUMN note TEXT DEFAULT NULL COMMENT '메모 변경 내용' AFTER changed_by`);
+    } catch (_) { /* 이미 존재하면 무시 */ }
+
+    // tracker_status_history에 deleted 컬럼 추가 (본인 기록 soft delete용)
+    try {
+      await getPool().execute(`ALTER TABLE tracker_status_history ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0 COMMENT '삭제 여부(soft delete)'`);
     } catch (_) { /* 이미 존재하면 무시 */ }
 
     // ── Billing 테이블 ────────────────────────────────────────────

@@ -110,12 +110,12 @@ router.get('/tracker/pages/:id', async (req, res) => {
       ([statusHistory] = await getPool().execute(
         `SELECT id, site_code, from_status, to_status, changed_by, changed_at, note
          FROM tracker_status_history
-         WHERE page_id = ?
+         WHERE page_id = ? AND deleted = 0
          ORDER BY changed_at DESC`,
         [pageId]
       ));
     } catch {
-      // note 컬럼 없는 구버전 DB fallback
+      // note/deleted 컬럼 없는 구버전 DB fallback
       ([statusHistory] = await getPool().execute(
         `SELECT id, site_code, from_status, to_status, changed_by, changed_at
          FROM tracker_status_history
@@ -132,8 +132,8 @@ router.put('/tracker/pages/:id', async (req, res) => {
   try {
     const { title, mode } = req.body;
     if (title !== undefined) {
-      if (!title?.trim()) return res.json({ ok: false, message: '제목을 입력하세요.' });
-      await getPool().execute(`UPDATE tracker_pages SET title = ? WHERE id = ?`, [title.trim(), req.params.id]);
+    if (!title?.trim()) return res.json({ ok: false, message: '제목을 입력하세요.' });
+    await getPool().execute(`UPDATE tracker_pages SET title = ? WHERE id = ?`, [title.trim(), req.params.id]);
     }
     if (mode !== undefined) {
       await getPool().execute(`UPDATE tracker_pages SET mode = ? WHERE id = ?`, [mode, req.params.id]);
@@ -223,12 +223,12 @@ router.get('/tracker/status-history', async (req, res) => {
       [rows] = await getPool().execute(
         `SELECT id, from_status, to_status, changed_by, changed_at, note
          FROM tracker_status_history
-         WHERE page_id = ? AND site_code = ?
+         WHERE page_id = ? AND site_code = ? AND deleted = 0
          ORDER BY changed_at DESC`,
         [pageId, siteCode]
       );
     } catch (e) {
-      // note 컬럼이 없는 구버전 DB fallback
+      // note/deleted 컬럼이 없는 구버전 DB fallback
       [rows] = await getPool().execute(
         `SELECT id, from_status, to_status, changed_by, changed_at
          FROM tracker_status_history
@@ -239,6 +239,42 @@ router.get('/tracker/status-history', async (req, res) => {
     }
     res.json({ ok: true, data: rows });
   } catch (err) { res.json({ ok: false, message: err.message }); }
+});
+
+// 카피 상태 변경 이력 메모 수정 — 본인이 남긴 기록만 수정 가능
+router.put('/tracker/status-history/:id/note', authMiddleware, async (req, res) => {
+  const { note } = req.body;
+  try {
+    const [[row]] = await getPool().execute(
+      `SELECT changed_by FROM tracker_status_history WHERE id = ? AND deleted = 0`,
+      [req.params.id]
+    );
+    if (!row) return res.json({ ok: false, message: '기록을 찾을 수 없습니다.' });
+    if (row.changed_by !== req.user.name) {
+      return res.status(403).json({ ok: false, message: '본인이 남긴 히스토리만 수정할 수 있습니다.' });
+    }
+    await getPool().execute(
+      `UPDATE tracker_status_history SET note = ? WHERE id = ?`,
+      [note, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (e) { res.json({ ok: false, message: e.message }); }
+});
+
+// 카피 상태 변경 이력 삭제 — 본인이 남긴 기록만 삭제 가능 (soft delete, DELETE 문 사용 안 함)
+router.put('/tracker/status-history/:id/delete', authMiddleware, async (req, res) => {
+  try {
+    const [[row]] = await getPool().execute(
+      `SELECT changed_by FROM tracker_status_history WHERE id = ? AND deleted = 0`,
+      [req.params.id]
+    );
+    if (!row) return res.json({ ok: false, message: '기록을 찾을 수 없습니다.' });
+    if (row.changed_by !== req.user.name) {
+      return res.status(403).json({ ok: false, message: '본인이 남긴 히스토리만 삭제할 수 있습니다.' });
+    }
+    await getPool().execute(`UPDATE tracker_status_history SET deleted = 1 WHERE id = ?`, [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.json({ ok: false, message: e.message }); }
 });
 
 // 카피 상태 변경 이력 일괄 삽입 (프로젝트 복제용)
