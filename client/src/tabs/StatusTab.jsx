@@ -1360,6 +1360,10 @@ function exportBillingXLSX(billings, pageName) {
 
 // ── 복제 옵션 선택 모달 ───────────────────────────────────────
 function DuplicateModal({ page, onConfirm, onClose }) {
+  const sourceMode = page.mode || 'ae'
+  const [targetMode, setTargetMode] = useState(sourceMode)
+  const isCrossMode = targetMode !== sourceMode // 모드가 다른 프로젝트로 복제하는 경우
+
   const [opts, setOpts] = useState({
     countries:   true,   // 국가 수 (항상 필요 — 비활성화)
     status:      true,   // 국가별 카피 작업 상태
@@ -1370,8 +1374,18 @@ function DuplicateModal({ page, onConfirm, onClose }) {
   })
   const [running, setRunning] = useState(false)
 
+  // 모드를 바꾸면(원본과 다른 모드 선택) 국가 리스트 외에는 전부 강제로 끔 —
+  // 상태값 자체가 모드마다 단계 수/의미가 달라서 다른 모드로는 그대로 옮길 수 없다.
+  const handleSelectMode = (m) => {
+    setTargetMode(m)
+    if (m !== sourceMode) {
+      setOpts(prev => ({ ...prev, status: false, statusHistory: false, files: false, branches: false, billing: false }))
+    }
+  }
+
   const toggle = (key) => {
     if (key === 'countries') return // 국가 수는 항상 복제
+    if (isCrossMode) return // 모드가 다르면 국가 리스트 외에는 선택 자체가 불가
     setOpts(prev => {
       const next = { ...prev, [key]: !prev[key] }
       // 상태가 꺼지면 이력도 강제로 끔 (이력만 있으면 의미 없음)
@@ -1382,16 +1396,16 @@ function DuplicateModal({ page, onConfirm, onClose }) {
 
   const items = [
     { key: 'countries',     icon: '🌍', label: '국가 수',              desc: '원본과 동일한 국가 목록',          disabled: true },
-    { key: 'status',        icon: '🏷️', label: '카피 작업 상태 & 메모', desc: '각 국가의 현재 상태와 메모',        disabled: false },
-    { key: 'statusHistory', icon: '🔄', label: '카피 상태 변경 이력',   desc: '상태가 바뀐 전체 히스토리',         disabled: !opts.status },
-    { key: 'files',         icon: '📎', label: '첨부파일',              desc: '각 국가에 업로드된 파일',           disabled: false },
-    { key: 'branches',      icon: '🌿', label: '분기(Branch) 히스토리', desc: '국가별 작업 분기 전체',             disabled: false },
-    { key: 'billing',       icon: '🧾', label: '정산(Billing) 항목',    desc: '정산 내역 및 첨부파일 포함',        disabled: false },
+    { key: 'status',        icon: '🏷️', label: '카피 작업 상태 & 메모', desc: isCrossMode ? '모드가 다르면 복제 불가' : '각 국가의 현재 상태와 메모', disabled: isCrossMode },
+    { key: 'statusHistory', icon: '🔄', label: '카피 상태 변경 이력',   desc: isCrossMode ? '모드가 다르면 복제 불가' : '상태가 바뀐 전체 히스토리', disabled: isCrossMode || !opts.status },
+    { key: 'files',         icon: '📎', label: '첨부파일',              desc: isCrossMode ? '모드가 다르면 복제 불가' : '각 국가에 업로드된 파일', disabled: isCrossMode },
+    { key: 'branches',      icon: '🌿', label: '분기(Branch) 히스토리', desc: isCrossMode ? '모드가 다르면 복제 불가' : '국가별 작업 분기 전체', disabled: isCrossMode },
+    { key: 'billing',       icon: '🧾', label: '정산(Billing) 항목',    desc: isCrossMode ? '모드가 다르면 복제 불가' : '정산 내역 및 첨부파일 포함', disabled: isCrossMode },
   ]
 
   const handleConfirm = async () => {
     setRunning(true)
-    try { await onConfirm(page, opts) } finally { setRunning(false) }
+    try { await onConfirm(page, { ...opts, mode: targetMode }) } finally { setRunning(false) }
   }
 
   return createPortal(
@@ -1406,27 +1420,62 @@ function DuplicateModal({ page, onConfirm, onClose }) {
       <div
         onClick={e => e.stopPropagation()}
         style={{
-          background: '#fff', borderRadius: 14, padding: '28px 28px 22px',
-          width: 420, maxWidth: '92vw', boxShadow: '0 20px 60px rgba(0,0,0,0.18)',
+          background: '#fff', borderRadius: 14,
+          width: 420, maxWidth: '92vw', maxHeight: '85vh',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.18)',
+          display: 'flex', flexDirection: 'column', overflow: 'hidden',
         }}
       >
-        {/* 헤더 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+        {/* 헤더 (고정) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '28px 28px 6px' }}>
           <span style={{ fontSize: 22 }}>📑</span>
           <div>
             <div style={{ fontWeight: 700, fontSize: 15, color: '#111' }}>프로젝트 복제</div>
             <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
-              복제할 항목을 선택하세요
+              복제할 모드와 항목을 선택하세요
             </div>
           </div>
         </div>
 
+        {/* 스크롤 가능한 본문 (원본 정보 + 모드 선택 + 항목 리스트) */}
+        <div style={{ overflowY: 'auto', padding: '10px 28px 4px', flex: 1, minHeight: 0 }}>
         {/* 원본 프로젝트명 */}
         <div style={{
           background: '#f3f4f6', borderRadius: 8, padding: '8px 12px',
-          fontSize: 13, color: '#374151', marginBottom: 18, marginTop: 10,
+          fontSize: 13, color: '#374151', marginBottom: 14,
         }}>
           📄 <strong>{page.name}</strong>
+          <span style={{ marginLeft: 8, fontSize: 11, color: '#9ca3af' }}>
+            (원본: {sourceMode === 'publisher' ? '📗 Publisher' : '📘 AE'} 모드)
+          </span>
+        </div>
+
+        {/* 복제할 모드 선택 */}
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>복제될 프로젝트의 모드</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button type="button" onClick={() => handleSelectMode('ae')} style={{
+              flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 600, borderRadius: 8, cursor: 'pointer',
+              border: `1.5px solid ${targetMode === 'ae' ? '#334155' : '#e5e7eb'}`,
+              background: targetMode === 'ae' ? '#334155' : '#fff',
+              color: targetMode === 'ae' ? '#fff' : '#6b7280',
+            }}>📘 AE 모드</button>
+            <button type="button" onClick={() => handleSelectMode('publisher')} style={{
+              flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 600, borderRadius: 8, cursor: 'pointer',
+              border: `1.5px solid ${targetMode === 'publisher' ? '#0f766e' : '#e5e7eb'}`,
+              background: targetMode === 'publisher' ? '#0f766e' : '#fff',
+              color: targetMode === 'publisher' ? '#fff' : '#6b7280',
+            }}>📗 Publisher 모드</button>
+          </div>
+          {isCrossMode && (
+            <div style={{
+              marginTop: 8, fontSize: 11.5, color: '#92400e', background: '#fef3c7',
+              border: '1px solid #fcd34d', borderRadius: 8, padding: '8px 10px', lineHeight: 1.5,
+            }}>
+              ⚠ 원본과 다른 모드로 복제합니다. 상태 단계 체계가 서로 달라 국가 리스트만 복제되고,
+              카피 상태·메모·이력·첨부파일·정산 항목은 복제되지 않습니다.
+            </div>
+          )}
         </div>
 
         {/* 옵션 리스트 */}
@@ -1467,9 +1516,14 @@ function DuplicateModal({ page, onConfirm, onClose }) {
             )
           })}
         </div>
+        </div>
+        {/* 스크롤 영역 끝 */}
 
-        {/* 버튼 */}
-        <div style={{ display: 'flex', gap: 8, marginTop: 20, justifyContent: 'flex-end' }}>
+        {/* 버튼 (고정 푸터) */}
+        <div style={{
+          display: 'flex', gap: 8, justifyContent: 'flex-end',
+          padding: '16px 28px', borderTop: '1px solid #f0f1f3', flexShrink: 0,
+        }}>
           <button
             onClick={onClose}
             disabled={running}
@@ -1940,19 +1994,10 @@ function PageDetail({ page, onBack, onUpdate }) {
   const [showBilling, setShowBilling] = useState(false)
   const dropRef = useRef(null)
 
-  // ── [신규] Publishing mode 토글 (AE 13단계 ↔ Publisher 9단계) ──
+  // ── 모드 표시 (읽기 전용) ──
+  // 모드(AE/Publisher)는 프로젝트 생성 시 한 번만 정해지고 이후 변경할 수 없다.
+  // (국가별 상태 변경 히스토리가 두 모드 사이에서 섞이지 않도록 하기 위함)
   const mode = page.mode || 'ae'
-  const [modeSaving, setModeSaving] = useState(false)
-  const toggleMode = async () => {
-    if (modeSaving) return
-    const newMode = mode === 'publisher' ? 'ae' : 'publisher'
-    setModeSaving(true)
-    onUpdate({ ...page, mode: newMode }, true)
-    try {
-      await api.updateTrackerPage(page.id, { mode: newMode })
-    } catch (_) {}
-    finally { setModeSaving(false) }
-  }
 
   // ── [신규] 일괄 상태 변경 (체크박스 다중 선택 + 텍스트 일괄 입력) ──
   const [showBulkPanel, setShowBulkPanel] = useState(false)
@@ -2435,23 +2480,18 @@ function PageDetail({ page, onBack, onUpdate }) {
           
           <span className="cst-detail-date">생성: {page.createdAt?.slice(0, 10)}</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button
-              onClick={toggleMode}
-              disabled={modeSaving}
-              title="AE 모드(13단계) ↔ Publisher 모드(9단계) 전환"
+            <span
+              title="모드는 프로젝트 생성 시 한 번만 정해지며 이후 변경할 수 없습니다"
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 background: mode === 'publisher' ? '#0f766e' : '#334155',
                 color: '#fff', border: 'none',
                 borderRadius: 'var(--r-sm)', padding: '6px 13px', fontSize: 12,
                 fontFamily: "'Noto Sans KR', sans-serif", fontWeight: 600,
-                cursor: modeSaving ? 'not-allowed' : 'pointer', transition: 'opacity .15s',
-                opacity: modeSaving ? 0.6 : 1,
               }}
             >
               {mode === 'publisher' ? '📗 Publisher 모드' : '📘 AE 모드'}
-              <span style={{ fontSize: 10, opacity: 0.8 }}>전환</span>
-            </button>
+            </span>
             {isStaff(user?.position) && (
               <button
                 onClick={() => setShowBilling(true)}
@@ -2917,6 +2957,14 @@ function PageCard({ page, onSelect, onDelete, onRename, onRequestDuplicate, user
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+          <span
+            title={mode === 'publisher' ? 'Publisher 모드' : 'AE 모드'}
+            style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999,
+              background: mode === 'publisher' ? '#0f766e' : '#334155', color: '#fff',
+              whiteSpace: 'nowrap',
+            }}
+          >{mode === 'publisher' ? '📗 Publisher' : '📘 AE'}</span>
           <span className="cst-page-card-total">{total}개국</span>
           {menuItems.length > 0 && <DotsMenu items={menuItems} />}
         </div>
@@ -3055,6 +3103,7 @@ export default function StatusTab({ resetKey }) {
   const [showNewPage, setShowNewPage] = useState(false)
   const [newPageName, setNewPageName] = useState('')
   const [newPageFolderId, setNewPageFolderId] = useState(null)  // 새 페이지 생성 시 폴더 선택
+  const [newPageMode, setNewPageMode] = useState('ae')  // 새 페이지 생성 시 모드 선택 — 생성 후 변경 불가
   const [newPageMsg, setNewPageMsg] = useState('')
   const [searchPages, setSearchPages] = useState('')
   // 폴더 관리 상태
@@ -3152,13 +3201,14 @@ export default function StatusTab({ resetKey }) {
       id: String(Date.now()),
       name: newPageName.trim(),
       folder_id: newPageFolderId,
+      mode: newPageMode, // ae | publisher — 생성 시 한 번만 정해지고 이후 변경 불가
       createdAt: new Date().toISOString(),
       countries: ALL_SITES
         .filter(s => DEFAULT_COUNTRIES.includes(s.code))
         .map(s => ({ code: s.code, status: '', note: '', file: null, fileHistory: [] })),
     }
     try {
-      const res = await api.createTrackerPage({ id: newPage.id, title: newPage.name })
+      const res = await api.createTrackerPage({ id: newPage.id, title: newPage.name, mode: newPageMode })
       if (res?.ok && newPageFolderId) {
         await api.movePageToFolder(newPage.id, { folderId: newPageFolderId })
       }
@@ -3166,7 +3216,7 @@ export default function StatusTab({ resetKey }) {
 
     setPages(prev => [...prev, newPage])
     saveToStorage({ pages: [...pages, newPage] })
-    setNewPageName(''); setNewPageFolderId(null); setShowNewPage(false); setSelectedPageId(newPage.id)
+    setNewPageName(''); setNewPageFolderId(null); setNewPageMode('ae'); setShowNewPage(false); setSelectedPageId(newPage.id)
   }
 
   // ── 폴더 핸들러 ─────────────────────────────────────────────
@@ -3248,7 +3298,16 @@ export default function StatusTab({ resetKey }) {
     // options 기본값: 전부 true (기존 직접 호출 호환)
     const opt = {
       countries: true, status: true, files: true, statusHistory: true, branches: true, billing: true,
+      mode: page.mode || 'ae',
       ...options,
+    }
+
+    // 안전장치: 원본과 다른 모드로 복제하는 경우, 무슨 opts가 넘어오든
+    // 국가 리스트 외에는 강제로 복제하지 않는다 — 모드마다 상태 단계 체계가
+    // 달라서(AE 13단계 / Publisher 9단계) 그대로 옮기면 값이 깨지기 때문.
+    const sourceMode = page.mode || 'ae'
+    if (opt.mode !== sourceMode) {
+      opt.status = false; opt.statusHistory = false; opt.files = false; opt.branches = false; opt.billing = false
     }
 
     const newPageId = String(Date.now())
@@ -3264,7 +3323,7 @@ export default function StatusTab({ resetKey }) {
     }
 
     try {
-      const res = await api.createTrackerPage({ id: newPageId, title: newPageName, mode: page.mode || 'ae' })
+      const res = await api.createTrackerPage({ id: newPageId, title: newPageName, mode: opt.mode })
       if (!res?.ok) {
         alert('복사에 실패했습니다: ' + (res?.message || '서버 오류'))
         return
@@ -3347,20 +3406,6 @@ export default function StatusTab({ resetKey }) {
         )
       }
 
-      // 3-1. 카피 변경 이력(tracker_status_history) 복사
-      if (opt.statusHistory && statusHistory.length > 0) {
-        await api.bulkInsertStatusHistory({
-          pageId: newPageId,
-          records: statusHistory.map(h => ({
-            site_code:   h.site_code,
-            from_status: h.from_status ?? null,
-            to_status:   h.to_status   ?? '',
-            changed_by:  h.changed_by  ?? null,
-            changed_at:  h.changed_at,
-          })),
-        })
-      }
-
       // 4. Billing Track(정산) 항목 + 첨부파일 복사
       if (opt.billing) {
         const billingRes = await api.getBillings(page.id)
@@ -3403,14 +3448,14 @@ export default function StatusTab({ resetKey }) {
       id: newPageId,
       name: newPageName,
       folder_id: page.folder_id ?? null,
-      mode: page.mode || 'ae',
+      mode: opt.mode,
       createdAt: new Date().toISOString(),
       // 상세 데이터(파일/분기 포함)는 페이지를 열 때 getTrackerDetail로 다시 로드되므로
       // 여기서는 목록 표시에 필요한 최소 정보만 채워둔다.
       countries: page.countries.map(c => ({
         code: c.code,
-        status: c.status || '',
-        note: c.note || '',
+        status: opt.status ? (c.status || '') : '',
+        note: opt.status ? (c.note || '') : '',
         file: null,
         fileHistory: [],
         branches: [],
@@ -3515,8 +3560,22 @@ export default function StatusTab({ resetKey }) {
               {folders.map(f => <option key={f.id} value={f.id}>📂 {f.name}</option>)}
             </select>
           )}
+          {/* 모드는 생성 시 한 번만 정할 수 있고, 만든 뒤에는 바꿀 수 없다.
+              (국가별 상태 히스토리가 두 모드 사이에서 섞이는 걸 막기 위함) */}
+          <div style={{ display: 'flex', gap: 4, border: '1px solid #d1d5db', borderRadius: 8, padding: 2 }} title="생성 후에는 변경할 수 없습니다">
+            <button type="button" onClick={() => setNewPageMode('ae')} style={{
+              padding: '6px 12px', fontSize: 12, fontWeight: 600, borderRadius: 6, border: 'none', cursor: 'pointer',
+              background: newPageMode === 'ae' ? '#334155' : 'transparent',
+              color: newPageMode === 'ae' ? '#fff' : '#6b7280',
+            }}>📘 AE 모드</button>
+            <button type="button" onClick={() => setNewPageMode('publisher')} style={{
+              padding: '6px 12px', fontSize: 12, fontWeight: 600, borderRadius: 6, border: 'none', cursor: 'pointer',
+              background: newPageMode === 'publisher' ? '#0f766e' : 'transparent',
+              color: newPageMode === 'publisher' ? '#fff' : '#6b7280',
+            }}>📗 Publisher 모드</button>
+          </div>
           <button className="btn-primary" onClick={createPage}>추가</button>
-          <button className="btn-ghost" onClick={() => { setShowNewPage(false); setNewPageName(''); setNewPageFolderId(null) }}>취소</button>
+          <button className="btn-ghost" onClick={() => { setShowNewPage(false); setNewPageName(''); setNewPageFolderId(null); setNewPageMode('ae') }}>취소</button>
           {newPageMsg && <span style={{ color: '#ef4444', fontSize: 12 }}>{newPageMsg}</span>}
         </div>
       )}

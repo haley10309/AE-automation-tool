@@ -130,13 +130,13 @@ router.get('/tracker/pages/:id', async (req, res) => {
 
 router.put('/tracker/pages/:id', async (req, res) => {
   try {
-    const { title, mode } = req.body;
+    const { title } = req.body;
+    // mode(AE/Publisher)는 프로젝트 생성 시 한 번만 정할 수 있고 이후 변경 불가 —
+    // 그래야 국가별 상태 변경 히스토리가 두 모드 사이에서 섞이지 않는다.
+    // (그래서 이 라우트는 title만 받는다. mode는 POST /tracker/pages 생성 시에만 반영됨)
     if (title !== undefined) {
-    if (!title?.trim()) return res.json({ ok: false, message: '제목을 입력하세요.' });
-    await getPool().execute(`UPDATE tracker_pages SET title = ? WHERE id = ?`, [title.trim(), req.params.id]);
-    }
-    if (mode !== undefined) {
-      await getPool().execute(`UPDATE tracker_pages SET mode = ? WHERE id = ?`, [mode, req.params.id]);
+      if (!title?.trim()) return res.json({ ok: false, message: '제목을 입력하세요.' });
+      await getPool().execute(`UPDATE tracker_pages SET title = ? WHERE id = ?`, [title.trim(), req.params.id]);
     }
     res.json({ ok: true });
   } catch (err) { res.json({ ok: false, message: err.message }); }
